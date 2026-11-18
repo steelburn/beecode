@@ -174,7 +174,11 @@ export function defaultPolicy(): PolicyDocument {
  * a duplicate preset id or a dangling defaultModelId would leave the agent loop with
  * no usable model, so the service repairs what it can and refuses the rest.
  */
-export function normalizeConfig(input: BeeCodeConfig): BeeCodeConfig {
+export function normalizeConfig(
+  input: BeeCodeConfig,
+  options: { strict?: boolean } = {},
+): BeeCodeConfig {
+  const strict = options.strict === true;
   const seen = new Set<string>();
   const models: ModelPreset[] = [];
   for (const raw of input.models ?? []) {
@@ -187,14 +191,14 @@ export function normalizeConfig(input: BeeCodeConfig): BeeCodeConfig {
     if (!id || !model || seen.has(id)) continue;
     seen.add(id);
     const baseUrl = raw.baseUrl?.trim().replace(/\/+$/, '');
-    const apiKeyEnv = raw.apiKeyEnv?.trim();
+    const apiKeyEnv = normalizeApiKeyEnv(raw, strict);
     models.push({
       ...raw,
       id,
       label: (raw.label ?? '').trim() || id,
       model,
       baseUrl: baseUrl || undefined,
-      apiKeyEnv: apiKeyEnv || undefined,
+      apiKeyEnv,
     });
   }
   if (!models.length) throw new Error('at least one model preset is required');
@@ -212,4 +216,23 @@ export function normalizeConfig(input: BeeCodeConfig): BeeCodeConfig {
       workingDir: (input.agent?.workingDir ?? '').trim() || fallback.agent.workingDir,
     },
   };
+}
+
+/**
+ * `apiKeyEnv` is a variable *name*. Pasting the key itself into that field used to be
+ * persisted verbatim: auth then failed (process.env['sk-…'] is undefined) and the secret
+ * ended up in config.json, which is shareable user state. A literal is refused.
+ */
+function normalizeApiKeyEnv(raw: ModelPreset, strict: boolean): string | undefined {
+  const value = raw.apiKeyEnv?.trim();
+  if (!value) return undefined;
+  if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(value)) return value;
+  if (strict) {
+    throw new Error(
+      `model "${raw.id || raw.label || 'preset'}": apiKeyEnv must be an environment variable name, not the key itself — ` +
+        'paste the key into the API key field (stored in secrets.json), or put API_KEY in .env.llm',
+    );
+  }
+  // Legacy config from a build that allowed it: drop the literal, never write it back.
+  return undefined;
 }

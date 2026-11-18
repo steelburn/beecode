@@ -49,14 +49,41 @@ export class LlmError extends Error {
   }
 }
 
+let secretResolver: ((preset: ModelPreset) => string | undefined) | undefined;
+
+/**
+ * Installed by the service so a key stored in secrets.json is found without ever putting
+ * that key into the config object (and therefore into config.json).
+ */
+export function setSecretResolver(fn: ((preset: ModelPreset) => string | undefined) | undefined): void {
+  secretResolver = fn;
+}
+
+/** True for a loopback endpoint, where running without a key is legitimate (Ollama, LM Studio). */
+function isLocalEndpoint(baseUrl: string | undefined): boolean {
+  if (!baseUrl) return true;
+  try {
+    const host = new URL(baseUrl).hostname.toLowerCase();
+    return host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '0.0.0.0' || host.endsWith('.local');
+  } catch {
+    return false;
+  }
+}
+
 export function resolveApiKey(preset: ModelPreset): string | undefined {
+  const stored = secretResolver?.(preset);
+  if (stored) return stored;
   const envName = preset.apiKeyEnv ?? defaultKeyEnv(preset.provider);
   const value = envName ? process.env[envName] : undefined;
   if (value) return value;
-  // Local providers legitimately run without a key.
-  if (preset.provider === 'ollama' || preset.provider === 'openai-compatible') return undefined;
+  // A local endpoint may run keyless; a remote one never does. Calling it unauthenticated
+  // used to surface as a bare 401 from the server instead of an actionable error here.
+  if (preset.provider === 'ollama' || (preset.provider === 'openai-compatible' && isLocalEndpoint(preset.baseUrl))) {
+    return undefined;
+  }
   throw new LlmError(
-    `Missing API key: set ${envName} (provider "${preset.provider}", model "${preset.model}")`,
+    `Missing API key for "${preset.label}" (${preset.provider}, model "${preset.model}"): ` +
+      (envName ? `paste it in Settings › Models, set ${envName}, or add API_KEY to .env.llm` : 'paste it in Settings › Models'),
   );
 }
 

@@ -469,11 +469,24 @@ export function renderSettings(host: HTMLElement, config: BeeCodeConfig, cb: Pan
     if (!cb.saveConfig) return;
     setNote('saving…');
     try {
-      await cb.saveConfig(draft);
+      await cb.saveConfig({
+        ...draft,
+        // A key travels only when the user typed one; a blank field keeps the stored key.
+        models: draft.models.map((preset) => {
+          const typed = keys[preset.id];
+          return typed ? { ...preset, apiKey: typed } : { ...preset };
+        }),
+      });
+      for (const id of Object.keys(keys)) delete keys[id];
+      paint();
+      setNote('saved ✓');
     } catch (error) {
       setNote(`save failed: ${(error as Error).message}`);
     }
   };
+
+  /** Keys typed but not yet saved, by preset id. Write-only: never rendered back. */
+  const keys: Record<string, string> = {};
 
   const paint = (): void => {
     clear(host);
@@ -487,7 +500,7 @@ export function renderSettings(host: HTMLElement, config: BeeCodeConfig, cb: Pan
         h('h4', { text: 'Settings' }),
         h('p', {
           class: 'sub',
-          text: 'Endpoint, model and working directory. Applied to new sessions immediately; the agent service never stores API keys.',
+          text: 'Endpoint, model and working directory. Applied immediately. API keys are stored in secrets.json — never in config.json.',
         }),
         h(
           'div',
@@ -583,6 +596,21 @@ export function renderSettings(host: HTMLElement, config: BeeCodeConfig, cb: Pan
                 setNote('unsaved changes');
               }, 'BEECODE_LLM_API_KEY'),
             ),
+            settingsField(
+              'API key',
+              h('input', {
+                class: 'settings-input',
+                type: 'password',
+                autocomplete: 'off',
+                placeholder: preset.hasKey ? 'stored — leave blank to keep' : 'paste the key to store it',
+                on: {
+                  input: (event: Event) => {
+                    keys[preset.id] = (event.target as HTMLInputElement).value;
+                    setNote('unsaved changes');
+                  },
+                },
+              }),
+            ),
             settingsField('Context window', contextWindow),
           ),
           h('p', {
@@ -590,6 +618,12 @@ export function renderSettings(host: HTMLElement, config: BeeCodeConfig, cb: Pan
             text: preset.baseUrl
               ? `Endpoint: ${preset.baseUrl}`
               : 'Endpoint: provider default. Set a Base URL for a custom or self-hosted gateway.',
+          }),
+          h('p', {
+            class: 'sub',
+            text: preset.hasKey
+              ? 'Key: stored — leave the field blank to keep it.'
+              : 'Key: not set — paste it above, or set the env var / add API_KEY to .env.llm',
           }),
         ),
       );

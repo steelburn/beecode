@@ -216,6 +216,14 @@ export interface ModelPreset {
   baseUrl?: string;
   /** Name of the env var holding the key — never store raw keys in config. */
   apiKeyEnv?: string;
+  /**
+   * Write-only. A key typed into Settings: the service moves it to secrets.json and
+   * strips it before the config is persisted or returned, so it never round-trips.
+   */
+  apiKey?: string;
+  /** Read-only, computed by the service: a key is stored or resolvable for this preset. */
+  hasKey?: boolean;
+
   contextWindow?: number;
   supportsVision?: boolean;
   supportsTools?: boolean;

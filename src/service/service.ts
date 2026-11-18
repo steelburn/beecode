@@ -1,5 +1,6 @@
 import { mkdir } from 'node:fs/promises';
 import { defaultConfig, normalizeConfig } from '../shared/defaults';
+import { installSecrets } from './secrets';
 import type {
   BeeCodeConfig,
   PolicyDocument,
@@ -53,6 +54,8 @@ export class BeeCodeService {
   private listeners = new Set<(event: ServiceEvent) => void>();
   private startedAt = new Date().toISOString();
   private stopping = false;
+
+  private readonly secrets = installSecrets();
 
   private constructor(private readonly options: ServiceOptions) {}
 
@@ -280,12 +283,35 @@ export class BeeCodeService {
       }
 
       case 'config.get':
-        return this.config;
+        // Keys are write-only: the renderer learns whether one exists, never its value.
+        return {
+          ...this.config,
+          models: this.config.models.map((preset) => ({
+            ...preset,
+            apiKey: undefined,
+            hasKey:
+              this.secrets.has(preset.id) || Boolean(preset.apiKeyEnv && process.env[preset.apiKeyEnv]),
+          })),
+        };
 
       case 'config.set': {
         const next = args.config as BeeCodeConfig;
         if (!next || !Array.isArray(next.models)) throw new Error('config.models must be an array');
-        this.config = this.mergeConfig(normalizeConfig(next));
+        // Keys are write-only: pull them out before the config is normalized or persisted.
+        for (const preset of next.models) {
+          const typed = typeof preset.apiKey === 'string' ? preset.apiKey.trim() : '';
+          if (typed) this.secrets.set(preset.id, typed);
+        }
+        const sanitized = {
+          ...next,
+          models: next.models.map((preset) => {
+            const { apiKey: _key, ...rest } = preset;
+            return rest;
+          }),
+        };
+        this.config = this.mergeConfig(normalizeConfig(sanitized, { strict: true }));
+        // Drop secrets for presets the normalizer rejected or the user removed.
+        this.secrets.prune(this.config.models.map((preset) => preset.id));
         await mkdir(this.config.agent.workingDir, { recursive: true });
         this.policy.setWorkspaceRoots([this.config.agent.workingDir]);
         await writeJsonFile(paths().config, this.config);

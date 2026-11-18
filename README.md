@@ -54,6 +54,7 @@ the working directory are chosen — no file editing required.
 | Control | Effect |
 | --- | --- |
 | Provider · Model · Base URL · API key env var · Context window | one card per preset; **Base URL** is what points beeCode at a custom gateway (DeepSeek, OpenRouter, vLLM, Ollama, LM Studio) |
+| **API key** (write-only) | paste the key to store it in `~/.beecode/secrets.json`; a blank field keeps the stored key, and the card shows whether one is set |
 | `default` radio | the preset a new session starts with |
 | Add model / Remove | extra presets; the service refuses a save that would leave none |
 | Working directory + Browse… | where new sessions start and the boundary the file tools cannot leave |
@@ -65,9 +66,22 @@ directory falls back to the default, and a config with no usable preset is rejec
 working directory is pushed into the policy engine as the filesystem root and created if it
 does not exist. Existing sessions keep the directory they were created with.
 
-Keys are never typed into the UI: a preset may only *name* the environment variable holding
-the key, because `~/.beecode/config.json` is shareable user state. Precedence is
-`.env.llm` → environment → `config.json`.
+### Where the key lives
+
+`~/.beecode/config.json` is shareable user state, so a key is never written there. Three
+ways to provide one, highest precedence first:
+
+1. **Settings › API key** — write-only. The service moves it to `~/.beecode/secrets.json`
+   (mode 0600) and `config.get` returns only a `hasKey` flag, never the value.
+2. **`API_KEY=` in `.env.llm`** — read from the working directory or `~/.beecode/.env.llm`
+   and published as `$BEECODE_LLM_API_KEY`.
+3. **The env var named in "API key env var"** — e.g. `OPENAI_API_KEY`.
+
+`apiKeyEnv` must be a variable *name*. A key pasted into that field is refused on save (and
+dropped when an older config is loaded), because it would both land in `config.json` and
+resolve to nothing. A missing key is reported before the request goes out —
+`Missing API key for "<preset>"` — rather than surfacing as a bare 401 from the endpoint.
+A loopback Base URL (Ollama, LM Studio) may still run keyless.
 
 ## What it can do
 

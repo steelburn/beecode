@@ -60,6 +60,8 @@ export function paths() {
   return {
     home,
     config: join(home, 'config.json'),
+    secrets: join(home, 'secrets.json'),
+
     policy: join(home, 'policy.json'),
     audit: join(home, 'audit.jsonl'),
     sessions: join(home, 'sessions'),
