@@ -3,11 +3,13 @@
 //   - the new desktop_click / desktop_resize tools are in the packaged tool list,
 //   - the packaged config carries the .env.llm preset without leaking the key,
 //   - the Windows driver actually runs from the packaged bundle (read-only window listing),
+//   - the Settings panel (endpoint, model, working directory) is inside the archive,
+//   - the packaged bundles are byte-identical to dist/ (no stale build),
 //   - the LLM answers through the packaged service.
 // Run `npm run dist` first; this checks what electron-builder produced.
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:net';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -28,6 +30,37 @@ const checks = [];
 function check(name, ok, detail = '') {
   checks.push({ name, ok, detail });
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? ` — ${detail}` : ''}`);
+}
+
+// --- Static payload checks: these prove the SHIPPED UI, not just the backend. ---
+// The RPC checks below exercise the service; these prove the Settings panel made it
+// into the archive, so a broken packaging step cannot pass on the service alone.
+const packedRendererPath = join(workDir, 'dist/renderer/renderer.js');
+const packedIndexPath = join(workDir, 'dist/renderer/index.html');
+const packedRenderer = existsSync(packedRendererPath) ? readFileSync(packedRendererPath, 'utf8') : '';
+const packedIndex = existsSync(packedIndexPath) ? readFileSync(packedIndexPath, 'utf8') : '';
+check('packaged renderer bundle present', packedRenderer.length > 0, `${packedRenderer.length} bytes`);
+check('Settings panel rendered in packaged renderer', packedRenderer.includes('renderSettings'));
+check(
+  'model preset editor + working directory shipped',
+  ['Base URL', '+ Add model', 'Working directory', 'Browse'].every((s) => packedRenderer.includes(s)),
+);
+check('Settings tab in packaged index.html', /data-panel="settings"/.test(packedIndex));
+
+// Byte-identity with dist/ rules out shipping a stale build.
+try {
+  const localRenderer = readFileSync('dist/renderer/renderer.js');
+  const packedRendererBuf = readFileSync(packedRendererPath);
+  check('packaged renderer byte-identical to dist/', localRenderer.equals(packedRendererBuf));
+} catch (err) {
+  check('packaged renderer byte-identical to dist/', false, String(err));
+}
+try {
+  const localService = readFileSync('dist/service.js');
+  const packedService = readFileSync(join(workDir, 'dist/service.js'));
+  check('packaged service byte-identical to dist/', localService.equals(packedService));
+} catch (err) {
+  check('packaged service byte-identical to dist/', false, String(err));
 }
 
 function freePort() {

@@ -171,7 +171,7 @@ src/
 | `npm run dist` | NSIS installer in `release/` via electron-builder |
 | `npm run verify:driver` | drives the real Windows driver against Calculator — UI Automation, coordinate clicks, resize |
 | `npm run verify:llm` | round-trips the `.env.llm` endpoint through the agent loop |
-| `npm run verify:installer` | boots the service out of the packaged `app.asar` and checks the shipped tools and driver |
+| `npm run verify:installer` | boots the service out of the packaged `app.asar` and checks the shipped tools, driver and Settings panel |
 
 ## Status and limits
 
