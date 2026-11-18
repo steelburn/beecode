@@ -70,8 +70,13 @@ export class SecretsStore {
 
   private save(): void {
     mkdirSync(dirname(this.file), { recursive: true });
-    writeFileSync(this.file, `${JSON.stringify(this.data, null, 2)}\n`, 'utf8');
-    // Best effort: POSIX honours 0600, Windows relies on the per-user profile ACL.
+    // `mode` is honoured only when the file is created, and that is the point: a brand-new
+    // secrets file must never exist with a loose mode, not even for the moment that a
+    // create-then-chmod sequence leaves it readable. A umask cannot weaken this: 0600 has no
+    // group/other bits for the mask to clear.
+    writeFileSync(this.file, `${JSON.stringify(this.data, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
+    // An existing file keeps the mode it already had through the write above, so tighten it
+    // here as well. Best effort: POSIX honours 0600, Windows relies on the per-user profile ACL.
     try {
       chmodSync(this.file, 0o600);
     } catch {

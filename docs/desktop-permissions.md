@@ -198,7 +198,7 @@ It rotates at 2 MB to `audit.jsonl.1` and is surfaced live in the **Activity** p
 ## Secret storage
 
 LLM API keys live in `~/.beecode/secrets.json` -- a plain JSON object keyed by model-preset
-id, written with mode `0600` and never placed in `config.json`:
+id, created with mode `0600` and never placed in `config.json`:
 
 ```json
 { "env-llm": "sk-..." }
@@ -207,6 +207,11 @@ id, written with mode `0600` and never placed in `config.json`:
 `config.json` is shareable user state, so a preset only ever *names* the environment variable
 that holds its key (`apiKeyEnv`); the value is resolved from `secrets.json`, then that
 variable, then `.env.llm`. `config.get` reports `hasKey` and never the secret itself.
+
+The mode is passed to the `open` that *creates* the file, not applied by a `chmod`
+afterwards, so a new secrets file is never briefly world-readable. A umask cannot weaken it:
+the mask only clears group/other bits, and `0600` has none. Files written before this change
+keep whatever mode they had until the next save, which tightens them.
 
 Plaintext is a deliberate trade-off -- no OS keychain or DPAPI wrapper. On POSIX `0600` is
 real. On Windows `chmod` only toggles the read-only attribute, and `fs.stat` reports a

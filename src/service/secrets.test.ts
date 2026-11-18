@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -8,6 +8,23 @@ import { SecretsStore } from './secrets';
 import { resolveApiKey, setSecretResolver } from './llm/types';
 
 const tmp = (): string => mkdtempSync(join(tmpdir(), 'beecode-secrets-'));
+
+test('secrets store: creates the file 0600 and tightens an existing one', {
+  skip: process.platform === 'win32' ? 'Windows reports a synthetic 0666; the profile ACL is the control there' : false,
+}, () => {
+  const home = tmp();
+  const file = join(home, 'secrets.json');
+  try {
+    new SecretsStore(file).set('p1', 'sk-created');
+    assert.equal(statSync(file).mode & 0o777, 0o600, 'a new secrets file is created 0600');
+
+    chmodSync(file, 0o644);
+    new SecretsStore(file).set('p1', 'sk-updated');
+    assert.equal(statSync(file).mode & 0o777, 0o600, 'an existing loose file is tightened on save');
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
 
 test('secrets store: set, get, persist and prune', () => {
   const home = tmp();
