@@ -47,3 +47,13 @@ All notable changes to beeCode will be documented in this file.
 - `tsc --noEmit` clean; the new `markdown.test.ts` and `chart.test.ts` suites pass; the policy
   suite covers the extra-root grant and an out-of-root escape; the service end-to-end suite
   accepts a valid `setCwd` and rejects a missing folder; build plus Electron smoke are green.
+
+### Documentation
+- **The Windows driver has its own page.** `docs/windows-driver.md` documents the process
+  model (one short-lived `powershell.exe` per action, no resident helper), why scripts are
+  delivered as a temp `.ps1` with `-File` instead of `-EncodedCommand`, the three injection
+  surfaces and how each is closed, how packaged (UWP) apps keep their own identity, the
+  ordered guard in front of `desktop_click`, and the limits the driver does not overcome
+  (UIPI, DPI virtualisation, no automated coverage of the real driver). `architecture.md`
+  linked the driver page and had its `-EncodedCommand` claim corrected, and
+  `desktop-permissions.md` + `README.md` now point at it.

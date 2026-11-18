@@ -3,6 +3,10 @@
 beeCode can drive a real desktop, so the permission model is the product feature — not a
 setting buried in a menu. **Deny by default** is the only mode.
 
+This page covers *who* may drive what and how that is enforced. How the driver actually
+executes an action — the process model, the script delivery, the guards in front of a
+click — is in [windows-driver.md](windows-driver.md).
+
 ## Where the policy lives
 
 `~/.beecode/policy.json`, editable in the app's **Permissions** panel (changes are written

@@ -111,8 +111,11 @@ tool  →  DesktopController  →  PolicyEngine  →  AuditLog
   on this process image*, audits the outcome and only then calls the driver.
 * `WindowsDriver` implements everything with short-lived PowerShell processes: User32
   P/Invoke for windows, UI Automation for controls, `SendKeys` for input, `System.Drawing`
-  for screenshots. Scripts are passed via `-EncodedCommand` (base64/UTF-16LE), so no user
-  text is ever interpolated into a command line; string literals are doubled-quoted.
+  for screenshots. Scripts are written to a temp `.ps1` and handed over with `-File`: the
+  base64 of `-EncodedCommand` overflows the 32767-character command line once the P/Invoke
+  preludes are added, and the file carries a UTF-8 BOM so PowerShell 5.1 decodes non-ASCII
+  titles correctly. String literals are doubled-quoted. The driver has its own page:
+  [windows-driver.md](windows-driver.md).
 * `MockDriver` implements the same interface in memory with a seeded window, so the whole
   pipeline — policy, controller, tools, tests — runs on any machine and in CI.
 

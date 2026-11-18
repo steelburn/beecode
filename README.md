@@ -95,7 +95,9 @@ A loopback Base URL (Ollama, LM Studio) may still run keyless.
 | Delegate | `subagent_delegate`, `agents_list`, `subagent_list`, `subagent_cancel` |
 | Remember | `todo_write` / `todo_read`, `memory_write` / `memory_read`, `ask_user` |
 
-Every one of those is gated. See [docs/desktop-permissions.md](docs/desktop-permissions.md).
+Every one of those is gated. See [docs/desktop-permissions.md](docs/desktop-permissions.md)
+for the policy, and [docs/windows-driver.md](docs/windows-driver.md) for how the driver
+executes an action on Windows.
 
 ## The permission model (deny by default)
 
