@@ -4,7 +4,16 @@ import type { AuditEntry, DesktopAction } from '../../shared/protocol';
 import type { AuditLog } from '../audit';
 import type { PolicyDecision, PolicyEngine } from '../policy';
 import { MockDriver } from './mockDriver';
-import type { DesktopDriver, ElementSelector, ScreenshotResult, UiNode, WindowInfo } from './types';
+import type {
+  DesktopDriver,
+  ElementSelector,
+  LaunchResult,
+  ScreenshotResult,
+  TextReadback,
+  TypeResult,
+  UiTreeResult,
+  WindowInfo,
+} from './types';
 import { WindowsDriver } from './windowsDriver';
 
 export class DesktopDeniedError extends Error {
@@ -92,9 +101,24 @@ export class DesktopController {
     }));
   }
 
+  /**
+   * app id → the window handle that app last resolved to. An `app` target that already
+   * resolved to a live window keeps addressing *that* window, so `type`, `read` and
+   * `screenshot` cannot drift onto a different instance of the same executable.
+   */
+  private readonly bound = new Map<string, string>();
+
+  private bind(appId: string | undefined, window: WindowInfo | undefined): void {
+    if (appId && window) this.bound.set(appId, window.handle);
+  }
+
+  private matchesRule(window: WindowInfo, rule: { exe: string[] }): boolean {
+    return rule.exe.some((exe) => exe.toLowerCase() === (window.exe ?? '').toLowerCase());
+  }
+
   /* ---------------------------------------------------------------- launch */
 
-  async launch(appId: string, args: string[] = []): Promise<{ processId?: number; exe: string; detail: string }> {
+  async launch(appId: string, args: string[] = []): Promise<LaunchResult & { app: string; exe: string }> {
     const rule = this.policy.findApp(appId);
     if (!rule) {
       this.record('launch', 'denied', { app: appId, detail: 'app not in permissible list' });
@@ -123,19 +147,21 @@ export class DesktopController {
       throw new DesktopDeniedError(decision.reason, decision);
     }
     const launched = await this.driver.launch(exePath, args);
+    // Bind the app to the window the driver actually found *after* the spawn: with
+    // single-instance apps (Win11 tabbed Notepad) that is the running window, not the
+    // spawner process, and every later `app` call must keep addressing it.
+    this.bind(rule.id, launched.window);
     this.record('launch', 'allowed', { app: rule.id, target: exePath, detail: launched.detail });
-    return { ...launched, exe: exePath };
+    return { ...launched, app: rule.id, exe: exePath };
   }
 
   /* ------------------------------------------------------- window actions */
 
   async focus(target: Target): Promise<WindowInfo> {
-    return this.windowAction('focus', target, async (w) => {
-      await this.driver.activate(w.handle);
-      return w;
-    });
+    // `activate` verifies the window is really foreground and returns it once the
+    // activation settled: that is the identity every later call must address.
+    return this.windowAction('focus', target, (w) => this.driver.activate(w.handle));
   }
-
   async close(target: Target): Promise<WindowInfo> {
     return this.windowAction('close', target, async (w) => {
       await this.driver.close(w.handle);
@@ -171,22 +197,23 @@ export class DesktopController {
     }));
   }
 
-  async read(target: Target, maxDepth = 6, maxNodes = 250): Promise<{ window: WindowInfo; nodes: UiNode[] }> {
-    return this.windowAction('read', target, async (w) => ({
-      window: w,
-      nodes: await this.driver.uiTree(w.handle, maxDepth, maxNodes),
-    }));
+  async read(target: Target, maxDepth = 6, maxNodes = 250): Promise<UiTreeResult> {
+    return this.windowAction('read', target, (w) =>
+      this.driver.uiTree(w.handle, maxDepth, maxNodes),
+    );
   }
-
   async invoke(target: Target, selector: ElementSelector): Promise<{ window: WindowInfo; detail: string }> {
     this.requireInput(target);
     return this.windowAction('invoke', target, async (w) => {
-      await this.driver.activate(w.handle);
-      const res = await this.driver.invoke(w.handle, selector);
-      return { window: w, detail: res.detail };
+      const live = await this.driver.activate(w.handle);
+      const res = await this.driver.invoke(live.handle, selector);
+      if (!res.ok) {
+        // A pattern that did not fire is a failed call, not a success with a note.
+        throw new DesktopError(`invoke failed on "${live.title}" [${live.handle}]: ${res.detail}`);
+      }
+      return { window: live, detail: res.detail };
     });
   }
-
   async setValue(
     target: Target,
     selector: ElementSelector,
@@ -194,33 +221,52 @@ export class DesktopController {
   ): Promise<{ window: WindowInfo; detail: string }> {
     this.requireInput(target);
     return this.windowAction('invoke', target, async (w) => {
-      await this.driver.activate(w.handle);
-      const res = await this.driver.setValue(w.handle, selector, value);
-      return { window: w, detail: res.detail };
+      const live = await this.driver.activate(w.handle);
+      const res = await this.driver.setValue(live.handle, selector, value);
+      if (!res.ok) {
+        throw new DesktopError(`set_value failed on "${live.title}" [${live.handle}]: ${res.detail}`);
+      }
+      return { window: live, detail: res.detail };
     });
   }
-
-  async typeText(target: Target, text: string): Promise<WindowInfo> {
+  async typeText(target: Target, text: string): Promise<{ window: WindowInfo; result: TypeResult }> {
     this.requireInput(target);
-    return this.windowAction('type', target, async (w) => {
-      await this.driver.typeText(w.handle, text);
-      return w;
-    });
+    // The driver proves the target (alive, foreground) *before* it sends anything and
+    // reads the document back afterwards, so the caller can see what actually landed.
+    return this.windowAction('type', target, async (w) => ({
+      window: w,
+      result: await this.driver.typeText(w.handle, text),
+    }));
   }
-
-  async sendKeys(target: Target, keys: string): Promise<WindowInfo> {
+  async sendKeys(target: Target, keys: string): Promise<{ window: WindowInfo; result: TypeResult }> {
     this.requireInput(target);
-    return this.windowAction('key', target, async (w) => {
-      await this.driver.sendKeys(w.handle, keys);
-      return w;
-    });
+    return this.windowAction('key', target, async (w) => ({
+      window: w,
+      result: await this.driver.sendKeys(w.handle, keys),
+    }));
+  }
+  /** Reads text back out of the window — the only proof a mutation landed. */
+  async readText(
+    target: Target,
+    selector?: ElementSelector,
+  ): Promise<{ window: WindowInfo; text: TextReadback }> {
+    return this.windowAction('read', target, async (w) => ({
+      window: w,
+      text: await this.driver.readText(w.handle, selector),
+    }));
   }
 
-  async screenshot(target: Target): Promise<ScreenshotResult & { window?: WindowInfo }> {
-    const shot = await this.windowAction('screenshot', target, async (w) => this.driver.screenshot(w.handle));
-    return shot;
+  /**
+   * Window-scoped capture. The driver either returns pixels of *this* window or throws
+   * with the reason it cannot (cloaked, minimised, hidden, no area) — there is no
+   * screen-region substitute left to fall back to.
+   */
+  async screenshot(target: Target): Promise<ScreenshotResult & { window: WindowInfo }> {
+    return this.windowAction('screenshot', target, async (w) => ({
+      window: w,
+      ...(await this.driver.screenshot(w.handle)),
+    }));
   }
-
   /* -------------------------------------------------------------- internals */
 
   private requireInput(target: Target): void {
@@ -272,7 +318,13 @@ export class DesktopController {
   private async resolveWindow(target: Target): Promise<WindowInfo> {
     if (target.handle) {
       const found = await this.driver.resolveWindow(target.handle);
-      if (!found) throw new DesktopError(`window ${target.handle} no longer exists`);
+      if (!found) {
+        throw new DesktopError(
+          `window handle ${target.handle} is gone — no window exists with that handle any more. ` +
+            'Call desktop_list_windows again; this call deliberately does not fall back to another ' +
+            'window.',
+        );
+      }
       return found;
     }
     if (!target.app) throw new DesktopError('either `app` or `handle` is required');
@@ -286,24 +338,52 @@ export class DesktopController {
         requiresApproval: false,
       });
     }
+
+    // Sticky resolution: an app that already resolved to a live window keeps that
+    // window, so a later call cannot silently address a sibling instance.
+    const boundHandle = this.bound.get(rule.id);
+    if (boundHandle) {
+      const bound = await this.driver.resolveWindow(boundHandle);
+      if (bound && this.matchesRule(bound, rule)) return bound;
+      this.bound.delete(rule.id);
+    }
+
     const windows = await this.driver.listWindows();
-    const matches = windows.filter((w) =>
-      rule.exe.some((exe) => exe.toLowerCase() === (w.exe ?? '').toLowerCase()),
-    );
+    const matches = windows.filter((w) => this.matchesRule(w, rule));
     const titled = rule.windowTitlePattern
       ? matches.filter((w) => new RegExp(rule.windowTitlePattern!, 'i').test(w.title))
       : matches;
-    const chosen = titled.find((w) => w.isForeground) ?? titled[0];
-    if (!chosen) {
+    if (!titled.length) {
       throw new DesktopError(
-        `"${rule.id}" is not running — launch it with desktop_launch first (windows seen: ${
+        `"${target.app}" is not running — launch it with desktop_launch first (windows seen: ${
           windows.length ? windows.map((w) => w.exe).join(', ') : 'none'
         })`,
       );
     }
-    return chosen;
+    const foreground = titled.filter((w) => w.isForeground);
+    if (foreground.length === 1) {
+      this.bind(rule.id, foreground[0]);
+      return foreground[0];
+    }
+    if (titled.length === 1) {
+      this.bind(rule.id, titled[0]);
+      return titled[0];
+    }
+    // Several windows, none of them foreground: refusing is the only safe answer —
+    // guessing here is what let keystrokes land in a document nobody asked about.
+    throw new DesktopError(
+      `"${target.app}" has ${titled.length} candidate windows and none is in the foreground — ` +
+        'pass an explicit handle from desktop_list_windows. Candidates:\n' +
+        titled
+          .map(
+            (w) =>
+              `  ${w.handle}  pid ${w.processId}  "${w.title}"${w.isMinimized ? ' (minimized)' : ''}${
+                w.isCloaked ? ' (cloaked)' : ''
+              }`,
+          )
+          .join('\n'),
+    );
   }
-
   /** Locate an executable on PATH and the usual Windows install roots. */
   private resolveExecutable(names: string[], allowedPaths?: string[]): string | undefined {
     const dirs: string[] = [];

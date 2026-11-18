@@ -1,6 +1,17 @@
-import type { DesktopDriver, ElementSelector, ScreenshotResult, UiNode, WindowInfo } from './types';
-import { clampSize } from './types';
-import { assertSafeKeyChord, escapeSendKeys, parseJsonOutput, PowerShellError, runPowerShell } from './powershell';
+import { basename } from 'node:path';
+import type {
+  DesktopDriver,
+  ElementSelector,
+  LaunchResult,
+  ScreenshotResult,
+  TextReadback,
+  TypeResult,
+  UiNode,
+  UiTreeResult,
+  WindowInfo,
+} from './types';
+import { clampSize, isPlausibleBounds, BOUNDS_LIMIT, MAX_TYPED_CHARS, TEXT_PREFIX_LIMIT } from './types';
+import { assertSafeKeyChord, chunkSendKeys, parseJsonOutput, PowerShellError, runPowerShell } from './powershell';
 
 /** PowerShell single-quoted string literal with doubling, so user text can never break out. */
 function psLiteral(value: string): string {
@@ -150,22 +161,165 @@ public static class BeeWindowBox {
 
 const isWindows = process.platform === 'win32';
 
+/**
+ * One window record as the PowerShell layer emits it. Everything downstream derives from
+ * this shape, so the identity fields and the state flags are always read from the same
+ * enumeration — never re-derived per call.
+ */
 interface RawWindow {
   handle: string;
-  title: string;
-  processId: number;
+  title?: string;
+  processId?: number;
   exe?: string;
+  className?: string;
   isForeground?: boolean;
+  isVisible?: boolean;
+  isMinimized?: boolean;
+  /** Raw DWMWA_CLOAKED value: 0 visible on this desktop, 1 suspended app, 2 other desktop. */
+  cloaked?: number;
+  offscreen?: boolean;
+  bounds?: { x?: number; y?: number; width?: number; height?: number };
 }
 
+/** One record plus the raw shape used by the launch handoff probe. */
+interface RawLaunch {
+  spawner?: number;
+  spawnerAlive?: boolean;
+  /** The window belongs to a process the launcher activated (packaged/MSIX app). */
+  activated?: boolean;
+  /** Several new windows appeared at once: the launch target is ambiguous. */
+  ambiguous?: string[];
+  created?: RawWindow | null;
+  existing?: RawWindow | null;
+}
+
+
 /**
- * Resolves the automation root for a window and the *real* app process behind it.
+ * Window inspection, enumeration and automation-root helpers shared by every observation
+ * call.
  *
- * A hosted (UWP) window belongs to ApplicationFrameHost.exe: the visible frame is the
- * top-level HWND, while the app process and the automation tree sit behind a child window.
- * Everything below handles that transparently so policy matching sees the real executable.
+ * Two rules live here and nowhere else:
+ *
+ * 1. A window record is produced by **one** enumeration (`Get-WindowRecords`) that carries
+ *    identity (`handle`, `processId`, `exe`, `className`, `title`) *and* state (visible,
+ *    minimized, cloaked, offscreen). `desktop_list_windows` filtered or not, `focus`,
+ *    `launch` and every handle lookup all read from it, so they cannot disagree.
+ * 2. A hosted (UWP/packaged) window belongs to ApplicationFrameHost.exe: the visible frame
+ *    is the top-level HWND while the app process sits behind it. Resolving that is fine;
+ *    substituting a *different window* for the requested handle is not, so
+ *    `Get-AutomationRoot` never falls back to "some window of this process".
  */
 const PS_WINDOW_HELPERS = `
+Add-Type -TypeDefinition @'
+using System;
+using System.Text;
+using System.Runtime.InteropServices;
+
+public static class BeeObserve {
+  [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
+
+  public class Info {
+    public string Title = "";
+    public string ClassName = "";
+    public bool Visible;
+    public bool Iconic;
+    public bool ToolWindow;
+    public bool Candidate;
+    public bool Offscreen;
+    public int Cloaked;
+    public int X, Y, Width, Height;
+  }
+
+  [DllImport("user32.dll")] static extern bool IsWindow(IntPtr h);
+  [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
+  [DllImport("user32.dll")] static extern bool IsIconic(IntPtr h);
+  [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr h, out RECT r);
+  [DllImport("user32.dll")] static extern int GetWindowLong(IntPtr h, int index);
+  [DllImport("user32.dll")] static extern int GetSystemMetrics(int index);
+  [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr h, int cmd);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassNameW(IntPtr h, StringBuilder sb, int max);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowTextW(IntPtr h, StringBuilder sb, int max);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern IntPtr SendMessageTimeoutW(IntPtr h, uint msg, IntPtr w, StringBuilder l, uint flags, uint timeout, out IntPtr result);
+  [DllImport("user32.dll", EntryPoint = "PrintWindow")] static extern bool PrintWindowNative(IntPtr h, IntPtr hdc, uint flags);
+  [DllImport("dwmapi.dll")] static extern int DwmGetWindowAttribute(IntPtr h, int attr, out int value, int size);
+
+  /** DWMWA_CLOAKED: 1 = suspended app, 2 = on another virtual desktop, 3/4 = inherited. */
+  public static int Cloaked(IntPtr h) {
+    int v = 0;
+    try { if (DwmGetWindowAttribute(h, 14, out v, 4) != 0) return 0; } catch { return 0; }
+    return v;
+  }
+
+  /**
+   * Title via SendMessageTimeout(WM_GETTEXT) with SMTO_ABORTIFHUNG: plain GetWindowText
+   * blocks for as long as a neighbouring hung application takes to answer, which would make
+   * one frozen app look like a frozen observation layer.
+   */
+  static string SafeTitle(IntPtr h) {
+    IntPtr res;
+    try {
+      var sb = new StringBuilder(512);
+      SendMessageTimeoutW(h, 0x000D, (IntPtr)512, sb, 0x0002, 150, out res);
+      if (sb.Length > 0) return sb.ToString();
+      var w = new StringBuilder(512);
+      GetWindowTextW(h, w, 512);
+      return w.ToString();
+    } catch { return ""; }
+  }
+
+  /** The window's own text (WM_GETTEXT) — the last read-back resort for classic Win32 controls. */
+  public static string WindowText(IntPtr h) {
+    IntPtr res;
+    try {
+      var sb = new StringBuilder(65536);
+      SendMessageTimeoutW(h, 0x000D, (IntPtr)65536, sb, 0x0002, 250, out res);
+      return sb.ToString();
+    } catch { return ""; }
+  }
+
+  /** PW_RENDERFULLCONTENT: render the window's own composition surface, covered or not. */
+  public static bool PrintWindow(IntPtr h, IntPtr hdc) {
+    return PrintWindowNative(h, hdc, 2);
+  }
+
+  public static bool Restore(IntPtr h) {
+    return ShowWindow(h, 9);
+  }
+
+  public static Info Describe(IntPtr h) {
+    var info = new Info();
+    info.Visible = IsWindowVisible(h);
+    info.Iconic = IsIconic(h);
+    int ex = GetWindowLong(h, -20);
+    info.ToolWindow = (ex & 0x80) != 0;
+    info.Cloaked = Cloaked(h);
+    try {
+      var cls = new StringBuilder(256);
+      GetClassNameW(h, cls, 256);
+      info.ClassName = cls.ToString();
+    } catch { }
+    RECT r;
+    if (GetWindowRect(h, out r)) {
+      info.X = r.Left; info.Y = r.Top;
+      info.Width = r.Right - r.Left; info.Height = r.Bottom - r.Top;
+    }
+    int left = GetSystemMetrics(76);
+    int top = GetSystemMetrics(77);
+    int right = left + GetSystemMetrics(78);
+    int bottom = top + GetSystemMetrics(79);
+    info.Offscreen = info.Width <= 0 || info.Height <= 0 ||
+      r.Right <= left || r.Bottom <= top || r.Left >= right || r.Top >= bottom;
+    // A candidate is a window a user could point at. Hidden, non-cloaked frames (Win11
+    // Notepad leaves one behind per document it merged) are deliberately NOT listed: they
+    // have no pixels and no automation tree, so naming them would invite unobservable work.
+    bool worthTitle = !info.ToolWindow && !info.Offscreen && (info.Visible || info.Cloaked != 0);
+    info.Title = worthTitle ? SafeTitle(h) : "";
+    info.Candidate = worthTitle && info.Title.Length > 0;
+    return info;
+  }
+}
+'@
+
 function Resolve-AppPid([IntPtr]$h) {
   $procId = [BeeNative]::PidOf($h)
   $p = Get-Process -Id $procId -ErrorAction SilentlyContinue
@@ -182,44 +336,250 @@ function Exe-OfPid([int]$procId) {
   return ''
 }
 
-function New-WindowRecord([IntPtr]$h, [int64]$fg) {
+function New-WindowRecord([IntPtr]$h, [int64]$fg, $st) {
+  if ($st -eq $null) { $st = [BeeObserve]::Describe($h) }
   $procId = Resolve-AppPid $h
   return [pscustomobject]@{
     handle = [string]$h.ToInt64()
-    title = [BeeNative]::Title($h)
+    title = [string]$st.Title
     processId = [int]$procId
     exe = (Exe-OfPid $procId)
+    className = [string]$st.ClassName
     isForeground = ($h.ToInt64() -eq $fg)
+    isVisible = [bool]$st.Visible
+    isMinimized = [bool]$st.Iconic
+    cloaked = [int]$st.Cloaked
+    offscreen = [bool]$st.Offscreen
+    bounds = @{ x = [int]$st.X; y = [int]$st.Y; width = [int]$st.Width; height = [int]$st.Height }
   }
+}
+
+# The single enumeration behind list_windows, focus, launch and every handle lookup.
+function Get-WindowRecords {
+  $fg = [BeeNative]::GetForegroundWindow().ToInt64()
+  $items = New-Object System.Collections.ArrayList
+  $collector = [BeeNative+BeeEnumProc]{
+    param($h, $l)
+    $st = [BeeObserve]::Describe($h)
+    if ($st.Candidate) { [void]$items.Add((New-WindowRecord $h $fg $st)) }
+    return $true
+  }
+  [void][BeeNative]::EnumWindows($collector, [IntPtr]::Zero)
+  return $items
+}
+
+function Find-WindowRecord([IntPtr]$h) {
+  $st = [BeeObserve]::Describe($h)
+  return (New-WindowRecord $h ([BeeNative]::GetForegroundWindow().ToInt64()) $st)
 }
 
 function Get-AutomationRoot([IntPtr]$h, [int]$realPid) {
-  $root = [System.Windows.Automation.AutomationElement]::FromHandle($h)
-  $count = 1
-  try { $count = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition).Count } catch { }
-  if ($count -gt 1) { return $root }
-
-  # Hosted apps (UWP): the frame exposes nothing, so hop to the child window that hosts
-  # the real app process, then to the process-scoped automation element of that process.
+  $root = $null
+  try { $root = [System.Windows.Automation.AutomationElement]::FromHandle($h) } catch { }
+  if ($root -ne $null) {
+    $count = 0
+    try { $count = $root.FindAll([System.Windows.Automation.TreeScope]::Children, [System.Windows.Automation.Condition]::TrueCondition).Count } catch { }
+    if ($count -gt 0) { return $root }
+  }
+  # Hosted apps (UWP/packaged): the frame itself exposes nothing, so hop to the child window
+  # that hosts the content island. Same window, one level down — never a different one.
   $child = [BeeNative]::ChildHandle($h)
   if ($child -ne [IntPtr]::Zero) {
+    $alt = $null
+    try { $alt = [System.Windows.Automation.AutomationElement]::FromHandle($child) } catch { }
+    if ($alt -ne $null) {
+      $n = 0
+      try { $n = $alt.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition).Count } catch { }
+      if ($n -gt 0) { return $alt }
+    }
+  }
+  throw ('no UI Automation tree for window handle ' + $h.ToInt64() + ': the window is hidden, minimized or has not been laid out yet')
+}
+
+# A lazily realised WinUI/XAML tree can answer with the root only for a moment after a
+# window appears. Wait for it, but surface the failure instead of pretending the window
+# has no controls.
+function Wait-AutomationRoot([IntPtr]$h, [int]$realPid, [int]$timeoutMs) {
+  $deadline = (Get-Date).AddMilliseconds($timeoutMs)
+  while ($true) {
+    try { return (Get-AutomationRoot $h $realPid) } catch {
+      if ((Get-Date) -ge $deadline) { throw }
+    }
+    Start-Sleep -Milliseconds 150
+  }
+}
+
+# Root at index 0 followed by every descendant, so an index taken from desktop_ui_tree
+# (whose node 0 is the window root) selects the same element when it is replayed.
+function Get-TreeList($root) {
+  $list = New-Object System.Collections.ArrayList
+  if ($root -eq $null) { return $list }
+  [void]$list.Add($root)
+  $found = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
+  foreach ($e in $found) { [void]$list.Add($e) }
+  return $list
+}
+
+# Text read-back: TextPattern first (rich editors such as Win11 Notepad's RichEditD2DPT do
+# not advertise the IsTextPatternAvailable flag at all, they simply answer the pattern),
+# then ValuePattern, then the window's own WM_GETTEXT.
+function Normalize-Newlines($text) {
+  if ($text -eq $null) { return $text }
+  return $text.Replace([string][char]13 + [string][char]10, [string][char]10).Replace([string][char]13, [string][char]10)
+}
+
+function Read-Text([IntPtr]$h, $element, [int]$limit) {
+  if ($element -ne $null) {
     try {
-      $alt = [System.Windows.Automation.AutomationElement]::FromHandle($child)
-      if ($alt -ne $null -and $alt.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition).Count -gt 1) {
-        return $alt
+      $tp = $element.GetCurrentPattern([System.Windows.Automation.TextPattern]::Pattern)
+      $txt = $tp.DocumentRange.GetText($limit + 1)
+      if ($txt -ne $null) {
+        $cur = $element.Current
+        $txt = Normalize-Newlines $txt
+      $len = $txt.Length
+        $trunc = $len -gt $limit
+        if ($trunc) { $txt = $txt.Substring(0, $limit) }
+        return @{
+          handle = [string]$h.ToInt64()
+          controlType = ([string]$cur.ControlType.ProgrammaticName).Replace('ControlType.', '')
+          automationId = [string]$cur.AutomationId
+          name = [string]$cur.Name
+          text = $txt
+          length = $len
+          truncated = $trunc
+          source = 'text-pattern'
+        }
+      }
+    } catch { }
+    try {
+      $vp = $element.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
+      $val = [string]$vp.Current.Value
+      if ($val -ne $null) {
+        $cur = $element.Current
+        $val = Normalize-Newlines $val
+      $len = $val.Length
+        $trunc = $len -gt $limit
+        if ($trunc) { $val = $val.Substring(0, $limit) }
+        return @{
+          handle = [string]$h.ToInt64()
+          controlType = ([string]$cur.ControlType.ProgrammaticName).Replace('ControlType.', '')
+          automationId = [string]$cur.AutomationId
+          name = [string]$cur.Name
+          text = $val
+          length = $len
+          truncated = $trunc
+          source = 'value'
+        }
       }
     } catch { }
   }
-  if ($realPid -ne 0) {
-    try {
-      $cond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ProcessIdProperty, $realPid)
-      $byPid = [System.Windows.Automation.AutomationElement]::RootElement.FindFirst([System.Windows.Automation.TreeScope]::Children, $cond)
-      if ($byPid -ne $null) { return $byPid }
-    } catch { }
+  $windowText = [BeeObserve]::WindowText($h)
+  if ($windowText.Length -gt 0) {
+    $windowText = Normalize-Newlines $windowText
+    $len = $windowText.Length
+    $trunc = $len -gt $limit
+    if ($trunc) { $windowText = $windowText.Substring(0, $limit) }
+    return @{
+      handle = [string]$h.ToInt64()
+      controlType = 'Window'
+      automationId = ''
+      name = ''
+      text = $windowText
+      length = $len
+      truncated = $trunc
+      source = 'wm-gettext'
+    }
   }
-  return $root
+  return $null
+}
+
+function Find-TextElement($root) {
+  if ($root -eq $null) { return $null }
+  $all = Get-TreeList $root
+  $plain = $null
+  for ($i = 0; $i -lt $all.Count; $i++) {
+    $e = $all.Item($i)
+    $ok = $false
+    try { [void]$e.GetCurrentPattern([System.Windows.Automation.TextPattern]::Pattern); $ok = $true } catch { }
+    if (-not $ok) { continue }
+    $ctype = ''
+    try { $ctype = ([string]$e.Current.ControlType.ProgrammaticName).Replace('ControlType.', '') } catch { }
+    if ($ctype -eq 'Document' -or $ctype -eq 'Edit') { return $e }
+    if ($plain -eq $null) { $plain = $e }
+  }
+  return $plain
 }
 `;
+
+/**
+ * Proves the target before a keyboard mutation and refuses when the proof fails.
+ *
+ * Sending keys is global: `SendKeys` types into whatever owns the keyboard. If the window
+ * did not actually come to the foreground the keystrokes land in another application — a
+ * data-safety problem, not a failed call — so this throws *before* anything is sent and
+ * says so.
+ */
+function psForegroundGuard(handle: string, action: 'typed' | 'sent'): string {
+  return `$h = [IntPtr][int64]${handle}
+if (-not [BeeNative]::IsWindow($h)) { throw 'window handle ${handle} is no longer valid — nothing was ${action}' }
+$st = [BeeObserve]::Describe($h)
+if ($st.Cloaked -ne 0) { throw ('window ' + $h.ToInt64() + ' is cloaked (cloaked=' + $st.Cloaked + '): it is on another virtual desktop or belongs to a suspended app, so keyboard input cannot reach it — nothing was ${action}') }
+if ($st.Iconic) { [void][BeeObserve]::Restore($h) }
+$deadline = (Get-Date).AddMilliseconds(2000)
+while ([BeeNative]::GetForegroundWindow().ToInt64() -ne $h.ToInt64()) {
+  if ((Get-Date) -ge $deadline) {
+    throw ('refusing to send keys: ' + $st.Title + ' [' + $h.ToInt64() + '] did not become the foreground window within 2000ms, so the keystrokes would have gone to another application — nothing was ${action}')
+  }
+  [void][BeeNative]::ForceForeground($h)
+  Start-Sleep -Milliseconds 120
+}`;
+}
+
+function clampCount(value: number, min: number, max: number, fallback: number): number {
+  if (!Number.isFinite(value)) return fallback;
+  return Math.max(min, Math.min(max, Math.round(value)));
+}
+
+/**
+ * Defence in depth for geometry that reached JS anyway: a rect that is not a rectangle is
+ * dropped and the node marked offscreen, so no caller can click at x: -31994 believing it
+ * is a real screen position.
+ */
+function sanitizeNodes(nodes: UiNode[]): UiNode[] {
+  return nodes.map((node) => {
+    const bounds = isPlausibleBounds(node.bounds) ? node.bounds : undefined;
+    return { ...node, bounds, isOffscreen: Boolean(node.isOffscreen) || !bounds };
+  });
+}
+
+/**
+ * Turns "I sent keys, it returned ok" into "I sent keys, and here is what the target now
+ * contains". Newlines land as CRLF in most editors, so `delta` may exceed the number of
+ * characters typed; `appended` compares the normalised text instead.
+ */
+function mutationResult(
+  input: string,
+  before: TextReadback | undefined,
+  after: TextReadback | undefined,
+): TypeResult {
+  const normalize = (value: string) => value.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  const wanted = normalize(input);
+  const observed = after ? normalize(after.text) : '';
+  const comparable =
+    after && after.truncated && wanted.length > observed.length ? wanted.slice(0, observed.length) : wanted;
+  const delta = before && after ? after.length - before.length : undefined;
+  const appended = observed.length > 0 && comparable.length > 0 && observed.endsWith(comparable);
+  return {
+    typed: input.length,
+    readback: after,
+    lengthBefore: before?.length,
+    lengthAfter: after?.length,
+    delta,
+    appended,
+    verified: Boolean(after) && (appended || (delta !== undefined && delta !== 0)),
+  };
+}
+
 
 /**
  * Windows desktop driver: window enumeration and activation through User32 P/Invoke,
@@ -236,22 +596,14 @@ export class WindowsDriver implements DesktopDriver {
 
   async listWindows(): Promise<WindowInfo[]> {
     this.assertPlatform();
-    const raw = await runPowerShell(`
+    const raw = await runPowerShell(
+      `
 ${PS_WINDOW_HELPERS}
-$fg = [BeeNative]::GetForegroundWindow().ToInt64()
-$items = New-Object System.Collections.ArrayList
-$collector = [BeeNative+BeeEnumProc]{
-  param($h, $l)
-  if (-not [BeeNative]::IsWindowVisible($h)) { return $true }
-  $title = [BeeNative]::Title($h)
-  if ([string]::IsNullOrWhiteSpace($title)) { return $true }
-  [void]$items.Add((New-WindowRecord $h $fg))
-  return $true
-}
-[void][BeeNative]::EnumWindows($collector, [IntPtr]::Zero)
-ConvertTo-Json -InputObject @($items) -Compress -Depth 4
-`);
-    return this.toWindows(parseJsonOutput<RawWindow[] | RawWindow>(raw));
+ConvertTo-Json -InputObject @(Get-WindowRecords) -Compress -Depth 5
+`,
+      { timeoutMs: 30_000 },
+    );
+    return this.toWindows(parseJsonOutput<RawWindow[]>(raw));
   }
 
   async foregroundWindow(): Promise<WindowInfo | undefined> {
@@ -259,39 +611,72 @@ ConvertTo-Json -InputObject @($items) -Compress -Depth 4
     const raw = await runPowerShell(`
 ${PS_WINDOW_HELPERS}
 $fg = [BeeNative]::GetForegroundWindow()
-if ($fg -eq [IntPtr]::Zero) { ConvertTo-Json -InputObject @() -Compress; exit }
-ConvertTo-Json -InputObject @((New-WindowRecord $fg $fg.ToInt64())) -Compress
+if ($fg -eq [IntPtr]::Zero) { ConvertTo-Json -InputObject @() -Compress; exit 0 }
+ConvertTo-Json -InputObject @((Find-WindowRecord $fg)) -Compress -Depth 5
 `);
     return this.toWindows(parseJsonOutput<RawWindow[]>(raw))[0];
   }
 
+  /**
+   * Exact lookup by handle — the only way a handle becomes a window again.
+   *
+   * There is deliberately no title/foreground/pid fallback here: a dead handle has to fail
+   * so the caller learns the window is gone. Falling back is how a request for one window
+   * silently became a request for another (and how keystrokes reached a document nobody
+   * meant to touch).
+   */
   async resolveWindow(handle: string): Promise<WindowInfo | undefined> {
     this.assertPlatform();
     const h = this.handle(handle);
-    const raw = await runPowerShell(`
+    const raw = await runPowerShell(
+      `
 ${PS_WINDOW_HELPERS}
 $h = [IntPtr][int64]${h}
-if (-not [BeeNative]::IsWindow($h)) { ConvertTo-Json -InputObject @() -Compress; exit }
-ConvertTo-Json -InputObject @((New-WindowRecord $h ([BeeNative]::GetForegroundWindow().ToInt64()))) -Compress
-`);
-    return this.toWindows(parseJsonOutput<RawWindow[]>(raw))[0];
+if (-not [BeeNative]::IsWindow($h)) { ConvertTo-Json -InputObject @() -Compress; exit 0 }
+ConvertTo-Json -InputObject @((Find-WindowRecord $h)) -Compress -Depth 5
+`,
+      { timeoutMs: 30_000 },
+    );
+    const window = this.toWindows(parseJsonOutput<RawWindow[]>(raw))[0];
+    // The record must describe the handle that was asked for — anything else is a bug here,
+    // not something to hand back to the caller.
+    return window && window.handle === h ? window : undefined;
   }
 
-  async activate(handle: string): Promise<void> {
+  /**
+   * Brings the window to the foreground and returns its identity *after* activation, with
+   * `isForeground` verified. A caller that gets a window back owns the keyboard; a caller
+   * that gets an error knows it does not.
+   */
+  async activate(handle: string): Promise<WindowInfo> {
     this.assertPlatform();
     const h = this.handle(handle);
-    const raw = await runPowerShell(`
+    const raw = await runPowerShell(
+      `
+${PS_WINDOW_HELPERS}
 $h = [IntPtr][int64]${h}
-if (-not [BeeNative]::IsWindow($h)) { throw 'window handle is no longer valid' }
-$ok = [BeeNative]::ForceForeground($h)
-Start-Sleep -Milliseconds 200
-if (-not $ok) { $ok = ([BeeNative]::GetForegroundWindow().ToInt64() -eq $h.ToInt64()) }
-ConvertTo-Json -InputObject @{ ok = $ok } -Compress
-`);
-    const res = parseJsonOutput<{ ok: boolean }>(raw);
-    if (!res.ok) throw new PowerShellError('could not bring the window to the foreground (Windows focus lock)', '');
+if (-not [BeeNative]::IsWindow($h)) { throw 'window handle ${h} is no longer valid' }
+$st = [BeeObserve]::Describe($h)
+if ($st.Cloaked -ne 0) { throw ('window ' + $h.ToInt64() + ' is cloaked (cloaked=' + $st.Cloaked + '): it is on another virtual desktop or belongs to a suspended app and cannot be activated from here') }
+if ($st.Iconic) { [void][BeeObserve]::Restore($h) }
+$deadline = (Get-Date).AddMilliseconds(2500)
+while ([BeeNative]::GetForegroundWindow().ToInt64() -ne $h.ToInt64()) {
+  if ((Get-Date) -ge $deadline) {
+    throw ('the window did not come to the foreground within 2500ms: ' + $st.Title + ' [' + $h.ToInt64() + ']')
   }
-
+  [void][BeeNative]::ForceForeground($h)
+  Start-Sleep -Milliseconds 120
+}
+ConvertTo-Json -InputObject @((Find-WindowRecord $h)) -Compress -Depth 5
+`,
+      { timeoutMs: 30_000 },
+    );
+    const window = this.toWindows(parseJsonOutput<RawWindow[]>(raw))[0];
+    if (!window || window.handle !== h) {
+      throw new PowerShellError(`window handle ${h} changed identity during desktop_focus`, '');
+    }
+    return window;
+  }
   async close(handle: string): Promise<void> {
     this.assertPlatform();
     const h = this.handle(handle);
@@ -383,67 +768,184 @@ ConvertTo-Json -InputObject @{ width = $size[0]; height = $size[1] } -Compress
     return parseJsonOutput<{ width: number; height: number }>(raw);
   }
 
-  async uiTree(handle: string, maxDepth: number, maxNodes: number): Promise<UiNode[]> {
+  /**
+   * Deterministic automation-tree read.
+   *
+   * Three things the old walk got wrong and this one does not: it resolves the tree from
+   * *the given handle* (never from a pid or the foreground window), it forces a lazily
+   * realised WinUI/XAML tree to materialise before reading it, and it reports a timeout as
+   * an error instead of handing back a one-node window that looks like an empty app.
+   */
+  async uiTree(handle: string, maxDepth: number, maxNodes: number): Promise<UiTreeResult> {
     this.assertPlatform();
     const h = this.handle(handle);
-    const depth = Math.max(1, Math.floor(maxDepth));
-    const nodes = Math.max(1, Math.floor(maxNodes));
-    const raw = await runPowerShell(`
+    const depth = clampCount(maxDepth, 1, 24, 4);
+    const nodes = clampCount(maxNodes, 1, 4000, 200);
+    const budgetMs = clampCount(depth * nodes * 25, 10_000, 60_000, 15_000);
+    const raw = await runPowerShell(
+      `
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
 ${PS_WINDOW_HELPERS}
 $h = [IntPtr][int64]${h}
-if (-not [BeeNative]::IsWindow($h)) { throw 'window handle is no longer valid' }
-$root = Get-AutomationRoot $h (Resolve-AppPid $h)
-if ($root -eq $null) { throw 'no automation element for this window' }
-$out = New-Object System.Collections.ArrayList
-$walker = [System.Windows.Automation.TreeWalker]::RawViewWalker
+if (-not [BeeNative]::IsWindow($h)) { throw 'window handle ${h} is no longer valid' }
+$root = Wait-AutomationRoot $h (Resolve-AppPid $h) 2500
+$script:deadline = (Get-Date).AddMilliseconds(${budgetMs})
 $script:count = 0
-function Walk([System.Windows.Automation.AutomationElement]$node, [int]$depth) {
-  if ($node -eq $null -or $depth -gt ${depth} -or $script:count -ge ${nodes}) { return }
+$script:expanded = 0
+
+# A pattern has to be *answered* to count. Providers such as Win11 Notepad's RichEdit leave
+# the optional IsXxxPatternAvailable properties null, which is how a Document element with
+# a working TextPattern still reported "patterns": [] and "value": null.
+function Test-Pattern($node, $advertised, $pattern) {
+  if ($advertised -eq $false) { return $false }
+  try { [void]$node.GetCurrentPattern($pattern); return $true } catch { return $false }
+}
+
+function New-UiNodeJson($node, [int]$index, [int]$d) {
+  $cur = $node.Current
+  $ctype = ''
+  try { $ctype = ([string]$cur.ControlType.ProgrammaticName).Replace('ControlType.', '') } catch { }
+  $flags = @{ invoke = $null; toggle = $null; select = $null; expand = $null; range = $null }
+  try { $flags.invoke = $cur.IsInvokePatternAvailable } catch { }
+  try { $flags.toggle = $cur.IsTogglePatternAvailable } catch { }
+  try { $flags.select = $cur.IsSelectionItemPatternAvailable } catch { }
+  try { $flags.expand = $cur.IsExpandCollapsePatternAvailable } catch { }
+  try { $flags.range = $cur.IsRangeValuePatternAvailable } catch { }
+  $patterns = @()
+  if (Test-Pattern $node $flags.invoke ([System.Windows.Automation.InvokePattern]::Pattern)) { $patterns += 'invoke' }
+  if (Test-Pattern $node $flags.toggle ([System.Windows.Automation.TogglePattern]::Pattern)) { $patterns += 'toggle' }
+  if (Test-Pattern $node $flags.select ([System.Windows.Automation.SelectionItemPattern]::Pattern)) { $patterns += 'select' }
+  if (Test-Pattern $node $flags.expand ([System.Windows.Automation.ExpandCollapsePattern]::Pattern)) { $patterns += 'expand' }
+  if (Test-Pattern $node $flags.range ([System.Windows.Automation.RangeValuePattern]::Pattern)) { $patterns += 'range' }
+
+  $text = $null; $tlen = 0; $ttrunc = $false; $val = $null
   try {
-    $cur = $node.Current
-    $rect = $cur.BoundingRectangle
-    $patterns = @()
-    if ($cur.IsInvokePatternAvailable) { $patterns += 'invoke' }
-    if ($cur.IsTogglePatternAvailable) { $patterns += 'toggle' }
-    if ($cur.IsValuePatternAvailable) { $patterns += 'value' }
-    if ($cur.IsSelectionItemPatternAvailable) { $patterns += 'select' }
-    if ($cur.IsExpandCollapsePatternAvailable) { $patterns += 'expand' }
-    $val = $null
-    if ($cur.IsValuePatternAvailable) {
-      try { $val = $node.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).Current.Value } catch { }
+    $tp = $node.GetCurrentPattern([System.Windows.Automation.TextPattern]::Pattern)
+    if ($patterns -notcontains 'text') { $patterns += 'text' }
+    $probe = $tp.DocumentRange.GetText(${TEXT_PREFIX_LIMIT} + 1)
+    if ($probe -ne $null) {
+      $tlen = $probe.Length
+      if ($tlen -gt ${TEXT_PREFIX_LIMIT}) { $ttrunc = $true; $text = $probe.Substring(0, ${TEXT_PREFIX_LIMIT}) } else { $text = $probe }
     }
-    $ctype = ''
-    try { $ctype = ([string]$cur.ControlType.ProgrammaticName).Replace('ControlType.', '') } catch { }
-    [void]$out.Add([pscustomobject]@{
-      index = $script:count
-      name = [string]$cur.Name
-      controlType = $ctype
-      automationId = [string]$cur.AutomationId
-      enabled = [bool]$cur.IsEnabled
-      patterns = $patterns
-      value = $val
-      bounds = @{
-        x = [int]$rect.X; y = [int]$rect.Y
-        width = [int]$rect.Width; height = [int]$rect.Height
-      }
-    })
-    $script:count = $script:count + 1
   } catch { }
-  $child = $walker.GetFirstChild($node)
-  while ($child -ne $null) {
-    Walk $child ($depth + 1)
-    if ($script:count -ge ${nodes}) { return }
-    $child = $walker.GetNextSibling($child)
+  try {
+    $vp = $node.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
+    if ($patterns -notcontains 'value') { $patterns += 'value' }
+    $val = [string]$vp.Current.Value
+    if ($text -eq $null -and $val -ne $null) { $text = $val; $tlen = $val.Length }
+  } catch { }
+
+  # UIA answers BoundingRectangle with layout sentinels (-2147483648, negative extents) for
+  # elements that were never laid out. Reporting those as geometry is what produced
+  # x: -31994; here an implausible rect is no rect, and the node is marked offscreen.
+  $b = $null
+  $off = $true
+  try {
+    $off = [bool]$cur.IsOffscreen
+    $rect = $cur.BoundingRectangle
+    if ($rect.Width -gt 0 -and $rect.Height -gt 0 -and [Math]::Abs($rect.X) -le ${BOUNDS_LIMIT} -and [Math]::Abs($rect.Y) -le ${BOUNDS_LIMIT}) {
+      $b = @{ x = [int]$rect.X; y = [int]$rect.Y; width = [int]$rect.Width; height = [int]$rect.Height }
+    }
+  } catch { }
+  if ($b -eq $null) { $off = $true }
+
+  return [pscustomobject]@{
+    index = $index
+    depth = $d
+    name = [string]$cur.Name
+    controlType = $ctype
+    automationId = [string]$cur.AutomationId
+    className = [string]$cur.ClassName
+    enabled = [bool]$cur.IsEnabled
+    isOffscreen = $off
+    patterns = @($patterns)
+    value = $val
+    text = $text
+    textLength = $tlen
+    textTruncated = $ttrunc
+    bounds = $b
   }
 }
-Walk $root 0
-ConvertTo-Json -InputObject @($out) -Compress -Depth 5
-`, { timeoutMs: 45_000 });
-    return parseJsonOutput<UiNode[]>(raw);
-  }
 
+# Force the tree to materialise. Only containers are expanded: expanding a combo box or a
+# menu would open a popup, which is a side effect an observation must not have.
+function Expand-Pass($node, [int]$d) {
+  if ($node -eq $null -or $d -gt 6 -or $script:expanded -ge 60) { return }
+  if ((Get-Date) -gt $script:deadline) { return }
+  $children = $null
+  try { $children = $node.FindAll([System.Windows.Automation.TreeScope]::Children, [System.Windows.Automation.Condition]::TrueCondition) } catch { return }
+  foreach ($child in $children) {
+    try {
+      $ctype = [string]$child.Current.ControlType.ProgrammaticName
+      if ($ctype -eq 'ControlType.Pane' -or $ctype -eq 'ControlType.Group' -or $ctype -eq 'ControlType.TreeItem') {
+        $p = $child.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern)
+        if ($p.Current.ExpandCollapseState -eq [System.Windows.Automation.ExpandCollapseState]::Collapsed) {
+          $p.Expand()
+          $script:expanded++
+        }
+      }
+    } catch { }
+    Expand-Pass $child ($d + 1)
+  }
+}
+
+$walker = [System.Windows.Automation.TreeWalker]::RawViewWalker
+$out = New-Object System.Collections.ArrayList
+function Walk($node, [int]$d) {
+  if ($node -eq $null -or $d -gt ${depth} -or $script:count -ge ${nodes}) { return }
+  if ((Get-Date) -gt $script:deadline) {
+    throw ('desktop_ui_tree timed out after ${budgetMs}ms walking window ${h} (depth ' + $d + ', ' + $script:count + ' nodes read). The result was NOT truncated silently: lower maxDepth/maxNodes, or read a subtree via desktop_read_text.')
+  }
+  $index = $script:count
+  $script:count++
+  try { [void]$out.Add((New-UiNodeJson $node $index $d)) } catch { }
+  $child = $null
+  try { $child = $walker.GetFirstChild($node) } catch { }
+  while ($child -ne $null) {
+    Walk $child ($d + 1)
+    if ($script:count -ge ${nodes}) { return }
+    if ((Get-Date) -gt $script:deadline) { return }
+    try { $child = $walker.GetNextSibling($child) } catch { break }
+  }
+}
+
+Expand-Pass $root 0
+Walk $root 0
+if ($script:count -le 1) {
+  # A window that is still laying out can answer with the root only. Re-read once after the
+  # activation settles; if it is still empty that is the window's real tree, not a race.
+  Start-Sleep -Milliseconds 350
+  $root = Wait-AutomationRoot $h (Resolve-AppPid $h) 2500
+  $out = New-Object System.Collections.ArrayList
+  $script:count = 0
+  Expand-Pass $root 0
+  Walk $root 0
+}
+ConvertTo-Json -InputObject @{
+  window = (Find-WindowRecord $h)
+  nodes = @($out)
+  truncated = ($script:count -ge ${nodes})
+  expanded = $script:expanded
+} -Compress -Depth 6
+`,
+      { timeoutMs: budgetMs + 20_000 },
+    );
+    const parsed = parseJsonOutput<{
+      window?: RawWindow;
+      nodes?: UiNode[];
+      truncated?: boolean;
+      expanded?: number;
+    }>(raw);
+    const window = this.toWindows(parsed.window)[0];
+    if (!window) throw new PowerShellError(`window handle ${h} went away during desktop_ui_tree`, '');
+    return {
+      window,
+      nodes: sanitizeNodes(parsed.nodes ?? []),
+      truncated: Boolean(parsed.truncated),
+      expanded: Number(parsed.expanded ?? 0),
+    };
+  }
   async invoke(handle: string, selector: ElementSelector): Promise<{ ok: boolean; detail: string }> {
     this.assertPlatform();
     const h = this.handle(handle);
@@ -454,7 +956,7 @@ ${PS_WINDOW_HELPERS}
 $h = [IntPtr][int64]${h}
 if (-not [BeeNative]::IsWindow($h)) { throw 'window handle is no longer valid' }
 $root = Get-AutomationRoot $h (Resolve-AppPid $h)
-$all = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
+$all = Get-TreeList $root
 ${this.selectorScript(selector)}
 if ($target -eq $null) { ConvertTo-Json -InputObject @{ ok = $false; detail = 'no element matched the selector' } -Compress; exit }
 $done = ''
@@ -487,7 +989,7 @@ ${PS_WINDOW_HELPERS}
 $h = [IntPtr][int64]${h}
 if (-not [BeeNative]::IsWindow($h)) { throw 'window handle is no longer valid' }
 $root = Get-AutomationRoot $h (Resolve-AppPid $h)
-$all = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
+$all = Get-TreeList $root
 ${this.selectorScript(selector)}
 if ($target -eq $null) { ConvertTo-Json -InputObject @{ ok = $false; detail = 'no element matched the selector' } -Compress; exit }
 try {
@@ -501,69 +1003,307 @@ try {
     return parseJsonOutput<{ ok: boolean; detail: string }>(raw);
   }
 
-  async typeText(handle: string, text: string): Promise<void> {
-    await this.activate(handle);
-    const escaped = escapeSendKeys(text);
-    await runPowerShell(`
-Add-Type -AssemblyName System.Windows.Forms
-[System.Windows.Forms.SendKeys]::SendWait(${psLiteral(escaped)})
-`);
-  }
-
-  async sendKeys(handle: string, keys: string): Promise<void> {
-    assertSafeKeyChord(keys);
-    await this.activate(handle);
-    await runPowerShell(`
-Add-Type -AssemblyName System.Windows.Forms
-[System.Windows.Forms.SendKeys]::SendWait(${psLiteral(keys)})
-`);
-  }
-
-  async screenshot(handle?: string): Promise<ScreenshotResult> {
+  /**
+   * Reads the window's text back, so a mutation can be proven instead of assumed.
+   *
+   * With no selector it picks the text-bearing control (Document/Edit first, then any
+   * element answering TextPattern). The result says which mechanism answered, because that
+   * is part of the evidence.
+   */
+  async readText(handle: string, selector?: ElementSelector): Promise<TextReadback> {
     this.assertPlatform();
-    const h = handle ? this.handle(handle) : '0';
-    const raw = await runPowerShell(`
-Add-Type -AssemblyName System.Drawing
-Add-Type -AssemblyName System.Windows.Forms
+    const h = this.handle(handle);
+    const pick = selector
+      ? `$root = Wait-AutomationRoot $h (Resolve-AppPid $h) 2500
+$all = Get-TreeList $root
+${this.selectorScript(selector)}
+if ($target -eq $null) { throw 'no element matched the selector, so there is nothing to read back' }`
+      : `$target = Find-TextElement (Wait-AutomationRoot $h (Resolve-AppPid $h) 2500)`;
+    const raw = await runPowerShell(
+      `
+Add-Type -AssemblyName UIAutomationClient
+Add-Type -AssemblyName UIAutomationTypes
+${PS_WINDOW_HELPERS}
 $h = [IntPtr][int64]${h}
-$x = 0; $y = 0; $w = 0; $hh = 0
-if ($h -ne [IntPtr]::Zero -and [BeeNative]::IsWindow($h)) {
-  $rect = New-Object BeeNative+RECT
-  [void][BeeNative]::GetWindowRect($h, [ref]$rect)
-  $x = $rect.Left; $y = $rect.Top
-  $w = $rect.Right - $rect.Left; $hh = $rect.Bottom - $rect.Top
-} else {
-  $vs = [System.Windows.Forms.SystemInformation]::VirtualScreen
-  $x = $vs.X; $y = $vs.Y; $w = $vs.Width; $hh = $vs.Height
+if (-not [BeeNative]::IsWindow($h)) { throw 'window handle ${h} is no longer valid' }
+${pick}
+$read = Read-Text $h $target ${TEXT_PREFIX_LIMIT}
+if ($read -eq $null) { throw 'this window exposes no readable text (no TextPattern, no ValuePattern, no WM_GETTEXT): a mutation on it cannot be verified by reading it back' }
+ConvertTo-Json -InputObject $read -Compress -Depth 4
+`,
+      { timeoutMs: 45_000 },
+    );
+    return parseJsonOutput<TextReadback>(raw);
+  }
+
+  /** Read-back for verification: undefined when the window simply has no text to offer. */
+  private async tryReadText(handle: string): Promise<TextReadback | undefined> {
+    try {
+      return await this.readText(handle);
+    } catch (err) {
+      if (err instanceof PowerShellError && /no UI Automation tree|no readable text/.test(err.message)) {
+        return undefined;
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * Types text into the proven-foreground window and reads the result back.
+   *
+   * The handle is verified alive and foreground inside the same PowerShell call that sends
+   * the keys, so a window that died or refused activation yields an error *and zero
+   * keystrokes* — never `ok` for input that went somewhere else.
+   */
+  async typeText(handle: string, text: string): Promise<TypeResult> {
+    this.assertPlatform();
+    const h = this.handle(handle);
+    if (text.length > MAX_TYPED_CHARS) {
+      throw new PowerShellError(
+        `refusing to type ${text.length} characters (limit ${MAX_TYPED_CHARS}) — use desktop_set_value for bulk text`,
+        '',
+      );
+    }
+    const before = await this.tryReadText(h);
+    const chunks = chunkSendKeys(text);
+    await runPowerShell(
+      `
+Add-Type -AssemblyName System.Windows.Forms
+${PS_WINDOW_HELPERS}
+${psForegroundGuard(h, 'typed')}
+Start-Sleep -Milliseconds 60
+$chunks = @(
+${chunks.map((chunk) => '  ' + psLiteral(chunk)).join('\n')}
+)
+foreach ($chunk in $chunks) {
+  [System.Windows.Forms.SendKeys]::SendWait($chunk)
+  Start-Sleep -Milliseconds 35
 }
-if ($w -le 0 -or $hh -le 0) { throw 'window has no visible area to capture' }
-$bmp = New-Object System.Drawing.Bitmap $w, $hh
+`,
+      { timeoutMs: 30_000 + text.length * 4 },
+    );
+    const after = await this.tryReadText(h);
+    const result = mutationResult(text, before, after);
+    // A short read-back means part of the text never reached the document. Report that as a
+    // failure with the count, instead of the `ok` that made the original incident invisible.
+    const wanted = text.replace(/\r\n/g, '\n').length;
+    if (result.verified && result.delta !== undefined && result.delta < wanted) {
+      throw new PowerShellError(
+        `only ${result.delta} of ${wanted} characters reached window ${h}; the rest did not land. ` +
+          `Read the tree back with desktop_ui_tree before typing again to avoid duplicating text.`,
+        '',
+      );
+    }
+    return result;
+  }
+
+  async sendKeys(handle: string, keys: string): Promise<TypeResult> {
+    this.assertPlatform();
+    assertSafeKeyChord(keys);
+    const h = this.handle(handle);
+    const before = await this.tryReadText(h);
+    await runPowerShell(
+      `
+Add-Type -AssemblyName System.Windows.Forms
+${PS_WINDOW_HELPERS}
+${psForegroundGuard(h, 'sent')}
+[System.Windows.Forms.SendKeys]::SendWait(${psLiteral(keys)})
+`,
+      { timeoutMs: 30_000 },
+    );
+    const after = await this.tryReadText(h);
+    // A hotkey may or may not change text; the read-back is evidence either way.
+    return mutationResult('', before, after);
+  }
+  /**
+   * Window-scoped capture, or an explicit whole-desktop capture when no handle is given.
+   *
+   * A handle-scoped capture uses `PrintWindow(PW_RENDERFULLCONTENT)`, which renders the
+   * window's own composition surface: the pixels come from *that window* even when another
+   * window covers it. The previous implementation did a screen-region BitBlt at the window
+   * rect and reported the rect's size, so it happily returned "the window" while showing
+   * whatever happened to be on top — the agent's own chat window, in the report.
+   *
+   * There is no fallback and no screen-region variant: the handle is required, so a capture
+   * is always *that window*. A window that cannot be rendered (cloaked, minimized, hidden,
+   * off-screen, no area) yields an error that names the reason.
+   */
+  async screenshot(handle: string): Promise<ScreenshotResult> {
+    this.assertPlatform();
+    const h = this.handle(handle);
+    const raw = await runPowerShell(
+      `
+Add-Type -AssemblyName System.Drawing
+${PS_WINDOW_HELPERS}
+$h = [IntPtr][int64]${h}
+if (-not [BeeNative]::IsWindow($h)) { throw 'window handle ${h} is no longer valid — nothing to capture' }
+$st = [BeeObserve]::Describe($h)
+$name = $st.Title + ' [' + $h.ToInt64() + ']'
+if ($st.Cloaked -ne 0) { throw ('cannot capture ' + $name + ': the window is cloaked (cloaked=' + $st.Cloaked + ' — another virtual desktop or a suspended packaged app), so it has no pixels on this desktop') }
+if ($st.Iconic) { throw ('cannot capture ' + $name + ': the window is minimized — desktop_focus it first') }
+if (-not $st.Visible) { throw ('cannot capture ' + $name + ': the frame is hidden (WS_VISIBLE is not set), so the window renders no content') }
+if ($st.Width -le 0 -or $st.Height -le 0) { throw ('cannot capture ' + $name + ': the window has no area (' + $st.Width + 'x' + $st.Height + ')') }
+if ($st.Offscreen) { throw ('cannot capture ' + $name + ': the window is off-screen at ' + $st.X + ',' + $st.Y + ' ' + $st.Width + 'x' + $st.Height) }
+$bmp = New-Object System.Drawing.Bitmap($st.Width, $st.Height)
 $g = [System.Drawing.Graphics]::FromImage($bmp)
-$g.CopyFromScreen($x, $y, 0, 0, $bmp.Size)
+$hdc = $g.GetHdc()
+$ok = [BeeObserve]::PrintWindow($h, $hdc)
+$g.ReleaseHdc($hdc)
+$g.Dispose()
+if (-not $ok) {
+  $bmp.Dispose()
+  throw ('PrintWindow failed for ' + $name + ': the window composits nothing this driver can read (a DirectComposition surface that refuses PW_RENDERFULLCONTENT)')
+}
+$black = $true
+for ($yy = 0; $yy -lt $st.Height -and $black; $yy += 12) {
+  for ($xx = 0; $xx -lt $st.Width; $xx += 12) {
+    if ($bmp.GetPixel($xx, $yy).ToArgb() -ne [System.Drawing.Color]::Black.ToArgb()) { $black = $false; break }
+  }
+}
+if ($black) {
+  $bmp.Dispose()
+  throw ('the capture of ' + $name + ' is entirely black: the window rendered nothing, so this is not a picture of it')
+}
 $ms = New-Object System.IO.MemoryStream
 $bmp.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)
-$g.Dispose(); $bmp.Dispose()
-ConvertTo-Json -InputObject @{
-  png = [Convert]::ToBase64String($ms.ToArray())
-  width = $w
-  height = $hh
-} -Compress
-`, { timeoutMs: 30_000 });
-    return parseJsonOutput<ScreenshotResult>(raw);
+$w = $st.Width
+$hh = $st.Height
+$bmp.Dispose()
+ConvertTo-Json -InputObject @{ png = [Convert]::ToBase64String($ms.ToArray()); width = $w; height = $hh } -Compress
+`,
+      { timeoutMs: 90_000 },
+    );
+    const shot = parseJsonOutput<{ png: string; width: number; height: number }>(raw);
+    return { ...shot, source: 'window', handle: h };
   }
-
-  async launch(exePath: string, args: string[], cwd?: string): Promise<{ processId?: number; detail: string }> {
+  /**
+   * Starts an application and returns the **window** that owns the document, not the
+   * launcher's pid.
+   *
+   * Processes lie: Win11 Notepad's `notepad.exe` exits (or lingers) while a different
+   * process hosts the window, and when an instance is already running the document is
+   * handed to it as a tab and no window is created at all. So the launch is followed by a
+   * bounded re-enumeration: whatever *new* window of that executable appears is the answer;
+   * if none appears while a live instance exists, the result says the document went there
+   * (`tabAdded`) instead of claiming a window the caller can never address.
+   */
+  async launch(exePath: string, args: string[], cwd?: string): Promise<LaunchResult> {
     this.assertPlatform();
-    const argList = args.length ? `-ArgumentList @(${args.map(psLiteral).join(', ')})` : '';
+    const exeName = basename(exePath).toLowerCase();
+    const argList = args.length ? args.map((a) => psLiteral(a)).join(' ') : '';
     const workDir = cwd ? `-WorkingDirectory ${psLiteral(cwd)}` : '';
-    const raw = await runPowerShell(`
+    const raw = await runPowerShell(
+      `
+${PS_WINDOW_HELPERS}
+$before = @{}
+foreach ($w in @(Get-WindowRecords)) { $before[$w.handle] = $true }
+$startedAt = Get-Date
+$activated = $false
+$ambiguous = $null
 $p = Start-Process -FilePath ${psLiteral(exePath)} ${argList} ${workDir} -PassThru
-Start-Sleep -Milliseconds 250
-ConvertTo-Json -InputObject @{ processId = [int]$p.Id; detail = ('started ' + ${psLiteral(exePath)}) } -Compress
-`);
-    return parseJsonOutput<{ processId?: number; detail: string }>(raw);
+$spawner = [int]$p.Id
+$exeName = ${psLiteral(exeName)}
+$deadline = (Get-Date).AddMilliseconds(8000)
+$created = $null
+$existing = $null
+$spawnerAlive = $true
+while ((Get-Date) -lt $deadline) {
+  Start-Sleep -Milliseconds 250
+  $now = @(Get-WindowRecords)
+  $fresh = @($now | Where-Object { -not $before.ContainsKey($_.handle) -and (([string]$_.exe).ToLower() -eq $exeName -or $_.processId -eq $spawner) })
+  if ($fresh.Count -gt 0) {
+    $visible = @($fresh | Where-Object { $_.isVisible })
+    if ($visible.Count -gt 0) { $created = $visible[0] } else { $created = $fresh[0] }
+    break
   }
+  # A packaged (UWP/MSIX) app is started by a launcher that hands activation to a
+  # different process: calc.exe activates CalculatorApp.exe, and the window belongs to that
+  # process — so no window ever matches the launcher's pid or the requested exe name. A visible
+  # window that did not exist before the launch and whose owning process *started* with this
+  # launch is evidence of this launch. Ambiguity (several new processes) is left unresolved
+  # instead of picking one.
+  $unclaimed = @($now | Where-Object { -not $before.ContainsKey($_.handle) -and $_.isVisible -and [string]$_.exe -ne '' -and (([string]$_.exe).ToLower() -ne $exeName) })
+  if ($unclaimed.Count -gt 0) {
+    $young = @()
+    foreach ($w in $unclaimed) {
+      try {
+        $proc = Get-Process -Id $w.processId -ErrorAction Stop
+        if ($proc.StartTime -ge $startedAt.AddSeconds(-2)) { $young += $w }
+      } catch { }
+    }
+    $youngPids = @($young | ForEach-Object { $_.processId } | Sort-Object -Unique)
+    if ($young.Count -gt 0 -and $youngPids.Count -eq 1) {
+      $fgYoung = @($young | Where-Object { $_.isForeground })
+      $created = if ($fgYoung.Count -gt 0) { $fgYoung[0] } else { $young[0] }
+      $activated = $true
+      break
+    }
+    if ($youngPids.Count -gt 1) {
+      $ambiguous = @($young | ForEach-Object { ([string]$_.exe) + ' (pid ' + $_.processId + ')' } | Sort-Object -Unique)
+    }
+  }
+  $mine = @($now | Where-Object { ([string]$_.exe).ToLower() -eq $exeName })
+  if ($mine.Count -gt 0) {
+    $fg = @($mine | Where-Object { $_.isForeground })
+    if ($fg.Count -gt 0) { $existing = $fg[0] } elseif ($existing -eq $null) { $existing = $mine[0] }
+  }
+  $spawnerAlive = $false
+  try { $null = Get-Process -Id $spawner -ErrorAction Stop; $spawnerAlive = $true } catch { }
+  # A launcher that hands its document to a running instance exits immediately; once that
+  # happened and a live window is known, waiting for a window that will never appear is a
+  # lie with a timeout attached.
+  if (-not $spawnerAlive -and $existing -ne $null) { break }
+}
+ConvertTo-Json -InputObject @{
+  spawner = $spawner
+  spawnerAlive = $spawnerAlive
+  activated = $activated
+  ambiguous = $ambiguous
+  created = $created
+  existing = $existing
+} -Compress -Depth 5
+`,
+      { timeoutMs: 60_000 },
+    );
+    const parsed = parseJsonOutput<RawLaunch>(raw);
+    const created = this.toWindows(parsed.created ?? undefined)[0];
+    const existing = this.toWindows(parsed.existing ?? undefined)[0];
+    const spawner = parsed.spawner;
 
+    if (created) {
+      return {
+        spawnerProcessId: spawner,
+        window: created,
+        windowCreated: true,
+        tabAdded: false,
+        detail: parsed.activated
+          ? `${exeName} started (launcher pid ${spawner}); the app activated a separate process (a packaged/MSIX app), and the new window belongs to ${created.exe ?? 'another executable'} (pid ${created.processId}) — not to the launcher, so it was matched by launch time, not by exe name`
+          : `${exeName} started (launcher pid ${spawner}); a new window appeared: ${created.title} [${created.handle}] owned by pid ${created.processId}`,
+      };
+    }
+    if (existing) {
+      const why = parsed.spawnerAlive
+        ? `the launcher (pid ${spawner}) is still running but created no window`
+        : `the launcher (pid ${spawner}) exited without creating a window`;
+      return {
+        spawnerProcessId: spawner,
+        window: existing,
+        windowCreated: false,
+        tabAdded: true,
+        detail: `${exeName}: ${why}, so the document went to the running instance — it is a tab in ${existing.title} [${existing.handle}] (pid ${existing.processId}). A tab is not separately addressable: address that window.`,
+      };
+    }
+    if (parsed.ambiguous && parsed.ambiguous.length > 1) {
+      throw new PowerShellError(
+        `launched ${exeName} (launcher pid ${spawner}) but ${parsed.ambiguous.length} different new windows appeared at once (${parsed.ambiguous.join(', ')}) — refusing to guess which one the launch produced`,
+        '',
+      );
+    }
+    throw new PowerShellError(
+      `launched ${exeName} (launcher pid ${spawner}) but no window of ${exeName} appeared within 8000ms and no running instance was found — the app may still be starting; check with desktop_list_windows`,
+      '',
+    );
+  }
   /* ------------------------------------------------------------------ helpers */
 
   private handle(handle: string): string {
@@ -571,21 +1311,40 @@ ConvertTo-Json -InputObject @{ processId = [int]$p.Id; detail = ('started ' + ${
     return handle;
   }
 
+  /**
+   * Maps the raw enumeration into the one window shape everything else uses. Identity is
+   * copied, never re-derived; implausible geometry is dropped rather than passed on.
+   */
   private toWindows(raw: RawWindow[] | RawWindow | undefined | null): WindowInfo[] {
-    if (!raw) return [];
-    const list = Array.isArray(raw) ? raw : [raw];
-    return list
-      .filter((w) => w && w.handle)
-      .map((w) => ({
-        handle: String(w.handle),
-        title: w.title ?? '',
-        processId: Number(w.processId ?? 0),
-        exe: w.exe || undefined,
-        isForeground: Boolean(w.isForeground),
-      }));
+    const list = Array.isArray(raw) ? raw : raw ? [raw] : [];
+    const windows: WindowInfo[] = [];
+    for (const item of list) {
+      if (!item || !item.handle) continue;
+      const cloaked = Number(item.cloaked ?? 0);
+      const box = {
+        x: Number(item.bounds?.x ?? 0),
+        y: Number(item.bounds?.y ?? 0),
+        width: Number(item.bounds?.width ?? 0),
+        height: Number(item.bounds?.height ?? 0),
+      };
+      const bounds = isPlausibleBounds(box) ? box : undefined;
+      windows.push({
+        handle: String(item.handle),
+        title: String(item.title ?? ''),
+        processId: Number(item.processId ?? 0),
+        exe: item.exe ? String(item.exe) : undefined,
+        className: String(item.className ?? ''),
+        isForeground: Boolean(item.isForeground),
+        isVisible: Boolean(item.isVisible),
+        isMinimized: Boolean(item.isMinimized),
+        isCloaked: cloaked !== 0,
+        isOffscreen: Boolean(item.offscreen) || bounds === undefined,
+        virtualDesktop: cloaked === 2 ? 'other' : cloaked !== 0 ? 'unknown' : 'current',
+        bounds,
+      });
+    }
+    return windows;
   }
-
-  /** PowerShell snippet that sets `$target` from the flattened descendant list. */
   private selectorScript(selector: ElementSelector): string {
     const autoId = selector.automationId ? psLiteral(selector.automationId) : "''";
     const name = selector.name ? psLiteral(selector.name) : "''";

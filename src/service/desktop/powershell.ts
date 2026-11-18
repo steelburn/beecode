@@ -234,11 +234,32 @@ export function parseJsonOutput<T>(raw: string): T {
 
 /** Escape text for `[System.Windows.Forms.SendKeys]::SendWait`. */
 export function escapeSendKeys(text: string): string {
-  return text
-    .replace(/\r\n/g, '{ENTER}')
-    .replace(/\n/g, '{ENTER}')
-    .replace(/\t/g, '{TAB}')
-    .replace(/([+^%~(){}\[\]])/g, '{$1}');
+  return (
+    text
+      // Literal characters first: escaping after the newline mapping would turn the braces of
+      // our own `{ENTER}` into `{{}ENTER{}}`, i.e. type the six characters "{ENTER}".
+      .replace(/([+^%~(){}\[\]])/g, '{$1}')
+      .replace(/\r\n/g, '{ENTER}')
+      .replace(/\n/g, '{ENTER}')
+      .replace(/\t/g, '{TAB}')
+  );
+}
+
+/**
+ * Splits text into SendKeys chunks for one PowerShell call.
+ *
+ * A single `SendWait` of a long string can outrun the target's input queue — a fresh Win11
+ * Notepad tab was observed dropping one character — so the caller sends the text in chunks
+ * with a short settle between them. Newlines are normalised first so a chunk boundary can
+ * never split a CRLF pair.
+ */
+export function chunkSendKeys(text: string, size = 40): string[] {
+  const normalized = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  const chunks: string[] = [];
+  for (let i = 0; i < normalized.length; i += size) {
+    chunks.push(escapeSendKeys(normalized.slice(i, i + size)));
+  }
+  return chunks;
 }
 
 /**

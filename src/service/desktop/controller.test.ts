@@ -48,9 +48,14 @@ test('unknown app never reaches the driver', async () => {
 test('typing into a permitted app works and is audited', async () => {
   const { controller, audit, cleanup } = await harness();
   try {
-    const window = await controller.typeText({ app: 'notepad' }, 'hello beeCode');
+    const { window, result } = await controller.typeText({ app: 'notepad' }, 'hello beeCode');
     assert.equal(window.exe, 'notepad.exe');
+    // The mutation is only accepted as done when the driver read the text back.
+    assert.equal(result.typed, 'hello beeCode'.length);
+    assert.equal(result.readback?.text, 'hello beeCode');
+    assert.equal(result.delta, 'hello beeCode'.length);
     const tree = await controller.read({ app: 'notepad' });
+    assert.equal(tree.window.handle, window.handle);
     const editor = tree.nodes.find((n) => n.automationId === 'Editor');
     assert.equal(editor?.value, 'hello beeCode');
 
@@ -97,7 +102,8 @@ test('launching resolves the executable and reports a pid', async () => {
   try {
     const res = await controller.launch('notepad');
     assert.match(res.exe.toLowerCase(), /notepad\.exe$/);
-    assert.equal(typeof res.processId, 'number');
+    assert.equal(typeof res.spawnerProcessId, 'number');
+    assert.ok(res.window, 'the result names the window, not only the process it spawned');
   } finally {
     await cleanup();
   }

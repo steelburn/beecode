@@ -51,6 +51,15 @@ async function main(): Promise<void> {
   }
 
   report.window = { title: calc.title, exe: calc.exe, handle: calc.handle, pid: calc.processId };
+
+  // --- identity round-trip: the handle we hold must be the one the driver reports -----
+  const relisted = (await driver.listWindows()).find((w) => w.handle === calc.handle);
+  report.roundTrip = relisted
+    ? `OK ${relisted.handle} pid ${relisted.processId}`
+    : 'MISSING — handle from enumeration is absent from listWindows';
+  report.resolveExact = (await driver.resolveWindow(calc.handle))?.handle === calc.handle;
+  // A bogus handle must resolve to nothing; falling back to "some window" is the bug.
+  report.resolveBogusIsUndefined = (await driver.resolveWindow('1')) === undefined;
   // Activation is best-effort: Windows refuses SetForegroundWindow from a process that is
   // not already foreground ("focus lock"), which is a property of the desktop, not a bug in
   // the driver. Record it and carry on — UIA reads and invokes do not need the foreground.
@@ -63,8 +72,13 @@ async function main(): Promise<void> {
   }
   await delay(300);
 
-  const tree = await driver.uiTree(calc.handle, 8, 400);
+  const treeResult = await driver.uiTree(calc.handle, 8, 400);
+  const tree = treeResult.nodes;
   report.nodeCount = tree.length;
+  // Reported, never assumed: a walk cut short by the node budget must be visible here.
+  report.treeTruncated = treeResult.truncated;
+  report.treeExpanded = treeResult.expanded;
+  report.treeWindowMatchesHandle = treeResult.window.handle === calc.handle;
   report.controlTypes = [...new Set(tree.map((n) => n.controlType))];
   report.nodes = tree
     .filter((n) => n.automationId || n.name)
@@ -92,14 +106,14 @@ async function main(): Promise<void> {
   }
   await delay(500);
 
-  const after: UiNode[] = await driver.uiTree(calc.handle, 8, 400);
+  const after: UiNode[] = (await driver.uiTree(calc.handle, 8, 400)).nodes;
   const display = after.find((n) => /CalculatorResults/i.test(n.automationId));
   report.display = display?.name ?? '(CalculatorResults not found)';
 
   // --- resize the real frame, then verify the new geometry is what UIA reports -------
   const sized = await driver.resize(calc.handle, 820, 660);
   report.resize = sized;
-  const resizedTree = await driver.uiTree(calc.handle, 8, 400);
+  const resizedTree = (await driver.uiTree(calc.handle, 8, 400)).nodes;
   const resizedDisplay = resizedTree.find((n) => /CalculatorResults/i.test(n.automationId));
   // The root node is the window itself, so its rectangle is the driver's claim about where the
   // frame is — the same space the click coordinates must be in.
@@ -134,17 +148,24 @@ async function main(): Promise<void> {
     }
     await delay(250);
     // Recorded per press: a single swallowed click is otherwise invisible in the final value.
-    const step = await driver.uiTree(calc.handle, 8, 400);
+    const step = (await driver.uiTree(calc.handle, 8, 400)).nodes;
     stepDisplays.push(`${id} → ${step.find((n) => /CalculatorResults/i.test(n.automationId))?.name ?? '?'}`);
   }
   report.clickSteps = stepDisplays;
   await delay(300);
-  const afterClick = await driver.uiTree(calc.handle, 8, 400);
+  const afterClick = (await driver.uiTree(calc.handle, 8, 400)).nodes;
   const clickDisplay = afterClick.find((n) => /CalculatorResults/i.test(n.automationId));
   report.displayAfterClick = clickDisplay?.name ?? '(CalculatorResults not found)';
 
   const shot = await driver.screenshot(calc.handle);
-  report.screenshot = { width: shot.width, height: shot.height, base64Bytes: shot.png.length };
+  report.screenshot = {
+    source: shot.source,
+    handle: shot.handle,
+    matchesTarget: shot.handle === calc.handle,
+    width: shot.width,
+    height: shot.height,
+    base64Bytes: shot.png.length,
+  };
 
   await driver.close(calc.handle);
   report.closed = true;

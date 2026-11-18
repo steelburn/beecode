@@ -1,7 +1,7 @@
 import type { DesktopAction, PolicyDocument } from '../../shared/protocol';
 import type { ToolContext, ToolDefinition, ToolPreview } from '../../shared/tools';
 import { DesktopController, DesktopDeniedError } from '../desktop/controller';
-import type { ElementSelector } from '../desktop/types';
+import type { ElementSelector, WindowInfo } from '../desktop/types';
 import type { PolicyEngine } from '../policy';
 import { errorResult, jsonResult, num, requireStr, str } from './registry';
 
@@ -71,6 +71,30 @@ export function desktopTools(deps: DesktopToolDeps): ToolDefinition[] {
 
   const target = (args: Record<string, unknown>) => ({ app: str(args, 'app'), handle: str(args, 'handle') });
 
+  /**
+   * The one window identity every desktop result carries. A handle returned here is
+   * addressable by every other desktop tool for as long as that window lives.
+   */
+  const identify = (w: WindowInfo) => ({
+    handle: w.handle,
+    processId: w.processId,
+    title: w.title,
+    exe: w.exe,
+    className: w.className,
+  });
+
+  /** Identity plus the state flags that decide whether the window can be observed at all. */
+  const describe = (w: WindowInfo) => ({
+    ...identify(w),
+    isForeground: w.isForeground,
+    isVisible: w.isVisible,
+    isMinimized: w.isMinimized,
+    isCloaked: w.isCloaked,
+    isOffscreen: w.isOffscreen,
+    virtualDesktop: w.virtualDesktop,
+    bounds: w.bounds,
+  });
+
   return [
     {
       name: 'desktop_list_apps',
@@ -112,7 +136,7 @@ export function desktopTools(deps: DesktopToolDeps): ToolDefinition[] {
     {
       name: 'desktop_launch',
       description:
-        'Launch a permissible application by its app id. Fails if the app is not allowed to launch or the executable cannot be found.',
+        'Launch a permissible application by its app id and return the identity of the window it produced (handle, pid, title, exe, className). With a single-instance app the document is handed to the already running window: `windowCreated` is then false and `tabAdded` true. Address that handle in later calls; do not use `spawnerProcessId`.',
       mutating: true,
       group: 'desktop',
       inputSchema: {
@@ -131,7 +155,18 @@ export function desktopTools(deps: DesktopToolDeps): ToolDefinition[] {
         const argv = Array.isArray(args.args) ? (args.args as unknown[]).map(String) : [];
         try {
           const res = await controller.launch(app, argv);
-          return jsonResult({ launched: app, pid: res.processId, exe: res.exe, detail: res.detail });
+          return jsonResult({
+            launched: app,
+            exe: res.exe,
+            // `processId` is the process the shell started. For a single-instance app
+            // (Win11 tabbed Notepad) it exits within seconds — the window identity below
+            // is what every later call must address.
+            spawnerProcessId: res.spawnerProcessId,
+            windowCreated: res.windowCreated,
+            tabAdded: res.tabAdded,
+            window: res.window ? describe(res.window) : null,
+            detail: res.detail,
+          });
         } catch (err) {
           return denyPayload(err);
         }
@@ -152,7 +187,7 @@ export function desktopTools(deps: DesktopToolDeps): ToolDefinition[] {
       async handler(args) {
         try {
           const w = await controller.focus(target(args));
-          return jsonResult({ focused: w.title, handle: w.handle, exe: w.exe });
+          return jsonResult({ ...describe(w), focused: w.title });
         } catch (err) {
           return denyPayload(err);
         }
@@ -178,7 +213,7 @@ export function desktopTools(deps: DesktopToolDeps): ToolDefinition[] {
     {
       name: 'desktop_ui_tree',
       description:
-        'Read the UI Automation tree of a window: name, controlType, automationId, supported patterns, value and bounds for each node. Use this before invoking anything.',
+        'Read the UI Automation tree of a window: name, controlType, automationId, supported patterns, value, text and bounds for each node. Text-bearing controls (Document, Edit) also return `text`/`textLength`, which is how you verify that typed input landed. Check `truncated` before concluding a control is missing — pass a larger maxNodes instead.',
       mutating: false,
       group: 'desktop',
       inputSchema: {
@@ -192,12 +227,20 @@ export function desktopTools(deps: DesktopToolDeps): ToolDefinition[] {
       },
       async handler(args) {
         try {
-          const { window, nodes } = await controller.read(
+          const tree = await controller.read(
             target(args),
             num(args, 'maxDepth', 6),
             num(args, 'maxNodes', 200),
           );
-          return jsonResult({ window: { title: window.title, handle: window.handle, exe: window.exe }, nodes });
+          return jsonResult({
+            window: describe(tree.window),
+            nodeCount: tree.nodes.length,
+            // A tree cut short by the node budget says so; a walk that timed out is an
+            // error, never a smaller tree.
+            truncated: tree.truncated,
+            expanded: tree.expanded,
+            nodes: tree.nodes,
+          });
         } catch (err) {
           return denyPayload(err);
         }
@@ -333,7 +376,7 @@ export function desktopTools(deps: DesktopToolDeps): ToolDefinition[] {
     },
     {
       name: 'desktop_type',
-      description: 'Type text into the focused control of a window (activates the window first).',
+      description: 'Type text into the focused control of a window (activates the window first, verifies it really is foreground, then reads the document back). The result carries `readBack` and `delta`: compare them with what you typed — that is the proof the text landed in this window.',
       mutating: true,
       group: 'desktop',
       inputSchema: {
@@ -349,8 +392,25 @@ export function desktopTools(deps: DesktopToolDeps): ToolDefinition[] {
         }),
       async handler(args) {
         try {
-          const w = await controller.typeText(target(args), requireStr(args, 'text'));
-          return jsonResult({ ok: true, window: w.title });
+          const { window, result } = await controller.typeText(target(args), requireStr(args, 'text'));
+          return jsonResult({
+            ok: true,
+            window: describe(window),
+            typed: result.typed,
+            // Text read back from the target after the keystrokes — this, not `ok`, is
+            // the evidence that the text landed where you meant it to.
+            readBack: result.readback
+              ? {
+                  text: result.readback.text,
+                  length: result.readback.length,
+                  truncated: result.readback.truncated,
+                  source: result.readback.source,
+                }
+              : null,
+            lengthBefore: result.lengthBefore,
+            lengthAfter: result.lengthAfter,
+            delta: result.delta,
+          });
         } catch (err) {
           return denyPayload(err);
         }
@@ -372,8 +432,23 @@ export function desktopTools(deps: DesktopToolDeps): ToolDefinition[] {
         desktopPreview(policy, 'key', args, ctx, (rule) => `Send ${JSON.stringify(args.keys)} to ${rule?.name ?? str(args, 'app')}`),
       async handler(args) {
         try {
-          const w = await controller.sendKeys(target(args), requireStr(args, 'keys'));
-          return jsonResult({ ok: true, window: w.title });
+          const { window, result } = await controller.sendKeys(target(args), requireStr(args, 'keys'));
+          return jsonResult({
+            ok: true,
+            window: describe(window),
+            typed: result.typed,
+            readBack: result.readback
+              ? {
+                  text: result.readback.text,
+                  length: result.readback.length,
+                  truncated: result.readback.truncated,
+                  source: result.readback.source,
+                }
+              : null,
+            lengthBefore: result.lengthBefore,
+            lengthAfter: result.lengthAfter,
+            delta: result.delta,
+          });
         } catch (err) {
           return denyPayload(err);
         }
@@ -382,7 +457,7 @@ export function desktopTools(deps: DesktopToolDeps): ToolDefinition[] {
     {
       name: 'desktop_screenshot',
       description:
-        'Capture a PNG screenshot of a window (or the whole screen when no target is given) and attach it to the conversation.',
+        'Capture a PNG of the window itself (PrintWindow with full content) and attach it to the conversation. The pixels are that window even when it is partly covered. If the window cannot be captured — cloaked, minimised, hidden, no area — the call fails with the reason instead of returning a different image.',
       mutating: false,
       group: 'desktop',
       inputSchema: { type: 'object', properties: TARGET_PROPS, additionalProperties: false },
@@ -394,9 +469,11 @@ export function desktopTools(deps: DesktopToolDeps): ToolDefinition[] {
           return {
             content: JSON.stringify({
               captured: true,
+              source: shot.source,
+              handle: shot.handle,
               width: shot.width,
               height: shot.height,
-              window: shot.window?.title ?? 'screen',
+              window: describe(shot.window),
             }),
             meta: { images: [{ mime: 'image/png', data: shot.png }] },
           };
