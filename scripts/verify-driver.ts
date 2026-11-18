@@ -51,7 +51,16 @@ async function main(): Promise<void> {
   }
 
   report.window = { title: calc.title, exe: calc.exe, handle: calc.handle, pid: calc.processId };
-  await driver.activate(calc.handle);
+  // Activation is best-effort: Windows refuses SetForegroundWindow from a process that is
+  // not already foreground ("focus lock"), which is a property of the desktop, not a bug in
+  // the driver. Record it and carry on — UIA reads and invokes do not need the foreground.
+  try {
+    await driver.activate(calc.handle);
+    report.activated = true;
+  } catch (err) {
+    report.activated = false;
+    report.activateError = err instanceof Error ? err.message : String(err);
+  }
   await delay(300);
 
   const tree = await driver.uiTree(calc.handle, 8, 400);
@@ -113,8 +122,16 @@ async function main(): Promise<void> {
       report[`click_${id}`] = 'no bounds — coordinate clicking not verifiable here';
       break;
     }
-    await driver.click(calc.handle, point.x, point.y);
-    report[`click_${id}`] = `clicked ${point.x},${point.y}`;
+    try {
+      await driver.click(calc.handle, point.x, point.y);
+      report[`click_${id}`] = `clicked ${point.x},${point.y}`;
+    } catch (err) {
+      // A refusal is the guard working, not a harness crash: record why and stop pressing.
+      // Retrying or forcing the click would defeat the check under test.
+      report[`click_${id}`] = `refused: ${(err as Error).message}`;
+      report.clickRefusal = (err as Error).message;
+      break;
+    }
     await delay(250);
     // Recorded per press: a single swallowed click is otherwise invisible in the final value.
     const step = await driver.uiTree(calc.handle, 8, 400);
@@ -144,7 +161,7 @@ async function main(): Promise<void> {
   report.clickVerified = clicked;
   report.clickNote = clicked
     ? 'synthetic clicks registered'
-    : 'clicks were delivered (cursor moved, target foreground) but the app did not react — the injecting session is most likely not interactive; verify on an attended desktop';
+    : 'each click was refused or had no observable effect — Windows denies foreground activation to a background process (focus lock), and a coordinate click is refused unless the pixel hit-tests to the permitted app; run this on an attended desktop with the app visible';
   report.pass = invoked;
 
   writeFileSync('dist-test/verify-driver-report.json', JSON.stringify(report, null, 2));

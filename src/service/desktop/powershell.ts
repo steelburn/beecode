@@ -1,4 +1,8 @@
 import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import { unlink, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 /**
  * Shared P/Invoke surface. One Add-Type per invocation keeps every script self-contained
@@ -120,19 +124,49 @@ export class PowerShellError extends Error {
 }
 
 /**
- * Runs a PowerShell script through `-EncodedCommand` (base64/UTF-16LE), so no quoting or
- * escaping bug can leak user text into the command line. All desktop automation on Windows
- * is implemented this way: no native addons, no elevation, no extra install.
+ * Runs a PowerShell script from a temporary .ps1 file, so no quoting or escaping bug can leak
+ * user text into the command line. All desktop automation on Windows is implemented this way:
+ * no native addons, no elevation, no extra install.
  */
 export function runPowerShell(body: string, options: PowerShellOptions = {}): Promise<string> {
   const script = `${NATIVE_PRELUDE}\n${body}`;
-  const encoded = Buffer.from(script, 'utf16le').toString('base64');
+  const scriptPath = join(tmpdir(), `beecode-${randomUUID()}.ps1`);
+
+  return new Promise<string>((resolve, reject) => {
+    void (async () => {
+      try {
+        await writeFile(
+          scriptPath,
+          Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(script, 'utf8')]),
+        );
+      } catch (err) {
+        reject(new PowerShellError((err as Error).message, ''));
+        return;
+      }
+      try {
+        resolve(await executeFile(scriptPath, options));
+      } catch (err) {
+        reject(err as Error);
+      } finally {
+        await unlink(scriptPath).catch(() => undefined);
+      }
+    })();
+  });
+}
+
+/**
+ * Handed over as a file rather than `-EncodedCommand`: the P/Invoke preludes plus the body now
+ * exceed the 32767-character CreateProcess command line once base64 inflates the UTF-16 text,
+ * and the spawn fails with ENAMETOOLONG. A UTF-8 BOM keeps Windows PowerShell 5.1 decoding
+ * non-ASCII text — window titles, typed input — correctly.
+ */
+function executeFile(scriptPath: string, options: PowerShellOptions): Promise<string> {
   const timeoutMs = options.timeoutMs ?? 20_000;
 
   return new Promise<string>((resolve, reject) => {
     const child = spawn(
       'powershell.exe',
-      ['-NoLogo', '-NoProfile', '-NonInteractive', '-STA', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encoded],
+      ['-NoLogo', '-NoProfile', '-NonInteractive', '-STA', '-ExecutionPolicy', 'Bypass', '-File', scriptPath],
       { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] },
     );
 

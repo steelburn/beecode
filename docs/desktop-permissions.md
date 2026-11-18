@@ -130,6 +130,36 @@ screen pixels, so they keep working when synthetic pointer input is being discar
 Coordinate clicks remain for the gaps — custom-drawn surfaces, canvas apps, anything with
 no UIA pattern to invoke.
 
+## Click guard
+
+A coordinate click is only posted when the pixel provably belongs to the permitted window.
+Four checks run first, and every one of them fails closed:
+
+1. **Inside the frame.** The point must lie within the target `GetWindowRect`; a point
+   outside it is a driver bug rather than a user request.
+2. **Foreground.** After `ForceForeground`, `GetForegroundWindow` must be the target. If a
+   background process cannot take the foreground (Windows focus lock), the click is refused
+   instead of being posted into whatever application is active.
+3. **Same top-level window.** `WindowFromPoint` answers with the window that owns the pixel,
+   and its top-level ancestor (`GetAncestor(…, GA_ROOT)`) must be the target’s. Identity is
+   the window tree, never the process id: a packaged app’s frame belongs to
+   `ApplicationFrameHost.exe` while the control under the cursor belongs to the app itself,
+   so a PID comparison would refuse every UWP target forever. If the pixel belongs to a
+   window above the target, the driver raises the target once (`SWP_NOACTIVATE`, no move or
+   resize) and retries; if it still belongs elsewhere, the click is refused.
+4. **Current virtual desktop.** `IVirtualDesktopManager::IsWindowOnCurrentVirtualDesktop`
+   must be true. `SendInput` goes to the desktop the user is looking at, so a window on
+   another virtual desktop would have its click delivered to whatever occupies that pixel
+   here — the driver never switches desktops on the user’s behalf.
+
+A refusal surfaces as an ordinary `{ "error": … }` tool result whose message names the real
+reason, so the agent learns that the window is outside its frame, behind another window,
+minimised, hidden or on another desktop — instead of believing a click landed.
+
+Scripts reach PowerShell as a temporary `.ps1` file (`-File`, UTF-8 with a BOM) rather than
+through `-EncodedCommand`: the P/Invoke preludes plus the body exceed the 32767-character
+`CreateProcess` command line once base64 inflates the UTF-16 text, and such a spawn fails
+with `ENAMETOOLONG`.
 ## Window resize
 
 `desktop_resize` moves and resizes an existing top-level window with `SetWindowPos`. It

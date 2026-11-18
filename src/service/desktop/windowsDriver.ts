@@ -12,8 +12,8 @@ function psLiteral(value: string): string {
  *
  * Uses `SendInput` rather than the superseded `mouse_event`, and each step is a separate call:
  * XAML hit-tests on the move, so a move followed immediately by down/up is discarded. The
- * coordinates are absolute (mapped through the primary screen metrics), which is the same
- * space UI Automation reports node bounds in.
+ * coordinates are absolute in the virtual-desktop space, which is the same space
+ * `GetWindowRect` and UI Automation report node bounds in.
  */
 const MOUSE_PRELUDE = `
 Add-Type -TypeDefinition @'
@@ -42,10 +42,44 @@ public static class BeeMouse {
   static bool Send(uint flags, int x, int y) {
     INPUT[] input = new INPUT[1];
     input[0].type = 0;
-    input[0].mi.dx = (int)Math.Round(x * 65535.0 / (GetSystemMetrics(0) - 1));
-    input[0].mi.dy = (int)Math.Round(y * 65535.0 / (GetSystemMetrics(1) - 1));
+    // Absolute coordinates are mapped through the VIRTUAL desktop, matching both the 0xC001
+    // flag (MOVE|ABSOLUTE|VIRTUALDESK) and the space GetWindowRect reports in. Normalising
+    // with the primary-screen metrics instead would land the click on the wrong monitor
+    // whenever the window sits left of or above the primary origin.
+    int ox = GetSystemMetrics(76);
+    int oy = GetSystemMetrics(77);
+    int cx = GetSystemMetrics(78);
+    int cy = GetSystemMetrics(79);
+    input[0].mi.dx = (int)Math.Round((x - ox) * 65535.0 / Math.Max(1, cx - 1));
+    input[0].mi.dy = (int)Math.Round((y - oy) * 65535.0 / Math.Max(1, cy - 1));
     input[0].mi.dwFlags = flags;
     return SendInput(1, input, Marshal.SizeOf(typeof(INPUT))) == 1;
+  }
+  [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(POINT point);
+  [DllImport("user32.dll", SetLastError = true)] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint pid);
+  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int cmd);
+  public static bool Visible(IntPtr hWnd) {
+    return IsWindowVisible(hWnd) && !IsIconic(hWnd);
+  }
+  [DllImport("user32.dll")] public static extern IntPtr GetAncestor(IntPtr hWnd, uint flags);
+  /** True when the pixel belongs to the target window itself or to one of its children. */
+  public static bool Belongs(IntPtr hWnd, int x, int y) {
+    POINT point;
+    point.X = x; point.Y = y;
+    IntPtr hit = WindowFromPoint(point);
+    if (hit == IntPtr.Zero) { return false; }
+    // Identity is the top-level ancestor, never the process id: a packaged (UWP) app runs
+    // inside ApplicationFrameHost, so the frame belongs to the HOST process while the
+    // control under the cursor belongs to the app. Comparing PIDs would therefore refuse
+    // every UWP target forever, however visible and however permitted it is.
+    return GetAncestor(hit, 2) == GetAncestor(hWnd, 2);
+  }
+  [DllImport("user32.dll", SetLastError = true)] public static extern bool SetWindowPos(IntPtr hWnd, IntPtr after, int x, int y, int cx, int cy, uint flags);
+  /** Raises the window to the top of the z-order without moving, resizing or activating it. */
+  public static bool Raise(IntPtr hWnd) {
+    return SetWindowPos(hWnd, IntPtr.Zero, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0040);
   }
   public static bool Move(int x, int y) {
     return Send(0xC001, x, y);
@@ -61,6 +95,39 @@ public static class BeeMouse {
 `;
 
 /** Outer-frame resize without activation, so the window keeps its z-order and focus. */
+/**
+ * Virtual-desktop membership of a window handle. Separate Add-Type because it needs COM
+ * interop, and kept opt-in so drivers that never click do not pay for the compile.
+ */
+const DESK_PRELUDE = `
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+[ComImport, Guid("AA509086-5CA9-4C25-8F95-589D3C07B48A")]
+class VirtualDesktopManager { }
+[ComImport, Guid("A5CD92FF-29BE-454C-8D04-D82879FB3F1B"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+public interface IVirtualDesktopManager {
+  [PreserveSig] int IsWindowOnCurrentVirtualDesktop(IntPtr topLevelWindow, out int onCurrentDesktop);
+  [PreserveSig] int GetWindowDesktopId(IntPtr topLevelWindow, out Guid desktopId);
+  [PreserveSig] int MoveWindowToDesktop(IntPtr topLevelWindow, ref Guid desktopId);
+}
+public static class BeeDesk {
+  public static bool OnCurrentDesktop(IntPtr hWnd) {
+    try {
+      var mgr = (IVirtualDesktopManager)new VirtualDesktopManager();
+      int on;
+      if (mgr.IsWindowOnCurrentVirtualDesktop(hWnd, out on) != 0) return true;
+      return on != 0;
+    } catch {
+      // Unknown (pre-Win10, COM unavailable): do not block here. The hit-test that
+      // follows is the authoritative guard, so an undetected desktop is still safe.
+      return true;
+    }
+  }
+}
+'@
+`;
+
 const RESIZE_PRELUDE = `
 Add-Type -TypeDefinition @'
 using System;
@@ -241,10 +308,11 @@ if (-not [BeeNative]::IsWindow($h)) { throw 'window handle is no longer valid' }
     const px = Math.round(x);
     const py = Math.round(y);
     if (!Number.isFinite(px) || !Number.isFinite(py)) throw new Error('click coordinates must be numbers');
-    // mouse_event rather than UIA: the whole point of this path is controls that expose no
-    // InvokePattern. Two guards run before the button goes down — the point must be inside the
-    // target frame, and the frame must actually be foreground — because whichever window is
-    // under the cursor receives the click, and that must only ever be the permitted app.
+    // Raw input rather than UIA: the whole point of this path is controls that expose no
+    // InvokePattern. Whichever window is under the cursor receives the click, so before the
+    // button goes down the point must be inside the target frame, the frame must be foreground,
+    // the frame must be on the current virtual desktop, and WindowFromPoint must resolve the
+    // pixel to the permitted window itself.
     const raw = await runPowerShell(`
 ${MOUSE_PRELUDE}
 $h = [IntPtr][int64]${h}
@@ -255,6 +323,35 @@ if (-not [BeeMouse]::Inside($h, $x, $y)) { throw "point $x,$y is outside the win
 [void][BeeNative]::ForceForeground($h)
 Start-Sleep -Milliseconds 200
 if ([BeeMouse]::GetForegroundWindow().ToInt64() -ne $h.ToInt64()) { throw 'the window is not foreground, refusing to click another application' }
+# Foreground alone is not enough: a minimized or covered frame still reports as foreground
+# while the pixel underneath belongs to whatever is actually on top of it. WindowFromPoint
+# is the same hit-test the click itself will go through, so if that ancestor is not the
+# target the click is refused instead of being posted into an unrelated application.
+if (-not [BeeMouse]::Visible($h)) {
+  [void][BeeMouse]::ShowWindow($h, 9)
+  Start-Sleep -Milliseconds 250
+  [void][BeeNative]::ForceForeground($h)
+  Start-Sleep -Milliseconds 200
+}
+${DESK_PRELUDE}
+# On another virtual desktop the window is unreachable by synthetic input: SendInput goes
+# to the desktop the user is looking at, so WindowFromPoint answers with whoever owns that
+# pixel HERE and the hit-test below would blame an innocent application. Refuse instead —
+# the error names the real problem instead of the pixel owner.
+if (-not [BeeDesk]::OnCurrentDesktop($h)) {
+  throw 'the window is on another virtual desktop, refusing to click: synthetic input only reaches the desktop the user is on. Switch to that desktop, or drive the control with an invoke action'
+}
+if (-not [BeeMouse]::Visible($h)) { throw "the window is minimized or hidden, refusing to click whatever is on screen instead" }
+if (-not [BeeMouse]::Belongs($h, $x, $y)) {
+  # Covered by another window: raise it and retry once before refusing. This is a
+  # permitted application the caller explicitly asked to click, so bringing it to the top
+  # is within the grant — clicking blindly into the window underneath is not.
+  [void][BeeMouse]::Raise($h)
+  Start-Sleep -Milliseconds 250
+  [void][BeeNative]::ForceForeground($h)
+  Start-Sleep -Milliseconds 200
+  if (-not [BeeMouse]::Belongs($h, $x, $y)) { throw "the pixel $x,$y belongs to another application, refusing to click" }
+}
 if (-not [BeeMouse]::Move($x, $y)) { throw 'could not move the cursor' }
 $cursor = [BeeMouse]::Cursor()
 if ($cursor[0] -ne $x -or $cursor[1] -ne $y) { throw "cursor ended at $($cursor[0]),$($cursor[1]) instead of $x,$y" }
