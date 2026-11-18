@@ -77,6 +77,23 @@ fourth, narrower one expressed by the tool's own `preview()`.
 A tool may return `meta.images` (screenshots) — the loop turns those into an image message
 so vision models can read the screen, and `meta.awaitingUser` to end the turn (`ask_user`).
 
+### Transcripts strict endpoints accept
+
+Strict OpenAI-compatible gateways (DeepSeek behind litellm, Azure OpenAI) validate the whole
+history and reject the *entire* request for one defect in it. These rules are enforced here:
+
+| Rule | What breaks | Repair |
+| --- | --- | --- |
+| every assistant `tool_calls` message is followed by exactly one `tool` message per call id | an image pushed before its own tool result splits the group ("An assistant message with 'tool_calls' must be followed by tool messages") | images are collected per turn and appended **after** every reply; `repairToolHistory` fixes a history already in that shape |
+| a turn cannot end with an unresolved tool call | cancelling or a throwing tool left a call unanswered | an error result is appended for every call, on abort too |
+| a history that ends on a tool result must replay `reasoning_content` | DeepSeek's thinking mode 400s ("The reasoning_content in the thinking mode must be passed back"); an absent or `null` field is rejected, an **empty string** is accepted | `streamChat` retries with `reasoning: ''` on tool-call messages that carry none |
+
+These last two are repairs, not assumptions — a gateway that needs neither never sees them.
+A text-only model rejecting a screenshot is repaired the same way: the image is dropped and
+the model is told, so a session started on a non-vision model does not die at the first
+`desktop_screenshot`. Each repair is applied at most once per request, and the repairs
+compose (image rejection followed by a reasoning rejection retries twice).
+
 ## Desktop control
 
 ```

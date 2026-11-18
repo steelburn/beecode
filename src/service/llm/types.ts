@@ -16,6 +16,11 @@ export interface LlmMessage {
   toolName?: string;
   toolFailed?: boolean;
   images?: LlmImage[];
+  /**
+   * Reasoning tokens the provider emitted. DeepSeek's thinking mode rejects a replayed
+   * history that drops them, so they travel with the assistant message unchanged.
+   */
+  reasoning?: string;
 }
 
 export interface LlmToolSchema {

@@ -1,4 +1,5 @@
 import type { LlmChunk, LlmMessage, LlmRequest, LlmToolSchema } from './types';
+import { repairToolHistory } from './history';
 import { LlmError, normalizeBaseUrl, resolveApiKey } from './types';
 
 /**
@@ -33,12 +34,49 @@ async function* streamOpenAi(req: LlmRequest): AsyncGenerator<LlmChunk> {
     max_tokens: req.maxTokens,
   };
 
-  const res = await post(`${base}/chat/completions`, body, req.signal, {
-    'content-type': 'application/json',
-    ...(key ? { authorization: `Bearer ${key}` } : {}),
-    // Azure OpenAI accepts api-key instead of a bearer token.
-    ...(req.preset.provider === 'azure-openai' && key ? { 'api-key': key } : {}),
-  });
+  const send = (messages: LlmMessage[]) =>
+    post(
+      `${base}/chat/completions`,
+      { ...body, messages: toOpenAiMessages(messages) },
+      req.signal,
+      {
+        'content-type': 'application/json',
+        ...(key ? { authorization: `Bearer ${key}` } : {}),
+        // Azure OpenAI accepts api-key instead of a bearer token.
+        ...(req.preset.provider === 'azure-openai' && key ? { 'api-key': key } : {}),
+      },
+    );
+
+  // A strict gateway rejects the *whole* request for one defect in it, and the defects are
+  // independent — a request can carry both. Repair and resend instead of giving up, each
+  // repair at most once, so a rejected turn degrades (no vision) instead of dying.
+  const sendWithRepairs = async (): Promise<Response> => {
+    let messages = req.messages;
+    let lastError: unknown;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        return await send(messages);
+      } catch (err) {
+        lastError = err;
+        // A text-only model rejects a screenshot ("You have uploaded an unsupported image").
+        // Losing vision must not lose the turn: drop the images and tell the model, so it
+        // falls back to desktop_ui_tree and the text tool results.
+        if (isImageRejection(err) && hasImages(messages)) {
+          messages = withoutImages(messages);
+          continue;
+        }
+        // A thinking model rejects a tool history whose assistant message drops the
+        // reasoning field. It must be *present*; an empty string is accepted.
+        if (isReasoningRejection(err) && hasBackfillableReasoning(messages)) {
+          messages = withEmptyReasoning(messages);
+          continue;
+        }
+        throw err;
+      }
+    }
+    throw lastError;
+  };
+  const res = await sendWithRepairs();
 
   const pending: Array<{ id: string; name: string; args: string }> = [];
 
@@ -91,12 +129,17 @@ async function* streamOpenAi(req: LlmRequest): AsyncGenerator<LlmChunk> {
 }
 
 function toOpenAiMessages(messages: LlmMessage[]) {
-  return messages.map((m) => {
+  return repairToolHistory(messages).map((m) => {
     if (m.role === 'tool') {
       return { role: 'tool', tool_call_id: m.toolCallId, content: m.content };
     }
     if (m.role === 'assistant') {
       const out: Record<string, unknown> = { role: 'assistant', content: m.content || null };
+      // DeepSeek's thinking mode refuses a history that drops its own reasoning
+      // ("The `reasoning_content` in the thinking mode must be passed back to the API").
+      // An empty string is meaningful (see withEmptyReasoning): it is the only accepted
+      // stand-in for reasoning the model did not emit, so it must reach the wire.
+      if (m.reasoning !== undefined && m.reasoning !== null) out.reasoning_content = m.reasoning;
       if (m.toolCalls?.length) {
         out.tool_calls = m.toolCalls.map((c) => ({
           id: c.id,
@@ -198,7 +241,7 @@ async function* streamAnthropic(req: LlmRequest): AsyncGenerator<LlmChunk> {
 function toAnthropicMessages(messages: LlmMessage[]) {
   const out: Array<{ role: 'user' | 'assistant'; content: unknown[] }> = [];
 
-  for (const m of messages) {
+  for (const m of repairToolHistory(messages)) {
     if (m.role === 'system') continue;
     if (m.role === 'assistant') {
       const blocks: unknown[] = [];
@@ -309,4 +352,46 @@ function parseArgs(raw: string): Record<string, unknown> {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+/** Does the request carry screenshot images at all? */
+function hasImages(messages: LlmMessage[]): boolean {
+  return messages.some((m) => Boolean(m.images?.length));
+}
+
+/** The same history with screenshots dropped, so the model is told rather than confused. */
+function withoutImages(messages: LlmMessage[]): LlmMessage[] {
+  return messages.map((m) =>
+    m.images?.length
+      ? {
+          ...m,
+          images: undefined,
+          content: `${m.content} (${m.images.length} screenshot image(s) omitted: the selected model does not accept images, use desktop_ui_tree instead)`,
+        }
+      : m,
+  );
+}
+
+/** Assistant tool-call messages with no reasoning, which a thinking model rejects. */
+function hasBackfillableReasoning(messages: LlmMessage[]): boolean {
+  return messages.some((m) => m.role === 'assistant' && Boolean(m.toolCalls?.length) && !m.reasoning);
+}
+
+/** The same history with an empty reasoning string on tool-call messages that carry none. */
+function withEmptyReasoning(messages: LlmMessage[]): LlmMessage[] {
+  return messages.map((m) =>
+    m.role === 'assistant' && m.toolCalls?.length && !m.reasoning ? { ...m, reasoning: '' } : m,
+  );
+}
+
+/** Gateway rejection caused by not replaying a thinking model's own reasoning. */
+function isReasoningRejection(err: unknown): boolean {
+  if (!(err instanceof LlmError) || err.status !== 400) return false;
+  return /reasoning_content|thinking mode/i.test(err.message);
+}
+
+/** Gateway rejection caused by attaching an image to a model without vision. */
+function isImageRejection(err: unknown): boolean {
+  if (!(err instanceof LlmError) || err.status !== 400) return false;
+  return /unsupported image|image.{0,60}(?:not (?:supported|allowed|permitted))|does not support (?:images|vision)/i.test(err.message);
 }

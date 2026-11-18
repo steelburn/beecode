@@ -12,7 +12,7 @@ import type {
 import type { ToolContext } from '../../shared/tools';
 import { buildSystemPrompt } from '../llm/prompts';
 import { streamChat } from '../llm/client';
-import type { LlmChunk, LlmMessage, LlmToolSchema } from '../llm/types';
+import type { LlmChunk, LlmImage, LlmMessage, LlmToolSchema } from '../llm/types';
 import type { Logger } from '../logger';
 import type { MemoryStore } from '../stores';
 import type { ToolRegistry } from '../tools/registry';
@@ -108,7 +108,11 @@ export class AgentLoop {
 
         if (calls.length === 0) {
           assistantEntry.text = textParts.join('').trim() || '(no response)';
-          session.messages.push({ role: 'assistant', content: assistantEntry.text });
+          session.messages.push({
+            role: 'assistant',
+            content: assistantEntry.text,
+            ...(assistantEntry.reasoning ? { reasoning: assistantEntry.reasoning } : {}),
+          });
           this.deps.emit({ type: 'session.entry', payload: { sessionId: session.id, entry: { ...assistantEntry } } });
           this.setStatus(session, 'idle');
           return;
@@ -121,14 +125,45 @@ export class AgentLoop {
           role: 'assistant',
           content: assistantEntry.text,
           toolCalls: calls.map((c) => ({ id: c.id, name: c.name, args: c.args })),
+          // Reasoning models (DeepSeek thinking mode) require their own reasoning to come
+          // back on the next request; dropping it is a hard 400.
+          ...(assistantEntry.reasoning ? { reasoning: assistantEntry.reasoning } : {}),
         });
         this.deps.emit({ type: 'session.entry', payload: { sessionId: session.id, entry: { ...assistantEntry } } });
 
         let stopTurn = false;
+        const executed = new Set<string>();
+        const images: LlmImage[] = [];
         for (const call of calls) {
           if (session.abort.signal.aborted) break;
-          const outcome = await this.executeTool(session, call, tools);
-          if (outcome.stopTurn) stopTurn = true;
+          executed.add(call.id);
+          try {
+            const outcome = await this.executeTool(session, call, tools);
+            if (outcome.images?.length) images.push(...outcome.images);
+            if (outcome.stopTurn) stopTurn = true;
+          } catch (err) {
+            // A throwing tool must still answer its tool_call — see the filler loop below.
+            const message = err instanceof Error ? err.message : String(err);
+            const outcome = this.finishTool(session, call, {
+              content: JSON.stringify({ error: `tool failed: ${message}` }),
+              failed: true,
+            });
+            if (outcome.stopTurn) stopTurn = true;
+          }
+        }
+        // One tool message per tool_call, always: strict OpenAI-compatible providers
+        // (DeepSeek behind litellm, Azure) reject the whole history with a 400 when a call
+        // is left unanswered, and the error only appears on the *following* request.
+        for (const call of calls) {
+          if (executed.has(call.id)) continue;
+          this.finishTool(session, call, {
+            content: JSON.stringify({ error: 'not executed: the turn was cancelled before this call ran' }),
+            failed: true,
+          });
+        }
+        // Images come last so they cannot split the call/result block.
+        if (images.length) {
+          session.messages.push({ role: 'user', content: '(screenshot captured by desktop_screenshot)', images });
         }
         if (stopTurn) {
           this.setStatus(session, 'idle');
@@ -197,7 +232,7 @@ export class AgentLoop {
     session: SessionState,
     call: ToolCallRecord,
     tools: ToolRegistry,
-  ): Promise<{ stopTurn: boolean }> {
+  ): Promise<{ stopTurn: boolean; images?: LlmImage[] }> {
     const tool = tools.get(call.name);
     if (!tool) {
       return this.finishTool(session, call, {
@@ -264,14 +299,14 @@ export class AgentLoop {
     const result = await tools.execute(call.name, call.args, ctx);
 
     // A screenshot payload travels as an image message (vision models), not as text.
-    const images = (result.meta?.images as Array<{ mime: string; data: string }> | undefined) ?? [];
-    if (images.length) {
-      session.messages.push({ role: 'user', content: '(screenshot captured by desktop_screenshot)', images });
-    }
+    // It is deliberately NOT pushed here: the caller appends images only after every tool
+    // reply of the turn, because a user message inside a tool_calls block is rejected by
+    // strict OpenAI-compatible servers (DeepSeek/litellm) with a 400 on the next request.
+    const images = (result.meta?.images as LlmImage[] | undefined) ?? [];
 
     const stopTurn = result.meta?.awaitingUser === true;
     const finished = this.finishTool(session, call, result);
-    return { stopTurn: stopTurn || finished.stopTurn };
+    return { stopTurn: stopTurn || finished.stopTurn, images };
   }
 
   private finishTool(
