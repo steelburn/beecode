@@ -24,7 +24,8 @@
     "dist": "electron-builder",
     "smoke": "node scripts/smoke.mjs",
     "verify:driver": "node scripts/verify-driver.mjs",
-    "verify:llm": "node scripts/verify-llm.mjs"
+    "verify:llm": "node scripts/verify-llm.mjs",
+    "verify:installer": "node scripts/verify-installer.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

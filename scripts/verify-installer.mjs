@@ -1,0 +1,153 @@
+// Verifies the SHIPPED artifact, not dist/: extracts release/win-unpacked/resources/app.asar
+// into a temp dir, starts the service from inside that extraction, and checks that
+//   - the new desktop_click / desktop_resize tools are in the packaged tool list,
+//   - the packaged config carries the .env.llm preset without leaking the key,
+//   - the Windows driver actually runs from the packaged bundle (read-only window listing),
+//   - the LLM answers through the packaged service.
+// Run `npm run dist` first; this checks what electron-builder produced.
+import { spawn } from 'node:child_process';
+import { createServer } from 'node:net';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+const ASAR = 'release/win-unpacked/resources/app.asar';
+
+if (!existsSync(ASAR)) {
+  console.error(`${ASAR} not found — run "npm run dist" first.`);
+  process.exit(1);
+}
+
+// @electron/asar ships with electron-builder, so no extra dependency is needed.
+const asar = (await import('@electron/asar')).default ?? (await import('@electron/asar'));
+const workDir = mkdtempSync(join(tmpdir(), 'beecode-installer-'));
+asar.extractAll(ASAR, workDir);
+console.log(`extracted ${ASAR} -> ${workDir}`);
+
+const checks = [];
+function check(name, ok, detail = '') {
+  checks.push({ name, ok, detail });
+  console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? ` — ${detail}` : ''}`);
+}
+
+function freePort() {
+  return new Promise((resolve, reject) => {
+    const s = createServer();
+    s.listen(0, '127.0.0.1', () => {
+      const { port } = s.address();
+      s.close(() => resolve(port));
+    });
+    s.on('error', reject);
+  });
+}
+
+const requestedPort = await freePort();
+const child = spawn(process.execPath, [join(workDir, 'dist/service.js'), '--transport=http', `--port=${requestedPort}`], {
+  env: { ...process.env, BEECODE_SERVICE_TOKEN: '', ELECTRON_RUN_AS_NODE: undefined },
+  stdio: ['ignore', 'pipe', 'pipe'],
+});
+const stderr = [];
+child.stderr.on('data', (d) => stderr.push(String(d)));
+
+const { token, port } = await new Promise((resolve, reject) => {
+  const timer = setTimeout(() => reject(new Error('service did not become ready in 30s')), 30_000);
+  let buf = '';
+  child.stdout.on('data', (d) => {
+    buf += String(d);
+    for (const line of buf.split('\n')) {
+      try {
+        const msg = JSON.parse(line);
+        if (msg.type === 'beecode-service-ready') {
+          clearTimeout(timer);
+          resolve({ token: msg.token, port: msg.port });
+        }
+      } catch {
+        /* partial line or log noise */
+      }
+    }
+  });
+  child.on('exit', (code) => {
+    clearTimeout(timer);
+    reject(new Error(`service exited early (code ${code})\n${stderr.join('')}`));
+  });
+});
+
+let seq = 0;
+async function rpc(method, params = {}) {
+  const res = await fetch(`http://127.0.0.1:${port}/rpc`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+    body: JSON.stringify({ jsonrpc: '2.0', id: ++seq, method, params }),
+  });
+  const body = await res.json();
+  if (body.error) throw new Error(`${method}: ${JSON.stringify(body.error)}`);
+  return body.result;
+}
+
+try {
+  const health = await rpc('service.health');
+  check('packaged service starts and answers', health.ok === true, JSON.stringify(health).slice(0, 110));
+
+  const tools = await rpc('tools.list');
+  const names = tools.map((t) => t.name);
+  const byName = new Map(tools.map((t) => [t.name, t]));
+  check('tools.list from the packaged bundle', names.length >= 27, `${names.length} tools`);
+  check('desktop_click shipped', names.includes('desktop_click'));
+  check('desktop_resize shipped', names.includes('desktop_resize'));
+  const clickSchema = JSON.stringify(byName.get('desktop_click')?.inputSchema ?? {});
+  const resizeSchema = JSON.stringify(byName.get('desktop_resize')?.inputSchema ?? {});
+  check('desktop_click takes x/y', /"x"/.test(clickSchema) && /"y"/.test(clickSchema));
+  check('desktop_resize takes width/height', /"width"/.test(resizeSchema) && /"height"/.test(resizeSchema));
+
+  const configJson = JSON.stringify(await rpc('config.get'));
+  check('env-llm preset present in the packaged config', configJson.includes('env-llm'));
+  check('no literal API key in the packaged config payload', !/sk-[A-Za-z0-9]/.test(configJson));
+
+  // Drive the real Windows driver from inside the packaged bundle. A read-only listing
+  // proves the PowerShell -File transport and the driver preludes survive packaging;
+  // the session is created in ask mode and the prompt forbids any mutation.
+  const session = await rpc('session.create', { title: 'packed verify', mode: 'ask' });
+  await rpc('session.prompt', {
+    sessionId: session.id,
+    text:
+      'Use the read-only desktop window listing tool to enumerate the open windows on this desktop. ' +
+      'Do NOT open, close, move, resize, click, type or focus anything. Then reply with the number of windows.',
+  });
+
+  const deadline = Date.now() + 150_000;
+  let snapshot = await rpc('session.get', { sessionId: session.id });
+  while (Date.now() < deadline && snapshot.status !== 'idle') {
+    for (const req of snapshot.pendingApprovals ?? []) {
+      await rpc('approval.respond', { sessionId: session.id, approvalId: req.id, decision: 'deny' });
+    }
+    await new Promise((r) => setTimeout(r, 2000));
+    snapshot = await rpc('session.get', { sessionId: session.id });
+  }
+
+  const entries = snapshot.entries ?? [];
+  const listed = entries.filter((e) => e.role === 'tool').find((e) => /window/i.test(e.text ?? ''));
+  const windowCount = /"count"\s*:\s*(\d+)/.exec(listed?.text ?? '')?.[1] ?? 'n/a';
+  check('driver ran inside the packaged bundle', Boolean(listed), `count=${windowCount}`);
+  check('driver returned real windows', Number(windowCount) > 0, `count=${windowCount}`);
+  const assistant = entries.filter((e) => e.role === 'assistant').pop();
+  check('LLM answered through the packaged service', Boolean((assistant?.text ?? '').trim()), (assistant?.text ?? '').trim().slice(0, 120));
+
+  await rpc('service.shutdown').catch(() => {});
+} catch (err) {
+  check('packaged verification ran without throwing', false, String(err));
+} finally {
+  child.kill();
+  try {
+    rmSync(workDir, { recursive: true, force: true, maxRetries: 3 });
+  } catch {
+    console.warn(`could not remove ${workDir} (still locked) — delete it manually`);
+  }
+}
+
+const failed = checks.filter((c) => !c.ok);
+console.log(`\n${checks.length - failed.length}/${checks.length} checks passed`);
+if (failed.length) {
+  console.log('FAILED:', failed.map((f) => f.name).join('; '));
+  if (stderr.length) console.log('stderr:', stderr.join('').slice(-800));
+}
+process.exit(failed.length ? 1 : 0);

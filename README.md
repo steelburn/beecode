@@ -145,7 +145,10 @@ src/
 | `npm test` | policy, desktop-controller and end-to-end service tests |
 | `npm run smoke` | boots the real app in `--smoke` mode and asserts the UI reached the service |
 | `npm run check` | typecheck + test + build + smoke |
-| `npm run dist` | installer via electron-builder (optional dependency) |
+| `npm run dist` | NSIS installer in `release/` via electron-builder |
+| `npm run verify:driver` | drives the real Windows driver against Calculator — UI Automation, coordinate clicks, resize |
+| `npm run verify:llm` | round-trips the `.env.llm` endpoint through the agent loop |
+| `npm run verify:installer` | boots the service out of the packaged `app.asar` and checks the shipped tools and driver |
 
 ## Status and limits
 
