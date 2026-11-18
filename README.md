@@ -46,6 +46,21 @@ set ANTHROPIC_API_KEY=sk-...      # or OPENAI_API_KEY
 Local models work too — add an `openai-compatible` preset pointing at Ollama or LM Studio
 in the **Settings** panel (see below) or in `~/.beecode/config.json`.
 
+## Extending it
+
+Two extension points need no code:
+
+- **MCP servers** — point `mcpServers` in `~/.beecode/config.json` at any Model Context
+  Protocol server (stdio or streamable HTTP); its tools appear as `mcp__<server>__<tool>`
+  and go through the approval card unless the server marks them read-only. Servers can also
+  be added, edited, enabled and removed in the **MCP & skills** panel.
+- **Skills** — drop a `SKILL.md` playbook into `~/.beecode/skills/<name>/` (or
+  `.beecode/skills/` in the workspace). The agent sees its name and description, and loads
+  the instructions with the `skill` tool only when the task matches.
+
+See [docs/mcp-and-skills.md](docs/mcp-and-skills.md) for the config shape and the RPC
+surface.
+
 ## Settings
 
 The **Settings** panel (right-hand sidebar, last tab) is where the endpoint, the model and

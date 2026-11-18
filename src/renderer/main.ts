@@ -7,12 +7,14 @@ import type {
   PolicyDocument,
   SessionSnapshot,
   SessionSummary,
+  SkillInfo,
+  McpServerStatus,
   SubagentRunInfo,
   ToolInfo,
   TranscriptEntry,
 } from '../shared/protocol';
 import { clear, formatJsonForDisplay, h, renderMarkdown } from './dom';
-import { renderActivity, renderPermissions, renderSettings, renderSubagents } from './panels';
+import { renderActivity, renderIntegrations, renderPermissions, renderSettings, renderSubagents } from './panels';
 
 declare global {
   interface Window {
@@ -68,7 +70,7 @@ const rendererErrors: string[] = [];
 window.addEventListener('error', (event) => rendererErrors.push(String(event.message)));
 window.addEventListener('unhandledrejection', (event) => rendererErrors.push(String((event as PromiseRejectionEvent).reason)));
 
-type PanelTab = 'permissions' | 'subagents' | 'activity' | 'settings';
+type PanelTab = 'permissions' | 'subagents' | 'integrations' | 'activity' | 'settings';
 
 interface State {
   info?: AppInfo;
@@ -86,6 +88,8 @@ interface State {
   subagents: SubagentRunInfo[];
   agents: AgentInfo[];
   tools: ToolInfo[];
+  mcpServers: McpServerStatus[];
+  skills: SkillInfo[];
   panel: PanelTab;
   ready: boolean;
 }
@@ -98,6 +102,8 @@ const state: State = {
   subagents: [],
   agents: [],
   tools: [],
+  mcpServers: [],
+  skills: [],
   panel: 'permissions',
   ready: false,
 };
@@ -165,7 +171,7 @@ async function loadAll(): Promise<void> {
   if (loadingAll) return;
   loadingAll = true;
   try {
-    const [sessions, config, policy, audit, subagents, agents, tools] = await Promise.all([
+    const [sessions, config, policy, audit, subagents, agents, tools, mcp, skills] = await Promise.all([
       api.invoke('session.list', {}),
       api.getConfig(),
       api.getPolicy(),
@@ -173,6 +179,8 @@ async function loadAll(): Promise<void> {
       api.invoke('subagent.list', {}),
       api.invoke('agents.list', {}),
       api.invoke('tools.list', {}),
+      api.invoke('mcp.list', {}),
+      api.invoke('skill.list', {}),
     ]);
     state.config = config;
     state.policy = policy;
@@ -180,6 +188,8 @@ async function loadAll(): Promise<void> {
     state.subagents = subagents;
     state.agents = agents;
     state.tools = tools;
+    state.mcpServers = mcp.servers;
+    state.skills = skills.skills;
     state.sessions = sessions;
     state.ready = true;
 
@@ -728,6 +738,10 @@ function renderPanelBody(): void {
     saveConfig: async (next: BeeCodeConfig) => {
       state.config = await api.saveConfig(next);
       populateModels();
+      // The service reconnects servers whose definition changed while saving, so read
+      // the resulting statuses back instead of reconnecting a second time here.
+      const mcp = await api.invoke('mcp.list', {});
+      state.mcpServers = mcp.servers;
       renderPanelBody();
     },
     pickDirectory: async () => api.pickDirectory(),
@@ -738,10 +752,21 @@ function renderPanelBody(): void {
       state.audit = await api.invoke('audit.list', { limit: 80 });
       renderPanelBody();
     },
+    reloadIntegrations: async () => {
+      const [mcp, skills] = await Promise.all([
+        api.invoke('mcp.reload', {}),
+        api.invoke('skill.reload', {}),
+      ]);
+      state.mcpServers = mcp.servers;
+      state.skills = skills.skills;
+      renderPanelBody();
+    },
   };
 
   if (state.panel === 'permissions') renderPermissions(els.panelBody, state.policy, state.config, callbacks);
   else if (state.panel === 'subagents') renderSubagents(els.panelBody, state.subagents, state.agents, callbacks);
+  else if (state.panel === 'integrations')
+    renderIntegrations(els.panelBody, state.mcpServers, state.skills, state.config, callbacks);
   else if (state.panel === 'settings') {
     if (state.config) renderSettings(els.panelBody, state.config, callbacks);
     else clear(els.panelBody);

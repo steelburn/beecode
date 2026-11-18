@@ -56,6 +56,11 @@ export const RENDERER_METHODS: RpcMethod[] = [
   'subagent.list',
   'subagent.cancel',
   'tools.list',
+  'mcp.list',
+  'mcp.reload',
+  'skill.list',
+  'skill.reload',
+  'skill.read',
 ];
 
 /**

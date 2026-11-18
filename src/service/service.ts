@@ -1,8 +1,9 @@
 import { mkdir } from 'node:fs/promises';
-import { defaultConfig, normalizeConfig } from '../shared/defaults';
+import { defaultConfig, normalizeConfig, normalizeMcpServers } from '../shared/defaults';
 import { installSecrets } from './secrets';
 import type {
   BeeCodeConfig,
+  SkillInfo,
   PolicyDocument,
   RpcMethod,
   ServiceEvent,
@@ -12,6 +13,8 @@ import type {
 import { paths } from '../shared/tools';
 import { AuditLog } from './audit';
 import { DesktopController } from './desktop/controller';
+import { McpManager } from './mcp/manager';
+import { SkillStore } from './skills/store';
 import { createLogger, readJsonFile, writeJsonFile, type Logger } from './logger';
 import { loadEnvPreset } from './llm/envPreset';
 import { PolicyEngine } from './policy';
@@ -50,6 +53,9 @@ export class BeeCodeService {
   private todos = new TodoStore();
   private memory = new MemoryStore();
   private registry!: ToolRegistry;
+  private skills!: SkillStore;
+  private mcp!: McpManager;
+  private deps!: ToolDeps;
   private subagentRegistry!: ToolRegistry;
   private listeners = new Set<(event: ServiceEvent) => void>();
   private startedAt = new Date().toISOString();
@@ -97,16 +103,25 @@ export class BeeCodeService {
       onUpdate: (run) => this.emit({ type: 'subagent.update', payload: run }),
     });
 
-    const deps: ToolDeps = {
+    // Skills come from disk, MCP tools from external servers: both must be ready before
+    // the registries are built, because a registry cannot grow tools after the fact.
+    this.skills = new SkillStore();
+    this.mcp = new McpManager({ servers: () => this.config.mcpServers ?? {}, log: this.log });
+    await this.mcp.start();
+    await this.scanSkills(this.config.agent.workingDir);
+
+    this.deps = {
       controller: this.desktop,
       policy: this.policy,
       audit: this.audit,
       subagents: this.subagents,
       todos: this.todos,
       memory: this.memory,
+      skills: this.skills,
+      scanSkills: (cwd) => this.scanSkills(cwd),
+      mcp: this.mcp,
     };
-    this.registry = buildToolRegistry(deps, { allowDelegation: true });
-    this.subagentRegistry = buildToolRegistry(deps, { allowDelegation: false, readOnly: true });
+    this.rebuildRegistries();
 
     const loop = new AgentLoop({
       tools: (session) => (session.depth > 0 ? this.subagentRegistry : this.registry),
@@ -116,6 +131,8 @@ export class BeeCodeService {
       memory: this.memory,
       describePolicy: () => this.policy.describeAllowedApps(),
       listAgents: () => this.subagents.availableAgents(),
+      listSkills: (cwd) => this.skillSection(cwd),
+      describeMcp: () => this.mcp.describe(),
       requestApproval: (session, request) => this.sessions.requestApproval(session, request),
     });
 
@@ -170,6 +187,8 @@ export class BeeCodeService {
       agent: { ...base.agent, ...(loaded.agent ?? {}) },
       desktop: { ...base.desktop, ...(loaded.desktop ?? {}) },
       subagents: { ...base.subagents, ...(loaded.subagents ?? {}) },
+      mcpServers: normalizeMcpServers({ ...base.mcpServers, ...(loaded.mcpServers ?? {}) }),
+      skills: { ...base.skills, ...(loaded.skills ?? {}) },
     };
   }
 
@@ -256,6 +275,34 @@ export class BeeCodeService {
       case 'session.abort':
         return { aborted: this.sessions.abort(this.requireString(args, 'sessionId')) };
 
+      case 'mcp.list':
+        return { servers: this.mcp.list() };
+
+      case 'mcp.reload': {
+        const servers = await this.mcp.reload();
+        this.rebuildRegistries();
+        this.log.info('mcp servers reloaded', {
+          servers: servers.filter((server) => server.state === 'connected').length,
+          tools: this.mcp.toolCount(),
+        });
+        return { servers };
+      }
+
+      case 'skill.list':
+        return { skills: await this.scanSkills(this.skillsCwd(args)) };
+
+      case 'skill.reload':
+        return { skills: await this.skills.load(this.skillScanOptions(this.skillsCwd(args))) };
+
+      case 'skill.read': {
+        const cwd = this.skillsCwd(args);
+        await this.scanSkills(cwd);
+        const name = this.requireString(args, 'name');
+        const record = this.skills.get(name);
+        if (!record) throw new Error(`unknown skill "${name}"`);
+        return { skill: record.info, content: record.body };
+      }
+
       case 'session.setMode':
         return this.sessions.setMode(this.requireString(args, 'sessionId'), args.mode as never);
 
@@ -312,12 +359,20 @@ export class BeeCodeService {
             return rest;
           }),
         };
+        const previousMcp = JSON.stringify(this.config.mcpServers ?? {});
         this.config = this.mergeConfig(normalizeConfig(sanitized, { strict: true }));
         // Drop secrets for presets the normalizer rejected or the user removed.
         this.secrets.prune(this.config.models.map((preset) => preset.id));
         await mkdir(this.config.agent.workingDir, { recursive: true });
         this.policy.setWorkspaceRoots([this.config.agent.workingDir]);
         await writeJsonFile(paths().config, this.config);
+        // An edited server list has to take effect now: the registry cannot grow tools
+        // after it is built, so reconnect and rebuild before answering. A server that
+        // fails to start is reported in its status — it never fails the save.
+        if (JSON.stringify(this.config.mcpServers ?? {}) !== previousMcp) {
+          await this.mcp.reload();
+          this.rebuildRegistries();
+        }
         this.emit({ type: 'service.health', payload: this.health() });
         return this.config;
       }
@@ -362,8 +417,39 @@ export class BeeCodeService {
     for (const session of this.sessions.list()) {
       this.sessions.abort(session.id);
     }
+    await this.mcp.stop();
     await this.audit.flush();
     this.log.info('service stopping');
+  }
+
+  /** Rebuilds the main and subagent catalogues (needed after an MCP reload). */
+  private rebuildRegistries(): void {
+    this.registry = buildToolRegistry(this.deps, { allowDelegation: true });
+    this.subagentRegistry = buildToolRegistry(this.deps, { allowDelegation: false, readOnly: true });
+  }
+
+  private skillsCwd(args: Record<string, unknown>): string {
+    const cwd = typeof args.cwd === 'string' ? args.cwd.trim() : '';
+    return cwd || this.config.agent.workingDir;
+  }
+
+  private skillScanOptions(cwd: string) {
+    return {
+      cwd,
+      extraDirs: this.config.skills?.dirs,
+      maxBytes: this.config.skills?.maxBytes,
+    };
+  }
+
+  private async scanSkills(cwd: string): Promise<SkillInfo[]> {
+    if (this.config.skills?.enabled === false) return [];
+    return this.skills.ensure(this.skillScanOptions(cwd));
+  }
+
+  /** The skills block of the system prompt ('' when skills are off or absent). */
+  private async skillSection(cwd: string): Promise<string> {
+    await this.scanSkills(cwd);
+    return this.skills.describe();
   }
 
   private requireString(args: Record<string, unknown>, key: string): string {

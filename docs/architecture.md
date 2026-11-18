@@ -132,6 +132,27 @@ and audits each spawn.
 
 Depth > 2 is refused, and a subagent's toolset contains no delegating tools.
 
+## MCP servers and skills
+
+Tools come from three places: the built-in catalogue (`desktop_*`, `fs_*`, `shell_*`,
+`todo_*`, `memory_*`, `agent_delegate`), external **MCP servers**, and the `skill` tool
+that loads markdown playbooks from disk.
+
+`McpManager` connects every enabled server during `init()` — before the registries are
+built, because a registry cannot grow tools afterwards — and projects each published tool
+into the catalogue as `mcp__<server>__<tool>`. An MCP tool is mutating unless the server
+sets `annotations.readOnlyHint: true`, so it lands behind the same approval gate as the
+built-in mutating tools. MCP names are deliberately absent from
+`SUBAGENT_TOOL_ALLOWLIST`: a nested internal session never reaches a third-party server.
+`mcp.reload` reconnects and rebuilds both registries.
+
+`SkillStore` scans `~/.beecode/skills`, `<cwd>/.beecode/skills` and any configured
+`skills.dirs` once per working directory, and renders only names and descriptions into the
+system prompt. The body arrives through the read-only `skill` tool when the model asks for
+it, which keeps every installed playbook out of the context window until it is needed.
+
+Details and configuration: [mcp-and-skills.md](./mcp-and-skills.md).
+
 ## Storage
 
 | Path | Contents |

@@ -3,6 +3,34 @@ import { mkdtemp, rm, writeFile, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import type { McpListResult, SkillListResult, SkillReadResult } from '../shared/protocol';
+
+/** A real stdio MCP server with one read-only and one mutating tool. */
+const FAKE_MCP_SERVER = `
+const readline = require('node:readline');
+const rl = readline.createInterface({ input: process.stdin });
+const NEWLINE = String.fromCharCode(10);
+const send = (message) => process.stdout.write(JSON.stringify(message) + NEWLINE);
+const tools = [
+  { name: 'read_note', description: 'Read a note', inputSchema: { type: 'object', properties: { id: { type: 'string' } } }, annotations: { readOnlyHint: true } },
+  { name: 'write_note', description: 'Write a note', inputSchema: { type: 'object', properties: { id: { type: 'string' }, text: { type: 'string' } } } },
+];
+rl.on('line', (line) => {
+  if (!line.trim()) return;
+  const message = JSON.parse(line);
+  if (message.id === undefined) return;
+  const reply = (result) => send({ jsonrpc: '2.0', id: message.id, result });
+  if (message.method === 'initialize') {
+    reply({ protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'fake', version: '1.0.0' } });
+  } else if (message.method === 'tools/list') {
+    reply({ tools });
+  } else if (message.method === 'tools/call') {
+    reply({ content: [{ type: 'text', text: 'ok' }] });
+  } else {
+    send({ jsonrpc: '2.0', id: message.id, error: { code: -32601, message: 'unknown method' } });
+  }
+});
+`;
 
 /**
  * End-to-end service test: boots the real background service against a throw-away
@@ -13,6 +41,17 @@ test('background service answers JSON-RPC over loopback HTTP', async () => {
   const home = await mkdtemp(join(tmpdir(), 'beecode-home-'));
   const workspace = join(home, 'workspace');
   await mkdir(workspace, { recursive: true });
+
+  // An MCP server and a workspace skill, so the boot path exercises both surfaces.
+  const mcpServerPath = join(home, 'fake-mcp.cjs');
+  await writeFile(mcpServerPath, FAKE_MCP_SERVER, 'utf8');
+  const skillDir = join(workspace, '.beecode', 'skills', 'release');
+  await mkdir(skillDir, { recursive: true });
+  await writeFile(
+    join(skillDir, 'SKILL.md'),
+    ['---', 'name: release', 'description: Cut a release', '---', '', '# Release', '', 'Tag, build, publish.', ''].join('\n'),
+    'utf8',
+  );
   await writeFile(
     join(home, 'config.json'),
     JSON.stringify({
@@ -21,6 +60,9 @@ test('background service answers JSON-RPC over loopback HTTP', async () => {
       desktop: { enabled: true, driver: 'mock', allowInput: true },
       agent: { defaultMode: 'ask', maxSteps: 4, autoApproveTools: [], workingDir: workspace },
       subagents: { enabled: true, maxConcurrent: 2, cliAgents: [] },
+      mcpServers: {
+        fake: { enabled: true, transport: 'stdio', command: process.execPath, args: [mcpServerPath] },
+      },
     }),
     'utf8',
   );
@@ -58,6 +100,70 @@ test('background service answers JSON-RPC over loopback HTTP', async () => {
 
     const policy = (await rpc('policy.get')).result as { allowedApps: Array<{ id: string }> };
     assert.ok(policy.allowedApps.some((a) => a.id === 'notepad'));
+
+    // MCP: the configured server is connected, its tools are exposed as
+    // mcp__<server>__<tool>, and only the ones without readOnlyHint need approval.
+    const mcp = (await rpc('mcp.list')).result as McpListResult;
+    assert.equal(mcp.servers.length, 1);
+    assert.equal(mcp.servers[0].state, 'connected');
+    const mcpTools = new Map(mcp.servers[0].tools.map((tool) => [tool.tool, tool.mutating]));
+    assert.deepEqual([...mcpTools.keys()].sort(), ['mcp__fake__read_note', 'mcp__fake__write_note']);
+    assert.equal(mcpTools.get('mcp__fake__read_note'), false);
+    assert.equal(mcpTools.get('mcp__fake__write_note'), true);
+
+    // Skills: the workspace playbook is listed and its body is loaded on demand.
+    const listed = (await rpc('skill.list', { cwd: workspace })).result as SkillListResult;
+    assert.deepEqual(
+      listed.skills.map((skill) => skill.name),
+      ['release'],
+    );
+    assert.equal(listed.skills[0].source, 'project');
+    const detail = (await rpc('skill.read', { name: 'release', cwd: workspace })).result as SkillReadResult;
+    assert.match(detail.content, /^# Release/);
+    assert.match(detail.content, /Tag, build, publish\./);
+
+    // Config editing: the integrations panel writes mcpServers through config.set, so a
+    // saved edit has to reconnect right there and the tool catalogue has to follow.
+    const config = (await rpc('config.get')).result as Record<string, unknown> & {
+      mcpServers: Record<string, unknown>;
+    };
+    const saved = await rpc('config.set', {
+      config: {
+        ...config,
+        mcpServers: {
+          ...config.mcpServers,
+          second: { enabled: true, transport: 'stdio', command: process.execPath, args: [mcpServerPath] },
+          broken: { enabled: true, transport: 'stdio', command: join(home, 'missing-binary'), args: [] },
+        },
+      },
+    });
+    assert.equal(saved.error, undefined, saved.error?.message);
+    const afterAdd = (await rpc('mcp.list')).result as McpListResult;
+    assert.deepEqual(
+      afterAdd.servers.map((server) => server.name).sort(),
+      ['broken', 'fake', 'second'],
+    );
+    assert.equal(afterAdd.servers.find((server) => server.name === 'second')?.state, 'connected');
+    // A server that cannot be spawned is reported in its status — never fatal to the save.
+    assert.equal(afterAdd.servers.find((server) => server.name === 'broken')?.state, 'error');
+    const afterAddTools = ((await rpc('tools.list')).result as Array<{ name: string }>).map(
+      (tool) => tool.name,
+    );
+    assert.ok(afterAddTools.includes('mcp__second__read_note'), 'registry rebuilt with the new server');
+    assert.ok(!afterAddTools.includes('mcp__broken__read_note'));
+
+    // Removing it again drops the connection *and* the tools it contributed.
+    await rpc('config.set', { config: { ...config, mcpServers: config.mcpServers } });
+    const afterRemove = (await rpc('mcp.list')).result as McpListResult;
+    assert.deepEqual(
+      afterRemove.servers.map((server) => server.name),
+      ['fake'],
+    );
+    const afterRemoveTools = ((await rpc('tools.list')).result as Array<{ name: string }>).map(
+      (tool) => tool.name,
+    );
+    assert.ok(!afterRemoveTools.includes('mcp__second__read_note'), 'removed server tools dropped');
+    assert.ok(afterRemoveTools.includes('mcp__fake__read_note'), 'untouched server kept its tools');
 
     const created = (await rpc('session.create', { title: 'e2e' })).result as { id: string; mode: string };
     assert.ok(created.id.startsWith('s_'));

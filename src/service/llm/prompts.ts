@@ -9,6 +9,10 @@ export interface PromptContext {
   agentName: string;
   subagents: AgentInfo[];
   memory?: string;
+  /** Rendered skill catalogue (empty when no skill is installed). */
+  skills?: string;
+  /** Rendered MCP server catalogue (empty when none is configured). */
+  mcp?: string;
   isSubagent?: boolean;
 }
 
@@ -59,11 +63,18 @@ export function buildSystemPrompt(ctx: PromptContext): string {
     '',
     'HOW TO DRIVE AN APP',
     '1. desktop_launch to start it (or desktop_list_windows to see what is already running).',
+    '   Every result names one window: handle, processId, title, exe, className. Pass that handle from then',
+    '   on — an app name is re-resolved on each call and can drift to a different window. launch reports',
+    '   windowCreated / tabAdded: with a single-instance app a second launch adds a tab instead.',
     '2. desktop_focus to bring its window forward.',
     '3. desktop_ui_tree to read the control tree — prefer automationId, then name + controlType.',
     '4. desktop_invoke / desktop_set_value for controls; desktop_type / desktop_hotkey for keyboard.',
-    '5. desktop_screenshot when the tree is not enough (vision models only).',
-    '6. Re-read the UI tree after an action to confirm the result — never assume it worked.',
+    '5. desktop_screenshot when the tree is not enough (vision models only). If that window cannot be',
+    '   captured (minimised, cloaked, no area) the call fails with the reason — never read a failure as',
+    '   "the screen looked unchanged".',
+    '6. Confirm by read-back, never by ok: desktop_type and desktop_hotkey return readBack plus',
+    '   lengthBefore / lengthAfter / delta, and desktop_ui_tree reports nodeCount / truncated / expanded',
+    '   with the text of each text-bearing node. Re-read after an action and compare what you expected.',
     '',
     'WORKING DIRECTORY',
     ctx.cwd,
@@ -98,6 +109,12 @@ export function buildSystemPrompt(ctx: PromptContext): string {
 
   if (ctx.memory) {
     lines.push('', 'WORKSPACE NOTES', ctx.memory);
+  }
+  if (ctx.skills) {
+    lines.push('', ctx.skills);
+  }
+  if (ctx.mcp) {
+    lines.push('', ctx.mcp);
   }
   if (ctx.isSubagent) {
     lines.push(

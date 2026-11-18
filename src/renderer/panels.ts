@@ -4,9 +4,12 @@ import type {
   AuditEntry,
   BeeCodeConfig,
   DesktopAction,
+  McpServerConfig,
+  McpServerStatus,
   ModelPreset,
   PolicyDocument,
   ProviderId,
+  SkillInfo,
   SubagentRunInfo,
 } from '../shared/protocol';
 import { DESKTOP_ACTIONS } from '../shared/protocol';
@@ -18,6 +21,8 @@ export interface PanelCallbacks {
   pickDirectory?(): Promise<string | undefined>;
   cancelSubagent(runId: string): Promise<void>;
   refreshAudit(): Promise<void>;
+  /** Re-read MCP servers and skills from the service after a reload. */
+  reloadIntegrations?(): Promise<void>;
 }
 
 /* ---------------------------------------------------------------- permissions */
@@ -288,6 +293,286 @@ function renderAddApp(update: (mutate: (draft: PolicyDocument) => void) => void)
   );
 }
 
+/* ------------------------------------------------------------- mcp & skills */
+
+/**
+ * External integrations: which MCP servers the service managed to connect, which tools
+ * they contribute and which skills exist on disk. Server definitions are editable here,
+ * but an edit only *proposes* a change: it goes back through `config.set`, where the
+ * service normalizes it, reconnects and reports what actually came up. The panel renders
+ * that report, so it cannot advertise a server or a tool the agent loop does not have.
+ */
+export function renderIntegrations(
+  host: HTMLElement,
+  servers: McpServerStatus[] | undefined,
+  skills: SkillInfo[] | undefined,
+  config: BeeCodeConfig | undefined,
+  cb: PanelCallbacks,
+): void {
+  clear(host);
+  if (!servers || !skills) {
+    host.append(h('div', { class: 'empty', text: 'Loading integrations…' }));
+    return;
+  }
+
+  const configured = config?.mcpServers ?? {};
+  const editable = Boolean(config && cb.saveConfig);
+  const statusFor = (name: string) => servers.find((entry) => entry.name === name);
+
+  /** Apply one change to a copy of the server map; the service owns it from there. */
+  const saveServers = (mutate: (draft: Record<string, McpServerConfig>) => void): void => {
+    if (!config || !cb.saveConfig) return;
+    const draft = JSON.parse(JSON.stringify(configured)) as Record<string, McpServerConfig>;
+    mutate(draft);
+    void cb.saveConfig({ ...config, mcpServers: draft });
+  };
+
+  const textInput = (value: string, placeholder: string): HTMLInputElement => {
+    const input = h('input', { type: 'text', placeholder });
+    Object.assign(input.style, inputStyle);
+    input.value = value;
+    return input;
+  };
+
+  const transportSelect = (value: McpServerConfig['transport']): HTMLSelectElement => {
+    const select = h(
+      'select',
+      null,
+      h('option', { value: 'stdio', text: 'stdio — spawn a command' }),
+      h('option', { value: 'http', text: 'http — streamable HTTP' }),
+    );
+    Object.assign(select.style, inputStyle);
+    select.value = value;
+    return select;
+  };
+
+  const asTransport = (select: HTMLSelectElement): McpServerConfig['transport'] =>
+    select.value === 'http' ? 'http' : 'stdio';
+
+  /** Server names double as tool-name segments, so keep them to the safe alphabet. */
+  const asName = (value: string): string => value.trim().replace(/[^A-Za-z0-9._-]+/g, '-');
+
+  function renderServerCard(
+    name: string,
+    server: McpServerConfig,
+    status: McpServerStatus | undefined,
+  ): HTMLElement {
+    const nameInput = textInput(name, 'server name');
+    const transport = transportSelect(server.transport);
+    const commandInput = textInput(server.command ?? '', 'command (e.g. npx)');
+    const argsInput = textInput((server.args ?? []).join(' '), 'arguments, space separated');
+    const urlInput = textInput(server.url ?? '', 'https://host/mcp');
+    const envArea = h('textarea', { rows: 3 });
+    Object.assign(envArea.style, inputStyle);
+    envArea.placeholder = 'KEY=VALUE per line';
+    envArea.value = formatEnv(server.env);
+
+    const save = (): void => {
+      const nextName = asName(nameInput.value);
+      if (!nextName) return;
+      const cfg: McpServerConfig = {
+        ...server,
+        transport: asTransport(transport),
+        args: argsInput.value.split(/\s+/).filter(Boolean),
+      };
+      const command = commandInput.value.trim();
+      if (command) cfg.command = command;
+      else delete cfg.command;
+      const url = urlInput.value.trim();
+      if (url) cfg.url = url;
+      else delete cfg.url;
+      const env = parseEnvLines(envArea.value);
+      if (env) cfg.env = env;
+      else delete cfg.env;
+      saveServers((draft) => {
+        delete draft[name];
+        draft[nextName] = cfg;
+      });
+    };
+
+    return h(
+      'div',
+      { class: 'card' },
+      h(
+        'h4',
+        {},
+        name,
+        ' ',
+        h('span', { class: 'badge', text: status?.state ?? (server.enabled ? 'starting' : 'disabled') }),
+        ' ',
+        h('span', { class: 'badge', text: server.enabled ? 'enabled' : 'disabled' }),
+      ),
+      status
+        ? h('p', {
+            class: 'sub',
+            text: [
+              status.transport,
+              status.serverName ? `${status.serverName} ${status.version ?? ''}`.trim() : '',
+              `${status.tools.length} tool${status.tools.length === 1 ? '' : 's'}`,
+            ]
+              .filter(Boolean)
+              .join(' · '),
+          })
+        : null,
+      status?.error ? h('p', { class: 'sub', text: `error: ${status.error}` }) : null,
+      ...(status?.tools ?? []).map((tool) =>
+        h('p', {
+          class: 'sub',
+          text: `${tool.tool} — ${tool.description}${tool.mutating ? ' (needs approval)' : ' (read-only)'}`,
+        }),
+      ),
+      editable ? h('p', { class: 'sub', text: 'Definition' }) : null,
+      ...(editable ? [nameInput, transport, commandInput, argsInput, urlInput, envArea] : []),
+      editable
+        ? h(
+            'div',
+            { class: 'actions', style: 'margin-top:8px' },
+            h('button', { class: 'btn small', text: 'Save', on: { click: save } }),
+            h('button', {
+              class: 'btn small',
+              text: server.enabled ? 'Disable' : 'Enable',
+              on: {
+                click: () =>
+                  saveServers((draft) => {
+                    const entry = draft[name];
+                    if (entry) entry.enabled = !entry.enabled;
+                  }),
+              },
+            }),
+            h('button', {
+              class: 'btn small danger',
+              text: 'Remove',
+              on: {
+                click: () =>
+                  saveServers((draft) => {
+                    delete draft[name];
+                  }),
+              },
+            }),
+          )
+        : null,
+    );
+  }
+
+  /** A status with no config entry is left over from an earlier config — show, don't hide. */
+  function renderOrphan(status: McpServerStatus): HTMLElement {
+    return h(
+      'div',
+      { class: 'card' },
+      h('h4', {}, status.name, ' ', h('span', { class: 'badge', text: status.state })),
+      h('p', {
+        class: 'sub',
+        text: `${status.transport} · ${status.tools.length} tools · not in config.json`,
+      }),
+    );
+  }
+
+  function renderAddServer(): HTMLElement {
+    const nameInput = textInput('', 'server name (e.g. files)');
+    const transport = transportSelect('stdio');
+    const commandInput = textInput('', 'command (e.g. npx)');
+    const urlInput = textInput('', 'https://host/mcp');
+    return h(
+      'div',
+      { class: 'card' },
+      h('h4', { text: 'Add a server' }),
+      h('p', {
+        class: 'sub',
+        text: 'Added disabled: review the definition, then enable it to let the service spawn it.',
+      }),
+      nameInput,
+      transport,
+      commandInput,
+      urlInput,
+      h(
+        'div',
+        { class: 'actions', style: 'margin-top:8px' },
+        h('button', {
+          class: 'btn small',
+          text: 'Add disabled',
+          on: {
+            click: () => {
+              const key = asName(nameInput.value);
+              if (!key) return;
+              // 30s mirrors the normalizer default in shared/defaults.ts.
+              const cfg: McpServerConfig = {
+                enabled: false,
+                transport: asTransport(transport),
+                timeoutMs: 30_000,
+                args: [],
+              };
+              const command = commandInput.value.trim();
+              if (command) cfg.command = command;
+              const url = urlInput.value.trim();
+              if (url) cfg.url = url;
+              saveServers((draft) => {
+                draft[key] = cfg;
+              });
+            },
+          },
+        }),
+      ),
+    );
+  }
+
+  host.append(
+    h(
+      'div',
+      { class: 'card' },
+      h('h4', { text: 'MCP servers' }),
+      h('p', {
+        class: 'sub',
+        text: 'Stored under "mcpServers" in config.json and editable below. Their tools reach the agent as mcp__<server>__<tool>; anything without readOnlyHint needs approval, and a server only starts once it is enabled.',
+      }),
+      h(
+        'div',
+        { class: 'actions' },
+        h('button', {
+          class: 'btn small',
+          text: 'Reconnect',
+          on: { click: () => void cb.reloadIntegrations?.() },
+        }),
+      ),
+    ),
+  );
+
+  for (const [name, server] of Object.entries(configured)) {
+    host.append(renderServerCard(name, server, statusFor(name)));
+  }
+  if (!Object.keys(configured).length) {
+    host.append(h('div', { class: 'empty', text: 'No MCP servers configured.' }));
+  }
+  for (const status of servers.filter((entry) => !(entry.name in configured))) {
+    host.append(renderOrphan(status));
+  }
+  if (editable) host.append(renderAddServer());
+
+  host.append(
+    h(
+      'div',
+      { class: 'card', style: 'margin-top:18px' },
+      h('h4', { text: 'Skills' }),
+      h('p', {
+        class: 'sub',
+        text: 'SKILL.md playbooks from ~/.beecode/skills, the workspace and any configured skills.dirs. Only names and descriptions sit in the prompt; the body loads when a task matches.',
+      }),
+    ),
+  );
+  if (!skills.length) {
+    host.append(h('div', { class: 'empty', text: 'No skills found.' }));
+  }
+  for (const skill of skills) {
+    host.append(
+      h(
+        'div',
+        { class: 'card' },
+        h('h4', {}, skill.name, ' ', h('span', { class: 'badge', text: skill.source })),
+        h('p', { class: 'sub', text: skill.description }),
+      ),
+    );
+  }
+}
+
 /* ----------------------------------------------------------------- subagents */
 
 export function renderSubagents(
@@ -394,6 +679,25 @@ const inputStyle = {
   fontFamily: 'inherit',
   fontSize: '12px',
 } as const;
+
+/** Env map → `KEY=VALUE` lines for the editor textarea. */
+function formatEnv(env: Record<string, string> | undefined): string {
+  return Object.entries(env ?? {})
+    .map(([key, value]) => `${key}=${value}`)
+    .join('\n');
+}
+
+/** `KEY=VALUE` lines → env map. Blank lines and `#` comments are ignored. */
+function parseEnvLines(text: string): Record<string, string> | undefined {
+  const entries: Array<[string, string]> = [];
+  for (const line of text.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const at = trimmed.indexOf('=');
+    if (at > 0) entries.push([trimmed.slice(0, at).trim(), trimmed.slice(at + 1).trim()]);
+  }
+  return entries.length ? Object.fromEntries(entries) : undefined;
+}
 
 function textArea(value: string, onChange: (value: string) => void): HTMLElement {
   const area = h('textarea', { rows: Math.min(6, Math.max(2, value.split('\n').length)) });

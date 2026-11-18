@@ -47,6 +47,10 @@ export interface AgentLoopDeps {
   /** Permission policy rendered for the system prompt. */
   describePolicy: () => string;
   listAgents: () => import('../../shared/protocol').AgentInfo[];
+  /** Skill catalogue for the current working directory, rendered for the prompt. */
+  listSkills: (cwd: string) => Promise<string>;
+  /** MCP server catalogue, rendered for the prompt. */
+  describeMcp: () => string;
   requestApproval: (session: SessionState, request: Omit<ApprovalRequest, 'id' | 'sessionId' | 'requestedAt'>) => Promise<'allow' | 'allow-session' | 'deny'>;
 }
 
@@ -88,6 +92,8 @@ export class AgentLoop {
           agentName: 'beeCode',
           subagents: this.deps.listAgents(),
           memory: await this.deps.memory.describe(session.cwd),
+          skills: await this.deps.listSkills(session.cwd),
+          mcp: this.deps.describeMcp(),
           isSubagent: session.depth > 0,
         });
 

@@ -64,12 +64,21 @@ const rendered = report.dom?.markdown ?? {};
 const markdownOk =
   rendered.headings >= 1 && rendered.listItems >= 3 && rendered.tableRows >= 1 && rendered.charts === 1;
 
+// The MCP & skills panel must render from the service, not just exist as a tab.
+const integrations = report.dom?.integrations ?? {};
+const integrationsOk =
+  integrations.tab === true &&
+  (integrations.headings ?? []).includes('MCP servers') &&
+  (integrations.headings ?? []).includes('Skills');
+
 const ok =
   report.serviceReady === true &&
   report.dom?.bridge === true &&
   report.dom?.errors?.length === 0 &&
-  markdownOk;
+  markdownOk &&
+  integrationsOk;
 if (!markdownOk) console.error(`[smoke] markdown/chart render check failed: ${JSON.stringify(rendered)}`);
+if (!integrationsOk) console.error(`[smoke] integrations panel check failed: ${JSON.stringify(integrations)}`);
 if (!ok) {
   console.error('[smoke] FAILED: see the report above');
   process.exit(1);

@@ -59,6 +59,14 @@ curl -s -N -H "Authorization: Bearer $TOKEN" http://127.0.0.1:4870/events
 | `subagent.list` | `{}` | `SubagentRunInfo[]` |
 | `subagent.cancel` | `{ runId }` | `{ cancelled: boolean }` |
 | `tools.list` | `{}` | `ToolInfo[]` |
+| `mcp.list` | `{}` | `{ servers: McpServerStatus[] }` |
+| `mcp.reload` | `{}` | `{ servers: McpServerStatus[] }` |
+| `skill.list` / `skill.reload` | `{ cwd? }` | `{ skills: SkillInfo[] }` |
+| `skill.read` | `{ name, cwd? }` | `{ skill: SkillInfo, content }` |
+
+MCP servers and skills attach to that catalogue rather than replacing anything:
+`tools.list` includes the `mcp__<server>__<tool>` entries once a server is connected, and
+the `skill` tool is always registered. See [mcp-and-skills.md](./mcp-and-skills.md).
 
 `decision` is `allow`, `allow-session` (auto-approve this tool for the rest of the
 session) or `deny`. Errors use standard JSON-RPC codes: `-32700` parse, `-32600` invalid

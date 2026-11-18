@@ -219,6 +219,7 @@ async function runSmokeCheck(serviceReady: boolean): Promise<void> {
             hasSave: Array.from(body.querySelectorAll('button')).some((b) => b.textContent === 'Save'),
           };
         })(),
+        integrations: await (async () => { const tab = document.querySelector('.tab[data-panel="integrations"]'); if (!tab) return { tab: false }; tab.click(); await new Promise((r) => setTimeout(r, 600)); const body = document.getElementById('panel-body'); return { tab: true, headings: Array.from(body.querySelectorAll('h4')).map((n) => n.textContent.trim()), badges: Array.from(body.querySelectorAll('.badge')).map((n) => n.textContent.trim()) }; })(),
         configRoundTrip: await (async () => {
           const before = await window.beeCode.getConfig();
           const saved = await window.beeCode.saveConfig(before);

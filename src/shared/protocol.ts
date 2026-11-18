@@ -86,7 +86,7 @@ export interface ToolInfo {
   /** Mutating tools are gated by the approval policy. */
   mutating: boolean;
   /** Which subsystem owns the tool — used for grouping in the UI. */
-  group: 'desktop' | 'files' | 'shell' | 'agents' | 'control';
+  group: 'desktop' | 'files' | 'shell' | 'agents' | 'control' | 'mcp' | 'skills';
   /** JSON Schema (draft-07 subset) for the tool arguments. */
   inputSchema: Record<string, unknown>;
 }
@@ -269,6 +269,79 @@ export interface BeeCodeConfig {
   agent: AgentConfig;
   desktop: DesktopConfig;
   subagents: SubagentConfig;
+  /** External MCP servers whose tools are exposed to the agent. */
+  mcpServers: Record<string, McpServerConfig>;
+  skills: SkillsConfig;
+}
+
+/* ------------------------------------------------------------ mcp & skills */
+
+/** One external MCP server. Disabled servers are listed but never started. */
+export interface McpServerConfig {
+  enabled: boolean;
+  /** `stdio` spawns `command`; `http` speaks streamable HTTP to `url`. */
+  transport: 'stdio' | 'http';
+  command?: string;
+  args?: string[];
+  /** Extra environment variables for the stdio child, merged over process.env. */
+  env?: Record<string, string>;
+  url?: string;
+  headers?: Record<string, string>;
+  /** Per-request timeout in milliseconds (default 30000). */
+  timeoutMs: number;
+}
+
+/** A tool exposed by an MCP server, as registered in beeCode's tool registry. */
+export interface McpToolInfo {
+  server: string;
+  /** Tool name as the server publishes it. */
+  name: string;
+  /** Registered tool name (`mcp__<server>__<tool>`). */
+  tool: string;
+  description: string;
+  mutating: boolean;
+}
+
+export interface McpServerStatus {
+  name: string;
+  enabled: boolean;
+  transport: 'stdio' | 'http';
+  state: 'starting' | 'connected' | 'error' | 'disabled';
+  /** Server identity reported during `initialize`. */
+  serverName?: string;
+  version?: string;
+  tools: McpToolInfo[];
+  error?: string;
+}
+
+/** A SKILL.md playbook found on disk. */
+export interface SkillInfo {
+  name: string;
+  description: string;
+  /** `user` = ~/.beecode/skills, `project` = the workspace or a configured dir. */
+  source: 'user' | 'project';
+  path: string;
+}
+
+export interface SkillsConfig {
+  enabled: boolean;
+  /** Extra skill roots; relative paths resolve against the working directory. */
+  dirs: string[];
+  /** Cap on a single skill file, in bytes. */
+  maxBytes: number;
+}
+
+export interface McpListResult {
+  servers: McpServerStatus[];
+}
+
+export interface SkillListResult {
+  skills: SkillInfo[];
+}
+
+export interface SkillReadResult {
+  skill: SkillInfo;
+  content: string;
 }
 
 /* ---------------------------------------------------------------- RPC types */
@@ -313,6 +386,11 @@ export interface RpcRequests {
   'app.hello': { params: { clientVersion: string }; result: HelloResult };
   'service.health': { params: Record<string, never>; result: ServiceHealth };
   'service.shutdown': { params: Record<string, never>; result: { stopping: true } };
+  'mcp.list': { params: Record<string, never>; result: McpListResult };
+  'mcp.reload': { params: Record<string, never>; result: McpListResult };
+  'skill.list': { params: { cwd?: string }; result: SkillListResult };
+  'skill.reload': { params: { cwd?: string }; result: SkillListResult };
+  'skill.read': { params: { name: string; cwd?: string }; result: SkillReadResult };
   'session.list': { params: Record<string, never>; result: SessionSummary[] };
   'session.create': {
     params: { title?: string; cwd?: string; mode?: AgentMode; model?: string; parentSessionId?: string };

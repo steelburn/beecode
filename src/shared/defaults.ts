@@ -1,4 +1,10 @@
-import type { BeeCodeConfig, ModelPreset, PolicyDocument } from './protocol';
+import type {
+  BeeCodeConfig,
+  McpServerConfig,
+  ModelPreset,
+  PolicyDocument,
+  SkillsConfig,
+} from './protocol';
 import { POLICY_DOCUMENT_VERSION } from './protocol';
 
 /**
@@ -54,6 +60,8 @@ export function defaultConfig(): BeeCodeConfig {
     models: MODEL_PRESETS,
     defaultModelId: 'claude-sonnet',
     service: { httpPort: 4870, autoStart: true },
+    mcpServers: {},
+    skills: { enabled: true, dirs: [], maxBytes: 65_536 },
     agent: {
       defaultMode: 'ask',
       maxSteps: 24,
@@ -210,6 +218,8 @@ export function normalizeConfig(
     defaultModelId: models.some((model) => model.id === input.defaultModelId)
       ? input.defaultModelId
       : models[0].id,
+    mcpServers: normalizeMcpServers(input.mcpServers),
+    skills: normalizeSkills(input.skills, fallback.skills),
     agent: {
       ...fallback.agent,
       ...input.agent,
@@ -235,4 +245,60 @@ function normalizeApiKeyEnv(raw: ModelPreset, strict: boolean): string | undefin
   }
   // Legacy config from a build that allowed it: drop the literal, never write it back.
   return undefined;
+}
+
+/* ------------------------------------------------------------ mcp & skills */
+
+/** Coerces hand-edited `mcpServers` entries into a usable shape; unusable ones are dropped. */
+export function normalizeMcpServers(input: unknown): Record<string, McpServerConfig> {
+  const servers: Record<string, McpServerConfig> = {};
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return servers;
+
+  for (const [rawName, rawValue] of Object.entries(input as Record<string, unknown>)) {
+    const name = rawName.trim();
+    if (!name || !rawValue || typeof rawValue !== 'object') continue;
+
+    const value = rawValue as Partial<McpServerConfig>;
+    const transport = value.transport === 'http' ? 'http' : 'stdio';
+    const command = typeof value.command === 'string' ? value.command.trim() : '';
+    const url = typeof value.url === 'string' ? value.url.trim() : '';
+    if (transport === 'stdio' ? !command : !url) continue;
+
+    servers[name] = {
+      enabled: value.enabled !== false,
+      transport,
+      command: command || undefined,
+      args: Array.isArray(value.args) ? value.args.filter((arg): arg is string => typeof arg === 'string') : [],
+      env: stringRecord(value.env),
+      url: url || undefined,
+      headers: stringRecord(value.headers),
+      timeoutMs:
+        typeof value.timeoutMs === 'number' && value.timeoutMs > 0 ? Math.round(value.timeoutMs) : 30_000,
+    };
+  }
+  return servers;
+}
+
+function stringRecord(input: unknown): Record<string, string> | undefined {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return undefined;
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(input as Record<string, unknown>)) {
+    if (typeof value === 'string') out[key] = value;
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
+export function normalizeSkills(input: Partial<SkillsConfig> | undefined, fallback: SkillsConfig): SkillsConfig {
+  return {
+    enabled: input?.enabled !== false,
+    dirs: Array.isArray(input?.dirs)
+      ? input.dirs
+          .filter((dir): dir is string => typeof dir === 'string' && !!dir.trim())
+          .map((dir) => dir.trim())
+      : [],
+    maxBytes:
+      typeof input?.maxBytes === 'number' && input.maxBytes > 0
+        ? Math.round(input.maxBytes)
+        : fallback.maxBytes,
+  };
 }
