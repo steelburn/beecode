@@ -1,0 +1,16 @@
+node_modules/
+dist/
+release/
+out/
+*.log
+.DS_Store
+.env
+.env.local
+# Holds the live LLM API key — never commit it. See .env.llm.example.
+.env.llm*
+!.env.llm.example
+# Editor/agent state, not source.
+.ado-code/
+.beecode/
+dist-test/
+release/

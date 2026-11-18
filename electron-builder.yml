@@ -1,0 +1,30 @@
+appId: com.beecode.desktop
+productName: beeCode
+directories:
+  output: release
+  buildResources: resources
+files:
+  - dist/**/*
+  - resources/**/*
+  - package.json
+extraMetadata:
+  main: dist/main.js
+win:
+  target:
+    - nsis
+  icon: resources/icon.png
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  shortcutName: beeCode
+mac:
+  target:
+    - dmg
+  category: public.app-category.developer-tools
+  icon: resources/icon.png
+linux:
+  target:
+    - AppImage
+  category: Development
+  icon: resources/icon.png

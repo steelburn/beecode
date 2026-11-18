@@ -1,0 +1,36 @@
+{
+  "name": "beecode",
+  "productName": "beeCode",
+  "version": "0.1.0",
+  "description": "beeCode — agentic desktop application with a background agent service, a permissioned desktop-control layer and subagent delegation",
+  "license": "MIT",
+  "main": "dist/main.js",
+  "type": "commonjs",
+  "private": true,
+  "engines": {
+    "node": ">=20.11"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "watch": "node scripts/build.mjs --watch",
+    "typecheck": "tsc --noEmit",
+    "start": "npm run build && electron .",
+    "service": "node dist/service.js --transport=stdio",
+    "service:http": "node dist/service.js --transport=http",
+    "test": "node scripts/test.mjs",
+    "test:changed": "node scripts/test.mjs service policy controller",
+    "check": "npm run typecheck && npm test && npm run build && npm run smoke",
+    "package": "electron-builder --dir",
+    "dist": "electron-builder",
+    "smoke": "node scripts/smoke.mjs",
+    "verify:driver": "node scripts/verify-driver.mjs",
+    "verify:llm": "node scripts/verify-llm.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "electron": "40.10.2",
+    "electron-builder": "^26.18.0",
+    "esbuild": "^0.24.2",
+    "typescript": "^5.7.2"
+  }
+}

@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'none'; font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>beeCode</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div id="app" class="app">
+      <aside class="rail" id="rail">
+        <div class="rail-head">
+          <div class="brand">
+            <span class="brand-mark" aria-hidden="true"></span>
+            <div>
+              <div class="brand-name">beeCode</div>
+              <div class="brand-sub">agentic desktop</div>
+            </div>
+          </div>
+          <button id="new-session" class="btn ghost small" title="New session (Ctrl+N)">＋</button>
+        </div>
+        <div class="rail-section-label">Sessions</div>
+        <div class="session-list" id="session-list"></div>
+        <div class="rail-foot">
+          <div class="status" id="service-status">
+            <span class="dot" id="service-dot"></span>
+            <span id="service-text">connecting…</span>
+          </div>
+          <button id="restart-service" class="btn ghost small" title="Restart the agent service">⟳</button>
+        </div>
+      </aside>
+
+      <main class="workspace">
+        <header class="topbar">
+          <div class="topbar-title">
+            <h1 id="session-title">New session</h1>
+            <span class="cwd" id="session-cwd"></span>
+          </div>
+          <div class="topbar-controls">
+            <label class="field">
+              <span>mode</span>
+              <select id="mode-select">
+                <option value="ask">ask</option>
+                <option value="plan">plan</option>
+                <option value="act">act</option>
+                <option value="autonomous">autonomous</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>model</span>
+              <select id="model-select"></select>
+            </label>
+            <button id="toggle-panel" class="btn ghost small" title="Toggle side panel">☰</button>
+          </div>
+        </header>
+
+        <section class="transcript" id="transcript" aria-live="polite"></section>
+
+        <div class="approval-slot" id="approval-slot"></div>
+
+        <form class="composer" id="composer">
+          <textarea
+            id="input"
+            rows="1"
+            placeholder="Describe what to do on the desktop…  (Enter to send, Shift+Enter for a new line)"
+          ></textarea>
+          <div class="composer-actions">
+            <span class="hint" id="composer-hint"></span>
+            <button type="button" id="stop" class="btn danger small hidden">Stop</button>
+            <button type="submit" id="send" class="btn primary">Send</button>
+          </div>
+        </form>
+      </main>
+
+      <aside class="panel" id="panel">
+        <div class="panel-tabs" role="tablist">
+          <button class="tab active" data-panel="permissions" role="tab">Permissions</button>
+          <button class="tab" data-panel="subagents" role="tab">Subagents</button>
+          <button class="tab" data-panel="activity" role="tab">Activity</button>
+        </div>
+        <div class="panel-body" id="panel-body"></div>
+      </aside>
+    </div>
+    <script src="./renderer.js"></script>
+  </body>
+</html>
