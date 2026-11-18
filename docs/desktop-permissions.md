@@ -195,6 +195,30 @@ Every decision — allowed, denied, approved, denied-by-user, failed — is appe
 
 It rotates at 2 MB to `audit.jsonl.1` and is surfaced live in the **Activity** panel.
 
+## Secret storage
+
+LLM API keys live in `~/.beecode/secrets.json` -- a plain JSON object keyed by model-preset
+id, written with mode `0600` and never placed in `config.json`:
+
+```json
+{ "env-llm": "sk-..." }
+```
+
+`config.json` is shareable user state, so a preset only ever *names* the environment variable
+that holds its key (`apiKeyEnv`); the value is resolved from `secrets.json`, then that
+variable, then `.env.llm`. `config.get` reports `hasKey` and never the secret itself.
+
+Plaintext is a deliberate trade-off -- no OS keychain or DPAPI wrapper. On POSIX `0600` is
+real. On Windows `chmod` only toggles the read-only attribute, and `fs.stat` reports a
+synthetic `666` for any writable file, so the control that actually applies is the inherited
+profile ACL on the home directory. On a default install that grants the owning user,
+`Administrators` and `SYSTEM` -- and no `Users`/`Everyone` entry -- which can be checked with
+`(Get-Acl "$env:USERPROFILE\.beecode\secrets.json").AccessToString`. A plaintext key is
+only as safe as the account and the machine.
+
+The store is pruned when a preset is removed, but nothing expires a key: **if a key is ever
+pasted into the wrong field or shared, rotating it is the only revocation.**
+
 ## Recommendations
 
 * Keep `deniedExe` broad. Browsers and terminals are the highest-risk apps: anything they
