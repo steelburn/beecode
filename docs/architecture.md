@@ -15,7 +15,11 @@ renderer (sandboxed)  →  main (Node, full API)  →  service (child process, n
 * `contextIsolation: true`, `sandbox: true`, `nodeIntegration: false`. No filesystem, no
   network, no IPC primitives.
 * Plain TypeScript + CSS. DOM built with `h()`; model output is escaped before it becomes
-  markup (`renderMarkdown` in `src/renderer/dom.ts`).
+  markup (`renderMarkdown` in `src/renderer/dom.ts`: headings, nested lists, GFM tables,
+  blockquotes, labelled code fences, safe links).
+* Charts are dependency-free: a ```chart fence carrying a small JSON spec (bar/line/pie,
+  labels, one or more series) is drawn as inline SVG by `src/renderer/chart.ts`. The spec
+  parser and the SVG builder are DOM-free, so `chart.test.ts` runs them in plain node.
 * Its entire capability surface is `window.beeCode` (`src/shared/bridge.ts`): a typed RPC
   proxy, four config/policy helpers, a directory picker, an `https`-only link opener and
   two event subscriptions.

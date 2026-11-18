@@ -262,6 +262,9 @@ export class BeeCodeService {
       case 'session.setModel':
         return this.sessions.setModel(this.requireString(args, 'sessionId'), this.requireString(args, 'model'));
 
+      case 'session.setCwd':
+        return this.sessions.setCwd(this.requireString(args, 'sessionId'), this.requireString(args, 'cwd'));
+
       case 'approval.respond':
         return {
           ok: this.sessions.resolveApproval(

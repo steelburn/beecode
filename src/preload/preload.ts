@@ -24,7 +24,7 @@ const bridge: BeeCodeBridge = {
 
   saveConfig: (config) => ipcRenderer.invoke('beecode:config-set', config),
 
-  pickDirectory: () => ipcRenderer.invoke('beecode:pick-directory'),
+  pickDirectory: (options) => ipcRenderer.invoke('beecode:pick-directory', options),
 
   openExternal: (url: string) => ipcRenderer.invoke('beecode:open-external', url),
 

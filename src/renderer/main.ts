@@ -17,10 +17,50 @@ import { renderActivity, renderPermissions, renderSettings, renderSubagents } fr
 declare global {
   interface Window {
     beeCode: BeeCodeBridge;
+    /** Smoke-check hook (see scripts/smoke.mjs): counts what a sample message rendered. */
+    __renderMessageSample?: () => Record<string, number>;
   }
 }
 
+/**
+ * One message that exercises every renderer feature the smoke run checks: headings, nested
+ * lists, a table, inline code, a safe link and a chart fence.
+ */
+const RENDER_SAMPLE = [
+  '## Renderer sample',
+  '',
+  'A **bold** and *italic* line with `code` and a [link](https://example.com).',
+  '',
+  '- first',
+  '  - nested',
+  '- second',
+  '',
+  '| tool | calls |',
+  '| --- | ---: |',
+  '| shell_run | 2 |',
+  '',
+  '```chart',
+  '{"type":"bar","title":"Tool calls","labels":["shell","files"],"values":[2,5]}',
+  '```',
+].join('\n');
+
 const api = window.beeCode;
+
+window.__renderMessageSample = () => {
+  const body = h('div', { class: 'body', html: renderMarkdown(RENDER_SAMPLE) });
+  const holder = h('div', { class: 'msg assistant' }, body);
+  document.body.append(holder);
+  const counts = {
+    headings: holder.querySelectorAll('.md-heading').length,
+    listItems: holder.querySelectorAll('.md-list li').length,
+    tableRows: holder.querySelectorAll('.md-table tbody tr').length,
+    codeBlocks: holder.querySelectorAll('pre.md-pre').length,
+    links: holder.querySelectorAll('a[rel="noreferrer noopener"]').length,
+    charts: holder.querySelectorAll('.chart-block svg').length,
+  };
+  holder.remove();
+  return counts;
+};
 
 // Surface renderer crashes in the main-process log (and in the smoke report).
 const rendererErrors: string[] = [];
@@ -36,6 +76,8 @@ interface State {
   health?: ServiceStatusPayload['health'];
   sessions: SessionSummary[];
   current?: SessionSnapshot;
+  /** Last directory the user picked; new sessions start there. */
+  lastCwd?: string;
   entries: TranscriptEntry[];
   approval?: ApprovalRequest;
   policy?: PolicyDocument;
@@ -184,6 +226,8 @@ function bindUi(): void {
 
   els.newSession.addEventListener('click', () => void newSession());
 
+  els.cwd.addEventListener('click', () => void changeWorkingDirectory());
+
   els.restart.addEventListener('click', async () => {
     setHint('restarting agent service…');
     state.ready = false;
@@ -225,15 +269,46 @@ function bindUi(): void {
 /* ---------------------------------------------------------------- actions */
 
 async function newSession(): Promise<void> {
-  const snapshot = await api.invoke('session.create', {});
+  // A new session inherits the directory the user last worked in.
+  const cwd = state.current?.cwd ?? state.lastCwd;
+  const snapshot = await api.invoke('session.create', { cwd });
   state.sessions = await api.invoke('session.list', {});
   await openSession(snapshot.id);
   els.input.focus();
 }
 
+/**
+ * Per-session working directory: pick a folder, move the session there and let the service
+ * re-scope its file tools. Without a session the pick only seeds the next one.
+ */
+async function changeWorkingDirectory(): Promise<void> {
+  const picked = await api.pickDirectory({
+    title: 'Working directory for this session',
+    defaultPath: state.current?.cwd ?? state.lastCwd ?? state.info?.workspace,
+  });
+  if (!picked) return;
+  if (!state.current) {
+    state.lastCwd = picked;
+    setHint(`New sessions will start in ${picked}`);
+    return;
+  }
+  try {
+    const summary = await api.invoke('session.setCwd', { sessionId: state.current.id, cwd: picked });
+    state.current.cwd = summary.cwd;
+    state.lastCwd = summary.cwd;
+    state.sessions = await api.invoke('session.list', {});
+    renderSessions();
+    renderHeader();
+    setHint(`Working directory: ${summary.cwd}`);
+  } catch (err) {
+    setHint(`Could not change the working directory: ${(err as Error).message}`);
+  }
+}
+
 async function openSession(sessionId: string): Promise<void> {
   const snapshot = await api.invoke('session.get', { sessionId });
   state.current = snapshot;
+  state.lastCwd = snapshot.cwd;
   state.entries = snapshot.entries;
   state.approval = snapshot.pendingApproval;
   els.modeSelect.value = snapshot.mode;
@@ -379,6 +454,9 @@ function renderHeader(): void {
   const session = state.current;
   els.title.textContent = session?.title ?? 'New session';
   els.cwd.textContent = session?.cwd ?? state.info?.workspace ?? '';
+  els.cwd.title = session
+    ? `Working directory: ${session.cwd} — click to change it for this session`
+    : 'No session yet — click to choose the working directory for the next session';
   if (session?.mode) els.modeSelect.value = session.mode;
   if (session?.model) els.modelSelect.value = session.model;
 }

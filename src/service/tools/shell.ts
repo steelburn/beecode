@@ -60,7 +60,7 @@ export function shellTools(deps: ShellToolDeps): ToolDefinition[] {
         }
 
         const cwd = resolve(ctx.cwd, str(args, 'cwd') ?? '.');
-        const cwdCheck = policy.evaluateFile(cwd, false);
+        const cwdCheck = policy.evaluateFile(cwd, false, ctx.workspaceRoots);
         if (!cwdCheck.allowed) return errorResult(cwdCheck.reason, { denied: true });
 
         const timeoutMs = Math.min(num(args, 'timeoutMs', 60_000), 300_000);

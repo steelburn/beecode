@@ -124,6 +124,15 @@ test('filesystem policy keeps tools inside the workspace', async () => {
   assert.equal(policy.evaluateFile('C:\\Windows\\win.ini', false).allowed, false);
 });
 
+test('a session working directory is allowed as an extra file root for that call only', async () => {
+  const policy = await engine();
+  assert.equal(policy.evaluateFile('C:\\other\\proj\\notes.txt', false).allowed, false);
+  assert.equal(policy.evaluateFile('C:\\other\\proj\\notes.txt', false, ['C:\\other\\proj']).allowed, true);
+  assert.equal(policy.evaluateFile('C:\\other\\proj\\..\\..\\Windows\\win.ini', false, ['C:\\other\\proj']).allowed, false);
+  // the extra root does not leak into the next call
+  assert.equal(policy.evaluateFile('C:\\other\\proj\\notes.txt', false).allowed, false);
+});
+
 test('policy round-trips through disk', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'beecode-policy-'));
   try {

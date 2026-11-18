@@ -63,6 +63,16 @@ test('background service answers JSON-RPC over loopback HTTP', async () => {
     assert.ok(created.id.startsWith('s_'));
     assert.equal(created.mode, 'ask');
 
+    // Per-session working directory: a session can be moved to another folder, a bogus one is rejected.
+    const otherDir = join(home, 'other-project');
+    await mkdir(otherDir, { recursive: true });
+    const moved = (await rpc('session.setCwd', { sessionId: created.id, cwd: otherDir })).result as { cwd: string };
+    assert.equal(moved.cwd, otherDir);
+    const movedSnapshot = (await rpc('session.get', { sessionId: created.id })).result as { cwd: string };
+    assert.equal(movedSnapshot.cwd, otherDir);
+    const bogus = await rpc('session.setCwd', { sessionId: created.id, cwd: join(home, 'does-not-exist') });
+    assert.ok(bogus.error, 'a missing working directory must be rejected');
+
     const sessions = (await rpc('session.list')).result as Array<{ id: string }>;
     assert.ok(sessions.some((s) => s.id === created.id));
 

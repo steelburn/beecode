@@ -19,6 +19,13 @@ export interface AppInfo {
   servicePid?: number;
 }
 
+/** Options for the native folder picker behind `pickDirectory`. */
+export interface DirectoryPickerOptions {
+  title?: string;
+  /** Folder the dialog opens in; defaults to the app workspace. */
+  defaultPath?: string;
+}
+
 export interface ServiceStatusPayload {
   supervisor: 'starting' | 'ready' | 'restarting' | 'stopped' | 'failed';
   health?: ServiceHealth;
@@ -38,6 +45,7 @@ export const RENDERER_METHODS: RpcMethod[] = [
   'session.abort',
   'session.setMode',
   'session.setModel',
+  'session.setCwd',
   'approval.respond',
   'policy.get',
   'policy.set',
@@ -64,7 +72,7 @@ export interface BeeCodeBridge {
   savePolicy(policy: PolicyDocument): Promise<PolicyDocument>;
   getConfig(): Promise<BeeCodeConfig>;
   saveConfig(config: BeeCodeConfig): Promise<BeeCodeConfig>;
-  pickDirectory(): Promise<string | undefined>;
+  pickDirectory(options?: DirectoryPickerOptions): Promise<string | undefined>;
   openExternal(url: string): Promise<void>;
   onEvent(listener: (event: ServiceEvent) => void): () => void;
   onServiceStatus(listener: (status: ServiceStatusPayload) => void): () => void;

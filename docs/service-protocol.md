@@ -50,6 +50,7 @@ curl -s -N -H "Authorization: Bearer $TOKEN" http://127.0.0.1:4870/events
 | `session.abort` | `{ sessionId }` | `{ aborted: boolean }` |
 | `session.setMode` | `{ sessionId, mode }` | `SessionSummary` |
 | `session.setModel` | `{ sessionId, model }` | `SessionSummary` |
+| `session.setCwd` | `{ sessionId, cwd }` | `SessionSummary` |
 | `approval.respond` | `{ approvalId, decision }` | `{ ok: boolean }` |
 | `policy.get` / `policy.set` | `{}` / `{ policy }` | `PolicyDocument` |
 | `config.get` / `config.set` | `{}` / `{ config }` | `BeeCodeConfig` |
@@ -62,6 +63,15 @@ curl -s -N -H "Authorization: Bearer $TOKEN" http://127.0.0.1:4870/events
 `decision` is `allow`, `allow-session` (auto-approve this tool for the rest of the
 session) or `deny`. Errors use standard JSON-RPC codes: `-32700` parse, `-32600` invalid
 request, `-32601` unknown method, `-32603` internal, `-32001` unauthorized.
+
+The working directory is **per session**. `session.create` accepts a `cwd`, and
+`session.setCwd` moves an existing session to another folder (the folder must exist —
+anything else is a JSON-RPC error, so a typo cannot silently strand a session). From the next
+tool call on, that session's file and shell tools resolve relative paths against the new
+directory, and the directory counts as an allowed root for those calls only: the policy's
+`filesystem.workspaceOnly` / `allowedRoots` rules still apply, so a session pointed at a
+folder outside the configured workspace still cannot write anywhere else. The UI exposes it as
+the clickable folder chip under the session title.
 
 `session.prompt` is asynchronous: it returns `accepted: true` and the turn's progress
 arrives on the event stream. Prompts to the same session are queued.

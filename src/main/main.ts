@@ -231,6 +231,18 @@ async function runSmokeCheck(serviceReady: boolean): Promise<void> {
           };
         })().catch((e) => String(e)),
         errors: window.__rendererErrors ?? [],
+        // Markdown + chart rendering, measured in the real sandboxed renderer.
+        markdown: (() => {
+          try {
+            return window.__renderMessageSample ? window.__renderMessageSample() : { missing: true };
+          } catch (err) {
+            return { error: String(err) };
+          }
+        })(),
+        cwdChip: (() => {
+          const chip = document.getElementById('session-cwd');
+          return { tag: chip?.tagName ?? '', title: chip?.getAttribute('title') ?? '' };
+        })(),
         health: await window.beeCode.serviceStatus().catch((e) => String(e)),
       }))()`,
     )) as Record<string, unknown>;

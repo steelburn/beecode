@@ -1,3 +1,5 @@
+import { stat } from 'node:fs/promises';
+import { resolve } from 'node:path';
 import type {
   AgentMode,
   ApprovalRequest,
@@ -98,6 +100,19 @@ export class SessionManager {
     session.mode = mode;
     session.updatedAt = new Date().toISOString();
     this.deps.emit({ type: 'session.status', payload: { sessionId: id, status: session.status } });
+    return summarizeSession(session);
+  }
+
+  /** Move a session to another working directory; the folder must exist. */
+  async setCwd(id: string, cwd: string): Promise<SessionSummary> {
+    const session = this.get(id);
+    const abs = resolve(cwd.trim());
+    const info = await stat(abs).catch(() => undefined);
+    if (!info?.isDirectory()) throw new Error(`working directory is not an existing folder: ${abs}`);
+    if (session.cwd === abs) return summarizeSession(session);
+    session.cwd = abs;
+    session.updatedAt = new Date().toISOString();
+    this.deps.emit({ type: 'session.snapshot', payload: snapshotSession(session) });
     return summarizeSession(session);
   }
 

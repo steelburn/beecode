@@ -169,19 +169,25 @@ export class PolicyEngine {
     return { allowed: true, reason: 'command matches shell policy', requiresApproval: true };
   }
 
-  evaluateFile(targetPath: string, write: boolean): PolicyDecision {
+  /**
+   * `extraRoots` are roots the caller vouches for per call — the session working
+   * directory, so a session pointed at a folder the user picked stays inside its own
+   * workspace without widening the policy for every other session.
+   */
+  evaluateFile(targetPath: string, write: boolean, extraRoots: string[] = []): PolicyDecision {
     const cfg = this.policy.filesystem;
     const abs = resolve(targetPath);
+    const sessionRoots = extraRoots.map((r) => resolve(r));
     if (write && !cfg.writable) return DENY('file writes are disabled by policy');
 
     if (cfg.workspaceOnly) {
-      const roots = [...this.workspaceRoots, ...cfg.allowedRoots.map((r) => resolve(r))];
+      const roots = [...this.workspaceRoots, ...sessionRoots, ...cfg.allowedRoots.map((r) => resolve(r))];
       if (!roots.some((root) => isInside(root, abs))) {
         return DENY(`${abs} is outside the workspace (workspace-only file policy)`);
       }
       return { allowed: true, reason: 'path is inside the workspace', requiresApproval: write };
     }
-    const roots = cfg.allowedRoots.map((r) => resolve(r));
+    const roots = [...sessionRoots, ...cfg.allowedRoots.map((r) => resolve(r))];
     if (roots.length && !roots.some((root) => isInside(root, abs))) {
       return DENY(`${abs} is outside the configured allowed roots`);
     }

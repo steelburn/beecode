@@ -67,11 +67,14 @@ export function registerIpc(deps: IpcDeps): void {
     deps.supervisor.request('config.set', { config }),
   );
 
-  ipcMain.handle('beecode:pick-directory', async () => {
+  ipcMain.handle('beecode:pick-directory', async (_event, options?: { title?: string; defaultPath?: string }) => {
     const win = deps.getWindow();
-    const result = win
-      ? await dialog.showOpenDialog(win, { properties: ['openDirectory'] })
-      : await dialog.showOpenDialog({ properties: ['openDirectory'] });
+    const dialogOptions = {
+      title: options?.title ?? 'Choose a working directory',
+      defaultPath: options?.defaultPath ?? deps.workspace,
+      properties: ['openDirectory', 'createDirectory'] as Array<'openDirectory' | 'createDirectory'>,
+    };
+    const result = win ? await dialog.showOpenDialog(win, dialogOptions) : await dialog.showOpenDialog(dialogOptions);
     return result.canceled ? undefined : result.filePaths[0];
   });
 

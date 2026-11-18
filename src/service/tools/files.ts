@@ -14,9 +14,16 @@ interface FileToolDeps {
 const MAX_READ_BYTES = 256 * 1024;
 const MAX_SEARCH_HITS = 200;
 
-function allowPath(policy: PolicyEngine, target: string, write: boolean, ctx: { sessionId: string }, audit: AuditLog) {
-  const abs = resolve(ctx ? target : target);
-  const decision = policy.evaluateFile(abs, write);
+function allowPath(
+  policy: PolicyEngine,
+  target: string,
+  write: boolean,
+  ctx: { sessionId: string; workspaceRoots: string[] },
+  audit: AuditLog,
+) {
+  const abs = resolve(target);
+  // The session working directory always counts as a root for its own tools.
+  const decision = policy.evaluateFile(abs, write, ctx.workspaceRoots);
   if (!decision.allowed) {
     audit.record({
       sessionId: ctx.sessionId,

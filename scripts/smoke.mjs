@@ -60,7 +60,16 @@ if (!existsSync(reportPath)) {
 const report = JSON.parse(readFileSync(reportPath, 'utf8'));
 process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
 
-const ok = report.serviceReady === true && report.dom?.bridge === true && (report.dom?.errors ?? []).length === 0;
+const rendered = report.dom?.markdown ?? {};
+const markdownOk =
+  rendered.headings >= 1 && rendered.listItems >= 3 && rendered.tableRows >= 1 && rendered.charts === 1;
+
+const ok =
+  report.serviceReady === true &&
+  report.dom?.bridge === true &&
+  report.dom?.errors?.length === 0 &&
+  markdownOk;
+if (!markdownOk) console.error(`[smoke] markdown/chart render check failed: ${JSON.stringify(rendered)}`);
 if (!ok) {
   console.error('[smoke] FAILED: see the report above');
   process.exit(1);

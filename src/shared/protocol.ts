@@ -324,6 +324,7 @@ export interface RpcRequests {
   'session.abort': { params: { sessionId: string }; result: { aborted: boolean } };
   'session.setMode': { params: { sessionId: string; mode: AgentMode }; result: SessionSummary };
   'session.setModel': { params: { sessionId: string; model: string }; result: SessionSummary };
+  'session.setCwd': { params: { sessionId: string; cwd: string }; result: SessionSummary };
   'approval.respond': { params: ApprovalResponse; result: { ok: true } };
   'policy.get': { params: Record<string, never>; result: PolicyDocument };
   'policy.set': { params: { policy: PolicyDocument }; result: PolicyDocument };
