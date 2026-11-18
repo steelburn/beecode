@@ -1,5 +1,5 @@
 import { mkdir } from 'node:fs/promises';
-import { defaultConfig } from '../shared/defaults';
+import { defaultConfig, normalizeConfig } from '../shared/defaults';
 import type {
   BeeCodeConfig,
   PolicyDocument,
@@ -285,7 +285,8 @@ export class BeeCodeService {
       case 'config.set': {
         const next = args.config as BeeCodeConfig;
         if (!next || !Array.isArray(next.models)) throw new Error('config.models must be an array');
-        this.config = this.mergeConfig(next);
+        this.config = this.mergeConfig(normalizeConfig(next));
+        await mkdir(this.config.agent.workingDir, { recursive: true });
         this.policy.setWorkspaceRoots([this.config.agent.workingDir]);
         await writeJsonFile(paths().config, this.config);
         this.emit({ type: 'service.health', payload: this.health() });

@@ -112,13 +112,20 @@ Depth > 2 is refused, and a subagent's toolset contains no delegating tools.
 
 | Path | Contents |
 | --- | --- |
-| `~/.beecode/config.json` | models, modes, desktop/subagent settings (no keys) |
+| `~/.beecode/config.json` | models, modes, desktop/subagent settings (no keys) — written by `config.set` |
 | `~/.beecode/policy.json` | the permission policy |
 | `~/.beecode/audit.jsonl` | append-only audit trail (rotates at 2 MB to `.1`) |
 | `~/.beecode/memory/<sha1(cwd)>.json` | workspace notes written by the agent |
 | `~/.beecode/logs/service.log` | service log (JSONL) |
 
 Set `BEECODE_HOME` to relocate all of it (the tests do this).
+
+`config.set` is the only write path for model or workspace changes, and it runs
+`normalizeConfig` first: the sandboxed renderer's payload is untrusted, and an empty model
+list, a duplicate preset id or a dangling `defaultModelId` would otherwise leave the agent
+loop with no usable model. The normalised config becomes the live one immediately — model
+selection for the next session, `agent.workingDir` as the filesystem policy root — so no
+service restart is needed.
 
 ## Failure behaviour
 

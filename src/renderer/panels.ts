@@ -4,7 +4,9 @@ import type {
   AuditEntry,
   BeeCodeConfig,
   DesktopAction,
+  ModelPreset,
   PolicyDocument,
+  ProviderId,
   SubagentRunInfo,
 } from '../shared/protocol';
 import { DESKTOP_ACTIONS } from '../shared/protocol';
@@ -13,6 +15,7 @@ import { clear, h } from './dom';
 export interface PanelCallbacks {
   savePolicy(next: PolicyDocument): Promise<void>;
   saveConfig?(next: BeeCodeConfig): Promise<void>;
+  pickDirectory?(): Promise<string | undefined>;
   cancelSubagent(runId: string): Promise<void>;
   refreshAudit(): Promise<void>;
 }
@@ -413,4 +416,248 @@ function toggle(label: string, checked: boolean, onChange: (checked: boolean) =>
     }),
     document.createTextNode(label),
   );
+}
+
+/* ---------------------------------------------------------------- settings */
+
+const PROVIDER_IDS: ProviderId[] = ['openai', 'anthropic', 'azure-openai', 'ollama', 'openai-compatible'];
+
+function settingsInput(
+  value: string,
+  onChange: (next: string) => void,
+  placeholder = '',
+): HTMLInputElement {
+  const input = h('input', { class: 'settings-input', type: 'text', placeholder });
+  input.value = value;
+  input.addEventListener('change', () => onChange(input.value.trim()));
+  return input;
+}
+
+function settingsField(label: string, control: HTMLElement): HTMLElement {
+  return h('label', { class: 'settings-field' }, h('span', { text: label }), control);
+}
+
+function uniqueModelId(models: ModelPreset[], seed: string): string {
+  const taken = new Set(models.map((model) => model.id));
+  if (!taken.has(seed)) return seed;
+  let index = 2;
+  while (taken.has(`${seed}-${index}`)) index += 1;
+  return `${seed}-${index}`;
+}
+
+/**
+ * Settings panel — the LLM endpoint and the working directory.
+ *
+ * Edits are staged in a draft and committed with one Save, so a half-typed base URL
+ * never reaches the agent service. No key material is collected here: a preset can
+ * only NAME the environment variable holding the key, because config.json is world
+ * readable user state and must stay shareable.
+ */
+export function renderSettings(host: HTMLElement, config: BeeCodeConfig, cb: PanelCallbacks): void {
+  const draft: BeeCodeConfig = {
+    ...config,
+    agent: { ...config.agent },
+    models: config.models.map((model) => ({ ...model })),
+  };
+  let note: HTMLElement = h('span', { class: 'settings-note' });
+
+  const setNote = (text: string): void => {
+    note.textContent = text;
+  };
+
+  const save = async (): Promise<void> => {
+    if (!cb.saveConfig) return;
+    setNote('saving…');
+    try {
+      await cb.saveConfig(draft);
+    } catch (error) {
+      setNote(`save failed: ${(error as Error).message}`);
+    }
+  };
+
+  const paint = (): void => {
+    clear(host);
+    note = h('span', { class: 'settings-note' });
+
+    /* ----- header ----- */
+    host.append(
+      h(
+        'div',
+        { class: 'card settings-head' },
+        h('h4', { text: 'Settings' }),
+        h('p', {
+          class: 'sub',
+          text: 'Endpoint, model and working directory. Applied to new sessions immediately; the agent service never stores API keys.',
+        }),
+        h(
+          'div',
+          { class: 'settings-actions' },
+          h('button', { class: 'btn primary small', type: 'button', text: 'Save', on: { click: () => void save() } }),
+          note,
+        ),
+      ),
+    );
+
+    /* ----- model presets ----- */
+    draft.models.forEach((preset, index) => {
+      const radio = h('input', { type: 'radio', class: 'settings-radio-input' });
+      radio.name = 'beecode-default-model';
+      radio.checked = draft.defaultModelId === preset.id;
+      radio.addEventListener('change', () => {
+        draft.defaultModelId = preset.id;
+        paint();
+      });
+
+      const provider = h('select', { class: 'settings-input' });
+      for (const id of PROVIDER_IDS) {
+        const option = h('option', { text: id });
+        option.value = id;
+        option.selected = id === preset.provider;
+        provider.append(option);
+      }
+      provider.addEventListener('change', () => {
+        preset.provider = provider.value as ProviderId;
+        setNote('unsaved changes');
+      });
+
+      const contextWindow = h('input', { class: 'settings-input', type: 'number', min: '0' });
+      contextWindow.value = preset.contextWindow ? String(preset.contextWindow) : '';
+      contextWindow.addEventListener('change', () => {
+        const parsed = Number(contextWindow.value);
+        preset.contextWindow = Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+        setNote('unsaved changes');
+      });
+
+      host.append(
+        h(
+          'div',
+          { class: 'card' },
+          h(
+            'div',
+            { class: 'settings-row' },
+            h('label', { class: 'settings-default' }, radio, h('span', { text: 'default' })),
+            settingsInput(preset.label, (next) => {
+              preset.label = next;
+              setNote('unsaved changes');
+            }, 'Label'),
+            h('span', { class: 'sub mono', text: preset.id }),
+            h('button', {
+              class: 'btn small danger',
+              type: 'button',
+              text: 'Remove',
+              on: {
+                click: () => {
+                  if (draft.models.length <= 1) {
+                    setNote('at least one model preset is required');
+                    return;
+                  }
+                  draft.models.splice(index, 1);
+                  if (draft.defaultModelId === preset.id) draft.defaultModelId = draft.models[0].id;
+                  paint();
+                },
+              },
+            }),
+          ),
+          h(
+            'div',
+            { class: 'settings-grid' },
+            settingsField('Provider', provider),
+            settingsField(
+              'Model',
+              settingsInput(preset.model, (next) => {
+                preset.model = next;
+                setNote('unsaved changes');
+              }, 'e.g. deepseek-v4-flash'),
+            ),
+            settingsField(
+              'Base URL',
+              settingsInput(preset.baseUrl ?? '', (next) => {
+                preset.baseUrl = next || undefined;
+                setNote('unsaved changes');
+              }, 'https://api.example.com/v1'),
+            ),
+            settingsField(
+              'API key env var',
+              settingsInput(preset.apiKeyEnv ?? '', (next) => {
+                preset.apiKeyEnv = next || undefined;
+                setNote('unsaved changes');
+              }, 'BEECODE_LLM_API_KEY'),
+            ),
+            settingsField('Context window', contextWindow),
+          ),
+          h('p', {
+            class: 'sub',
+            text: preset.baseUrl
+              ? `Endpoint: ${preset.baseUrl}`
+              : 'Endpoint: provider default. Set a Base URL for a custom or self-hosted gateway.',
+          }),
+        ),
+      );
+    });
+
+    host.append(
+      h(
+        'div',
+        { class: 'card' },
+        h('button', {
+          class: 'btn small',
+          type: 'button',
+          text: '+ Add model',
+          on: {
+            click: () => {
+              draft.models.push({
+                id: uniqueModelId(draft.models, 'custom'),
+                label: 'Custom model',
+                provider: 'openai-compatible',
+                model: '',
+                baseUrl: '',
+                apiKeyEnv: 'BEECODE_LLM_API_KEY',
+              });
+              paint();
+            },
+          },
+        }),
+        h('p', {
+          class: 'sub',
+          text: 'The key itself is read from the named environment variable at request time — it is never written to config.json.',
+        }),
+      ),
+    );
+
+    /* ----- working directory ----- */
+    host.append(
+      h(
+        'div',
+        { class: 'card' },
+        h('h4', { text: 'Working directory' }),
+        h('p', {
+          class: 'sub',
+          text: 'New sessions start here and the file tools cannot leave it. Existing sessions keep the directory they were created with.',
+        }),
+        h(
+          'div',
+          { class: 'settings-row' },
+          settingsInput(draft.agent.workingDir, (next) => {
+            draft.agent.workingDir = next;
+            setNote('unsaved changes — press Save');
+          }, 'D:\\projects\\my-app'),
+          h('button', {
+            class: 'btn small',
+            type: 'button',
+            text: 'Browse…',
+            on: {
+              click: async () => {
+                const picked = await cb.pickDirectory?.();
+                if (!picked) return;
+                draft.agent.workingDir = picked;
+                await save();
+              },
+            },
+          }),
+        ),
+      ),
+    );
+  };
+
+  paint();
 }

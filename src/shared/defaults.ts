@@ -166,3 +166,50 @@ export function defaultPolicy(): PolicyDocument {
     updatedAt: new Date().toISOString(),
   };
 }
+
+/**
+ * Trim, de-duplicate and validate a config coming from the settings UI.
+ *
+ * The renderer is sandboxed but its payload is still untrusted: an empty model list,
+ * a duplicate preset id or a dangling defaultModelId would leave the agent loop with
+ * no usable model, so the service repairs what it can and refuses the rest.
+ */
+export function normalizeConfig(input: BeeCodeConfig): BeeCodeConfig {
+  const seen = new Set<string>();
+  const models: ModelPreset[] = [];
+  for (const raw of input.models ?? []) {
+    const id = (raw.id ?? '')
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9._-]+/g, '-')
+      .replace(/^-+|-+$/g, '');
+    const model = (raw.model ?? '').trim();
+    if (!id || !model || seen.has(id)) continue;
+    seen.add(id);
+    const baseUrl = raw.baseUrl?.trim().replace(/\/+$/, '');
+    const apiKeyEnv = raw.apiKeyEnv?.trim();
+    models.push({
+      ...raw,
+      id,
+      label: (raw.label ?? '').trim() || id,
+      model,
+      baseUrl: baseUrl || undefined,
+      apiKeyEnv: apiKeyEnv || undefined,
+    });
+  }
+  if (!models.length) throw new Error('at least one model preset is required');
+
+  const fallback = defaultConfig();
+  return {
+    ...input,
+    models,
+    defaultModelId: models.some((model) => model.id === input.defaultModelId)
+      ? input.defaultModelId
+      : models[0].id,
+    agent: {
+      ...fallback.agent,
+      ...input.agent,
+      workingDir: (input.agent?.workingDir ?? '').trim() || fallback.agent.workingDir,
+    },
+  };
+}

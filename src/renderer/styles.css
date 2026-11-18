@@ -306,3 +306,28 @@ html, body {
   .app { grid-template-columns: 200px minmax(0, 1fr) 320px; }
   .examples { grid-template-columns: 1fr; }
 }
+
+/* --------------------------------------------------------------- settings */
+.settings-head { display: flex; flex-direction: column; gap: 6px; }
+.settings-actions { display: flex; align-items: center; gap: 10px; margin-top: 4px; }
+.settings-note { font-size: 11px; color: var(--text-faint); }
+.settings-row { display: flex; align-items: center; gap: 8px; }
+.settings-row > * { min-width: 0; }
+.settings-row .settings-input { flex: 1; }
+.settings-default { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--text-faint); white-space: nowrap; }
+.settings-radio-input { accent-color: var(--accent, #4c9aff); }
+.settings-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; margin-top: 8px; }
+.settings-field { display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: var(--text-faint); }
+.settings-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 5px 7px;
+  border-radius: 6px;
+  border: 1px solid var(--border, #2a2f3a);
+  background: var(--bg-input, #12151c);
+  color: var(--text, #e6e9ef);
+  font-family: inherit;
+  font-size: 12px;
+}
+.settings-input:focus { outline: 1px solid var(--accent, #4c9aff); }
+.btn.small.danger { color: #ff9a9a; }

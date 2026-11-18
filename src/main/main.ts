@@ -1,5 +1,6 @@
 import { app, BrowserWindow, globalShortcut, Menu, nativeImage, net, protocol, shell, Tray } from 'electron';
-import { join, relative, resolve, isAbsolute } from 'node:path';
+import { mkdir, writeFile } from 'node:fs/promises';
+import { dirname, join, relative, resolve, isAbsolute } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { beeCodeHome } from '../shared/tools';
 import { pipeServiceEvents, registerIpc } from './ipc';
@@ -24,6 +25,8 @@ let supervisor: ServiceSupervisor;
 app.setName('beeCode');
 
 if (!app.requestSingleInstanceLock()) {
+  // Silent exit here is confusing when a packaged build is already running, so say so.
+  console.error('[beecode] another instance is already running - exiting this one');
   app.quit();
 } else {
   app.on('second-instance', () => showWindow());
@@ -200,6 +203,33 @@ async function runSmokeCheck(serviceReady: boolean): Promise<void> {
         status: document.getElementById('service-text')?.textContent ?? '',
         title: document.getElementById('session-title')?.textContent ?? '',
         composer: Boolean(document.getElementById('input')),
+        settings: (() => {
+          const tab = document.querySelector('.tab[data-panel="settings"]');
+          if (!tab) return { tab: false };
+          tab.click();
+          const body = document.getElementById('panel-body');
+          const inputs = Array.from(body.querySelectorAll('.settings-input'));
+          const labels = Array.from(body.querySelectorAll('.settings-field > span')).map((n) => n.textContent);
+          return {
+            tab: true,
+            cards: body.querySelectorAll('.card').length,
+            fields: labels,
+            defaultRadios: body.querySelectorAll('input[type="radio"]').length,
+            workingDir: inputs.length ? inputs[inputs.length - 1].value : '',
+            hasSave: Array.from(body.querySelectorAll('button')).some((b) => b.textContent === 'Save'),
+          };
+        })(),
+        configRoundTrip: await (async () => {
+          const before = await window.beeCode.getConfig();
+          const saved = await window.beeCode.saveConfig(before);
+          const after = await window.beeCode.getConfig();
+          return {
+            models: saved.models.length,
+            defaultModelId: saved.defaultModelId,
+            stable: JSON.stringify([saved.models, saved.defaultModelId, saved.agent.workingDir]) ===
+              JSON.stringify([after.models, after.defaultModelId, after.agent.workingDir]),
+          };
+        })().catch((e) => String(e)),
         errors: window.__rendererErrors ?? [],
         health: await window.beeCode.serviceStatus().catch((e) => String(e)),
       }))()`,
@@ -218,6 +248,12 @@ async function runSmokeCheck(serviceReady: boolean): Promise<void> {
     windowLoaded: loaded,
     dom,
   };
+  // A GUI-subsystem process on Windows may have no console attached, in which case
+  // process.stdout.write goes nowhere. The report is therefore also written to disk so
+  // `npm run smoke` can always show it.
+  const reportPath = join(process.cwd(), 'dist-test', 'smoke-report.json');
+  await mkdir(dirname(reportPath), { recursive: true });
+  await writeFile(reportPath, `${JSON.stringify(result, null, 2)}\n`, 'utf8');
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
 
   quitting = true;

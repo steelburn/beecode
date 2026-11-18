@@ -12,7 +12,7 @@ import type {
   TranscriptEntry,
 } from '../shared/protocol';
 import { clear, formatJsonForDisplay, h, renderMarkdown } from './dom';
-import { renderActivity, renderPermissions, renderSubagents } from './panels';
+import { renderActivity, renderPermissions, renderSettings, renderSubagents } from './panels';
 
 declare global {
   interface Window {
@@ -28,7 +28,7 @@ const rendererErrors: string[] = [];
 window.addEventListener('error', (event) => rendererErrors.push(String(event.message)));
 window.addEventListener('unhandledrejection', (event) => rendererErrors.push(String((event as PromiseRejectionEvent).reason)));
 
-type PanelTab = 'permissions' | 'subagents' | 'activity';
+type PanelTab = 'permissions' | 'subagents' | 'activity' | 'settings';
 
 interface State {
   info?: AppInfo;
@@ -649,8 +649,10 @@ function renderPanelBody(): void {
     savePolicy,
     saveConfig: async (next: BeeCodeConfig) => {
       state.config = await api.saveConfig(next);
+      populateModels();
       renderPanelBody();
     },
+    pickDirectory: async () => api.pickDirectory(),
     cancelSubagent: async (runId: string) => {
       await api.invoke('subagent.cancel', { runId });
     },
@@ -662,6 +664,10 @@ function renderPanelBody(): void {
 
   if (state.panel === 'permissions') renderPermissions(els.panelBody, state.policy, state.config, callbacks);
   else if (state.panel === 'subagents') renderSubagents(els.panelBody, state.subagents, state.agents, callbacks);
+  else if (state.panel === 'settings') {
+    if (state.config) renderSettings(els.panelBody, state.config, callbacks);
+    else clear(els.panelBody);
+  }
   else renderActivity(els.panelBody, state.audit, callbacks);
 }
 

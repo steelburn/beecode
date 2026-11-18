@@ -44,7 +44,30 @@ set ANTHROPIC_API_KEY=sk-...      # or OPENAI_API_KEY
 ```
 
 Local models work too — add an `openai-compatible` preset pointing at Ollama or LM Studio
-in the **Runtime** card or in `~/.beecode/config.json`.
+in the **Settings** panel (see below) or in `~/.beecode/config.json`.
+
+## Settings
+
+The **Settings** panel (right-hand sidebar, last tab) is where the endpoint, the model and
+the working directory are chosen — no file editing required.
+
+| Control | Effect |
+| --- | --- |
+| Provider · Model · Base URL · API key env var · Context window | one card per preset; **Base URL** is what points beeCode at a custom gateway (DeepSeek, OpenRouter, vLLM, Ollama, LM Studio) |
+| `default` radio | the preset a new session starts with |
+| Add model / Remove | extra presets; the service refuses a save that would leave none |
+| Working directory + Browse… | where new sessions start and the boundary the file tools cannot leave |
+
+Saving goes through `config.set`, so the service — not the renderer — decides what is
+acceptable: ids are trimmed and de-duplicated, a trailing slash is stripped from the Base
+URL, a dangling `defaultModelId` is repointed at the first preset, a blank working
+directory falls back to the default, and a config with no usable preset is rejected. The
+working directory is pushed into the policy engine as the filesystem root and created if it
+does not exist. Existing sessions keep the directory they were created with.
+
+Keys are never typed into the UI: a preset may only *name* the environment variable holding
+the key, because `~/.beecode/config.json` is shareable user state. Precedence is
+`.env.llm` → environment → `config.json`.
 
 ## What it can do
 
