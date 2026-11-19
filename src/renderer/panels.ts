@@ -723,6 +723,16 @@ async function base64Of(file: File): Promise<string> {
 
 /* ----------------------------------------------------------------- subagents */
 
+/**
+ * Agents the Subagents panel may list: installed (the probe found the CLI on PATH) *and*
+ * enabled in Settings — `available` is exactly that conjunction, computed by the service.
+ * The whole catalogue stays reachable from the Settings card, so a CLI that is installed
+ * but unticked can still be offered there.
+ */
+export function usableAgents(agents: AgentInfo[]): AgentInfo[] {
+  return agents.filter((agent) => agent.available);
+}
+
 export function renderSubagents(
   host: HTMLElement,
   runs: SubagentRunInfo[],
@@ -731,25 +741,45 @@ export function renderSubagents(
 ): void {
   clear(host);
 
+  // This panel answers "who would run right now", not "what could be installed".
+  const usable = usableAgents(agents);
+
   host.append(
     h(
       'div',
       { class: 'card' },
       h('h4', { text: 'Available agents' }),
-      h('p', { class: 'sub', text: 'The agent can delegate to these. External CLIs must be on PATH.' }),
-      ...agents.map((agent) =>
-        h(
-          'div',
-          { class: 'audit-row' },
-          h('span', { class: `badge ${agent.available ? 'allowed' : 'denied'}`, text: agent.kind }),
-          h(
-            'span',
-            null,
-            h('strong', { text: agent.label }),
-            h('div', { class: 'sub', text: agent.detail ?? (agent.available ? 'ready' : 'unavailable') }),
-          ),
-        ),
+      h(
+        'p',
+        {
+          class: 'sub',
+          text: 'Installed and enabled agents the agent can delegate to. Tick more under Settings → External agents (CLI).',
+        },
       ),
+      ...(usable.length
+        ? usable.map((agent) =>
+            h(
+              'div',
+              { class: 'audit-row' },
+              h('span', { class: 'badge allowed', text: agent.kind }),
+              h(
+                'span',
+                null,
+                h('strong', { text: agent.label }),
+                h('div', { class: 'sub', text: agent.detail ?? 'ready' }),
+              ),
+            ),
+          )
+        : // An empty catalogue means the first probe is still running: stay quiet rather
+          // than claim nothing is installed.
+          agents.length
+          ? [
+              h('div', {
+                class: 'empty',
+                text: 'No agent is installed and enabled yet — tick one under Settings → External agents (CLI).',
+              }),
+            ]
+          : []),
     ),
   );
 

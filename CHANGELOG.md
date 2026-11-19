@@ -65,6 +65,24 @@ All notable changes to beeCode will be documented in this file.
 
 ### Fixed
 
+- **The Subagents tab listed agents it could not delegate to.** The "Available agents"
+  card rendered the whole catalogue — every built-in preset, whether or not the CLI was on
+  PATH and whether or not it was ticked in Settings — so the panel advertised nine agents
+  that would fail the moment one was used. It now lists only agents that are both
+  installed and enabled (`usableAgents`, `src/renderer/panels.ts`), with an empty state
+  pointing at Settings → External agents (CLI) instead of a blank card. Ticking an agent
+  also no longer drops the internal beeCode runner from that card: `agents.detect`/
+  `agents.save` return the CLI catalogue only, so the renderer merges the internal entry
+  back in (`withInternalAgent`, `src/renderer/main.ts`).
+
+- **Ticking an external agent silently rewrote its label and args.** The seeded CLI agents
+  disagreed with the `AGENT_PRESETS` catalogue (`claude` labelled `Claude CLI` vs
+  `Claude Code`, `codex` seeded with `['exec', '--full-auto']` vs `['exec']`), and saving
+  the External agents card rebuilds an entry from the catalogue — so the first tick renamed
+  the row and left codex subagents spawning without `--full-auto`. `defaultConfig()` now
+  seeds exactly what the catalogue says, and a test pins the two together
+  (`src/shared/defaults.ts`, `src/service/subagents/presets.test.ts`).
+
 - **A new session forgot the mode you were using.** "New session" and an app restart always
   came back as the configured `agent.defaultMode` — usually `ask` — so a long `autonomous`
   stretch started over in the wrong mode every time; the mode only ever travelled on an

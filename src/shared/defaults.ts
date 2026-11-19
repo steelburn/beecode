@@ -91,8 +91,8 @@ export function defaultConfig(): BeeCodeConfig {
       enabled: true,
       maxConcurrent: 3,
       cliAgents: [
-        { id: 'codex', label: 'Codex CLI', command: 'codex', args: ['exec', '--full-auto'], enabled: true },
-        { id: 'claude', label: 'Claude CLI', command: 'claude', args: ['-p'], enabled: true },
+        { id: 'codex', label: 'Codex CLI', command: 'codex', args: ['exec'], enabled: true },
+        { id: 'claude', label: 'Claude Code', command: 'claude', args: ['-p'], enabled: true },
         { id: 'gemini', label: 'Gemini CLI', command: 'gemini', args: ['-p'], enabled: true },
         { id: 'aider', label: 'Aider', command: 'aider', args: ['--message'], enabled: false },
       ],

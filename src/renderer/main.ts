@@ -272,6 +272,16 @@ async function pollService(attempt = 0): Promise<void> {
 
 let loadingAll = false;
 
+/**
+ * `agents.detect` and `agents.save` answer with the *CLI* catalogue only, while
+ * `agents.list` — the list the Subagents panel is fed — also carries the internal runner.
+ * Merge that entry back in, or ticking an agent in Settings makes the internal agent
+ * disappear from the panel even though it is still available.
+ */
+function withInternalAgent(catalogue: AgentInfo[]): AgentInfo[] {
+  return [...state.agents.filter((agent) => agent.kind === 'internal'), ...catalogue];
+}
+
 async function loadAll(): Promise<void> {
   if (loadingAll) return;
   loadingAll = true;
@@ -1125,14 +1135,14 @@ function renderPanelBody(): void {
     detectAgents: async () => {
       const result = await api.invoke('agents.detect', {});
       state.detectedAgents = result.agents;
-      state.agents = result.agents;
+      state.agents = withInternalAgent(result.agents);
       renderPanelBody();
       return result.agents;
     },
     saveAgents: async (next: CliAgentEntry[]) => {
       const result = await api.invoke('agents.save', { agents: next });
       state.detectedAgents = result.agents;
-      state.agents = result.agents;
+      state.agents = withInternalAgent(result.agents);
       state.config = await api.getConfig();
       // No `renderPanelBody()` here: rebuilding Settings on every checkbox click threw
       // away the caret in the command box and the scroll position. The card keeps its
