@@ -40,6 +40,16 @@ export interface ApprovalRequest {
   requestedAt: string;
 }
 
+/**
+ * A button the transcript offers next to an entry. The service states which action
+ * applies and with which numbers; the renderer owns the wording.
+ */
+export type TranscriptAction = {
+  kind: 'raise-max-steps';
+  current: number;
+  next: number;
+};
+
 export interface TranscriptEntry {
   id: string;
   role: Role;
@@ -54,6 +64,8 @@ export interface TranscriptEntry {
   toolResult?: string;
   /** Marks a tool entry that failed, so the UI can style it. */
   failed?: boolean;
+  /** Buttons the transcript offers next to this entry. */
+  actions?: TranscriptAction[];
   /** Set when this assistant turn was interleaved with reasoning text. */
   reasoning?: string;
 }

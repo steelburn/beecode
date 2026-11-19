@@ -58,6 +58,35 @@ export interface AgentLoopDeps {
 
 const MAX_TOOL_RESULT_CHARS = 24_000;
 
+/** Ceiling for the "raise the step limit" button, so a runaway loop cannot be uncapped. */
+export const MAX_STEP_LIMIT = 400;
+
+/**
+ * The limit the transcript's bump button offers: double the current limit so a long
+ * task can finish in one go, capped at {@link MAX_STEP_LIMIT}. Returns the current
+ * limit unchanged when there is nothing left to give, which also hides the button.
+ */
+export function nextStepLimit(current: number): number {
+  const safe = Number.isFinite(current) ? Math.max(1, Math.floor(current)) : 1;
+  return Math.min(safe * 2, Math.max(safe, MAX_STEP_LIMIT));
+}
+
+/**
+ * The note the loop leaves when it runs out of steps, with the bump button attached when
+ * there is room left to raise the limit.
+ */
+export function stepLimitNote(maxSteps: number): Omit<TranscriptEntry, 'id' | 'at'> {
+  const limit = nextStepLimit(maxSteps);
+  const canRaise = limit > maxSteps;
+  return {
+    role: 'system',
+    text: canRaise
+      ? `Stopped after ${maxSteps} steps without finishing. Continue the task or raise the step limit.`
+      : `Stopped after ${maxSteps} steps without finishing. Continue the task or raise agent.maxSteps in settings.`,
+    actions: canRaise ? [{ kind: 'raise-max-steps', current: maxSteps, next: limit }] : undefined,
+  };
+}
+
 /**
  * The agentic loop: stream a completion, execute the requested tools under the
  * permission gate, feed results back, repeat until the model stops asking for tools.
@@ -180,10 +209,9 @@ export class AgentLoop {
         this.setStatus(session, 'thinking');
       }
 
-      const note = this.appendEntry(session, {
-        role: 'system',
-        text: `Stopped after ${maxSteps} steps without finishing. Continue the task or raise agent.maxSteps in settings.`,
-      });
+      // Offer the bump where the user finds out they need it: the renderer turns the
+      // action into a button, so nobody has to hunt for the setting behind the message.
+      const note = this.appendEntry(session, stepLimitNote(maxSteps));
       this.deps.emit({ type: 'session.entry', payload: { sessionId: session.id, entry: note } });
       this.setStatus(session, 'idle');
     } catch (err) {

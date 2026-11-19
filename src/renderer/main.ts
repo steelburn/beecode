@@ -16,6 +16,7 @@ import type {
   SubagentRunInfo,
   TodoItem,
   ToolInfo,
+  TranscriptAction,
   TranscriptEntry,
   WorkspaceState,
 } from '../shared/protocol';
@@ -847,6 +848,8 @@ function buildEntry(entry: TranscriptEntry): HTMLElement {
   else body.textContent = entry.text;
   wrapper.append(body);
 
+  if (entry.actions?.length) wrapper.append(buildEntryActions(entry.actions));
+
   if (entry.toolCalls?.length) {
     for (const call of entry.toolCalls) {
       wrapper.append(
@@ -865,6 +868,63 @@ function buildEntry(entry: TranscriptEntry): HTMLElement {
     }
   }
   return wrapper;
+}
+
+/**
+ * Render the buttons an entry offers. Today that is one: raise `agent.maxSteps`, shown on
+ * the "stopped after N steps" note so the fix is a click instead of a trip to Settings.
+ */
+function buildEntryActions(actions: TranscriptAction[]): HTMLElement {
+  const row = h('div', { class: 'msg-actions' });
+  for (const action of actions) {
+    if (action.kind !== 'raise-max-steps') continue;
+    // A transcript outlives the config: once the limit already covers this action, say so
+    // instead of offering a button that would write the same number again.
+    const current = state.config?.agent.maxSteps;
+    if (current !== undefined && current >= action.next) {
+      row.append(h('span', { class: 'note', text: `Step limit already raised to ${current}.` }));
+      continue;
+    }
+    const button = h('button', {
+      class: 'btn primary small',
+      text: `Raise step limit to ${action.next}`,
+      title: `Sets agent.maxSteps from ${action.current} to ${action.next}`,
+    });
+    button.addEventListener('click', () => void applyStepLimit(action, button, row));
+    row.append(button);
+  }
+  return row;
+}
+
+/**
+ * Save the higher step limit through the same `config.set` path the Settings panel uses,
+ * so the next turn of every session picks it up and the panel shows the new value.
+ */
+async function applyStepLimit(
+  action: TranscriptAction,
+  button: HTMLButtonElement,
+  row: HTMLElement,
+): Promise<void> {
+  const label = button.textContent;
+  button.disabled = true;
+  button.textContent = 'raising…';
+  try {
+    const config = state.config ?? (await api.getConfig());
+    state.config = await api.saveConfig({ ...config, agent: { ...config.agent, maxSteps: action.next } });
+    button.remove();
+    row.append(
+      h('span', {
+        class: 'note',
+        text: `Step limit raised to ${state.config.agent.maxSteps} — send “continue” to resume.`,
+      }),
+    );
+    if (state.panel === 'settings') renderPanelBody();
+    setHint(`agent.maxSteps raised to ${state.config.agent.maxSteps}`);
+  } catch (error) {
+    button.disabled = false;
+    button.textContent = label;
+    setHint(`Could not raise the step limit: ${(error as Error).message}`);
+  }
 }
 
 function buildToolCard(entry: TranscriptEntry): HTMLElement {

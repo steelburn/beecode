@@ -5,6 +5,14 @@ All notable changes to beeCode will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **One-click step-limit bump.** Running out of steps was a dead end: the note told you to
+  raise `agent.maxSteps` "in settings" and stopped there. It now carries the fix — a **Raise
+  step limit to N** button (24 → 48, capped at 400) that saves the higher limit through the
+  same `config.set` path the Settings panel uses, then confirms the new value in place. A
+  transcript entry can now declare its own actions (`TranscriptAction`), so the service
+  states which action applies and with which numbers while the renderer owns the wording —
+  an old entry can never resurrect a button for a limit that already moved
+  (`src/service/session/AgentLoop.ts`, `src/renderer/main.ts`, `src/shared/protocol.ts`).
 - **`pi` agent.** The CLI-agent catalogue now includes `pi` (`pi -p <prompt>`), so
   Settings → external agents offers it as soon as it is on PATH.
 
