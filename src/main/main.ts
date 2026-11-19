@@ -12,7 +12,13 @@ import { createPluginHostBridge, type PluginHostBridge } from './pluginHost';
 import { ServiceSupervisor } from './serviceSupervisor';
 
 const isDev = process.env.NODE_ENV === 'development';
-const workspace = process.env.BEECODE_WORKSPACE ?? process.cwd();
+/**
+ * The only workspace override is the environment. It is deliberately NOT `process.cwd()`:
+ * in a packaged app that is the installation directory, and beeCode must never adopt it
+ * silently. With no override the renderer shows the workspace setup step until the user
+ * picks a folder (`workspace.set`).
+ */
+const workspace = process.env.BEECODE_WORKSPACE ?? '';
 const distDir = __dirname;
 const rendererDir = join(distDir, 'renderer');
 

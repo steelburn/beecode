@@ -6,6 +6,111 @@ export interface CliAgentConfig {
   command: string;
   args: string[];
   enabled: boolean;
+  /** Added by the user instead of seeded from {@link AGENT_PRESETS}. */
+  custom?: boolean;
+}
+
+/** Result of looking a command up on PATH. */
+export interface CommandProbe {
+  onPath: boolean;
+  /** First line of `<command> --version`, when the CLI answers. */
+  version?: string;
+  detail?: string;
+}
+
+/**
+ * Built-in catalogue of external coding agents beeCode knows how to drive.
+ *
+ * Detection walks this list on PATH: a binary that is found but not configured is
+ * offered to the user in Settings instead of being silently ignored.
+ */
+export const AGENT_PRESETS: ReadonlyArray<Omit<CliAgentConfig, 'enabled'>> = [
+  { id: 'claude', label: 'Claude Code', command: 'claude', args: ['-p'] },
+  { id: 'codex', label: 'Codex CLI', command: 'codex', args: ['exec'] },
+  { id: 'opencode', label: 'opencode', command: 'opencode', args: ['run'] },
+  { id: 'gemini', label: 'Gemini CLI', command: 'gemini', args: ['-p'] },
+  { id: 'aider', label: 'Aider', command: 'aider', args: ['--message'] },
+  { id: 'hermes', label: 'Hermes', command: 'hermes', args: [] },
+  { id: 'cursor-agent', label: 'Cursor Agent', command: 'cursor-agent', args: ['-p'] },
+  { id: 'dsh', label: 'dsh', command: 'dsh', args: [] },
+];
+
+/** Ids the runner reserves for itself — a CLI may not take them over. */
+const RESERVED_IDS = new Set(['internal']);
+
+function slug(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 40);
+}
+
+/**
+ * Sanitize `subagents.cliAgents` coming from config.json or `agents.save`.
+ *
+ * An entry without a command is dropped (it could never run), ids are slugged and
+ * deduped, and the reserved ids are refused — the same "narrow, never widen" rule the
+ * plugin manifest follows. Unknown fields are discarded rather than copied through.
+ */
+export function normalizeCliAgents(input: unknown): CliAgentConfig[] {
+  const agents: CliAgentConfig[] = [];
+  const seen = new Set<string>();
+  for (const raw of Array.isArray(input) ? input : []) {
+    if (!raw || typeof raw !== 'object') continue;
+    const entry = raw as Record<string, unknown>;
+    const command = typeof entry.command === 'string' ? entry.command.trim() : '';
+    if (!command) continue;
+    const id = slug(typeof entry.id === 'string' && entry.id.trim() ? entry.id : command.split(/[\\/]/).pop() ?? command);
+    if (!id || RESERVED_IDS.has(id) || seen.has(id)) continue;
+    seen.add(id);
+    const args = Array.isArray(entry.args)
+      ? entry.args.filter((arg): arg is string => typeof arg === 'string' && arg.length > 0)
+      : [];
+    agents.push({
+      id,
+      label: typeof entry.label === 'string' && entry.label.trim() ? entry.label.trim().slice(0, 60) : id,
+      command: command.slice(0, 500),
+      args: args.slice(0, 20),
+      enabled: entry.enabled !== false,
+      ...(entry.custom === true ? { custom: true } : {}),
+    });
+  }
+  return agents;
+}
+
+const PROBE_TIMEOUT_MS = 4000;
+
+/** Look a command up on PATH and read its version. Never throws. */
+export function probeCommand(command: string): CommandProbe {
+  if (!command.trim()) return { onPath: false, detail: 'no command configured' };
+  const isWin = process.platform === 'win32';
+  try {
+    const found = spawnSync(isWin ? 'where.exe' : 'which', [command], {
+      windowsHide: true,
+      encoding: 'utf8',
+      timeout: PROBE_TIMEOUT_MS,
+    });
+    if (found.status !== 0) return { onPath: false, detail: `${command} not found on PATH` };
+    const location = String(found.stdout ?? '').split(/\r?\n/).find((line) => line.trim());
+    const versionRun = spawnSync(command, ['--version'], {
+      windowsHide: true,
+      encoding: 'utf8',
+      timeout: PROBE_TIMEOUT_MS,
+      shell: isWin, // .cmd shims (codex.cmd, claude.cmd)
+    });
+    const version = String(versionRun.stdout ?? versionRun.stderr ?? '')
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .find((line) => line.length > 0);
+    return {
+      onPath: true,
+      version: version ? version.slice(0, 120) : undefined,
+      detail: location?.trim(),
+    };
+  } catch (err) {
+    return { onPath: false, detail: (err as Error).message };
+  }
 }
 
 export interface CliRunResult {
@@ -33,20 +138,23 @@ export class CliAgentAdapter {
     return this.config.label;
   }
 
-  /** `where` / `which` probe — availability is reported to the UI and the model. */
-  probe(): { available: boolean; detail?: string } {
-    if (!this.config.enabled) return { available: false, detail: 'disabled in config' };
-    try {
-      const isWin = process.platform === 'win32';
-      const res = spawnSync(isWin ? 'where.exe' : 'which', [this.config.command], {
-        windowsHide: true,
-        encoding: 'utf8',
-      });
-      if (res.status === 0) return { available: true };
-      return { available: false, detail: `${this.config.command} not found on PATH` };
-    } catch (err) {
-      return { available: false, detail: (err as Error).message };
+  /**
+   * `where` / `which` probe plus a `--version` read — availability and version are
+   * reported to the UI so the user can see which detection result they are trusting.
+   */
+  probe(): { available: boolean; detail?: string; version?: string; onPath: boolean } {
+    if (!this.config.enabled) {
+      return { available: false, onPath: false, detail: 'disabled in config' };
     }
+    const probe = probeCommand(this.config.command);
+    return {
+      available: probe.onPath,
+      onPath: probe.onPath,
+      version: probe.version,
+      detail: probe.onPath
+        ? probe.version ?? probe.detail
+        : `${this.config.command} not found on PATH`,
+    };
   }
 
   buildArgv(prompt: string): string[] {

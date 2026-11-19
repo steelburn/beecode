@@ -58,6 +58,27 @@ export interface TranscriptEntry {
   reasoning?: string;
 }
 
+/**
+ * The session's stated objective. Mirrors the goal ADO Code keeps: one short
+ * outcome line that survives turn-to-turn until the user or the agent changes it.
+ */
+export interface SessionGoal {
+  text: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type TodoStatus = 'pending' | 'in_progress' | 'completed';
+
+/** One step of the session's working plan. */
+export interface TodoItem {
+  id: string;
+  content: string;
+  status: TodoStatus;
+  /** Present-participle label shown while the item is in progress. */
+  activeForm?: string;
+}
+
 export interface SessionSummary {
   id: string;
   title: string;
@@ -69,6 +90,8 @@ export interface SessionSummary {
   updatedAt: string;
   messageCount: number;
   parentSessionId?: string;
+  /** Stated objective, when the goal/to-do feature is on. */
+  goal?: SessionGoal;
 }
 
 export interface SessionSnapshot extends SessionSummary {
@@ -76,6 +99,10 @@ export interface SessionSnapshot extends SessionSummary {
   pendingApproval?: ApprovalRequest;
   /** Token accounting for the header meter, when the provider reports usage. */
   usage?: { inputTokens: number; outputTokens: number };
+  /** Current working plan (goal/to-do feature); absent when the feature is off. */
+  todos?: TodoItem[];
+  /** True when this snapshot was rehydrated from disk rather than kept in memory. */
+  restored?: boolean;
 }
 
 /* ------------------------------------------------------------------- tools */
@@ -117,6 +144,18 @@ export interface AgentInfo {
   available: boolean;
   /** Why an agent is unavailable — e.g. missing CLI binary. */
   detail?: string;
+  /** CLI command probed for `kind: 'cli'` agents. */
+  command?: string;
+  /** Flags the CLI runs with (a preset's flags are what make its run one-shot). */
+  args?: string[];
+  /** Version reported by the CLI when it answers `--version`. */
+  version?: string;
+  /** True when the binary was found on PATH during the last detection pass. */
+  onPath?: boolean;
+  /** True for agents the user added by hand instead of a built-in preset. */
+  custom?: boolean;
+  /** Config flag; an unavailable agent is still listed so it can be fixed. */
+  enabled?: boolean;
 }
 
 /* ------------------------------------------------------------------- policy */
@@ -298,12 +337,50 @@ export interface BrowserConfig {
   allowScripts: boolean;
 }
 
+/** One external coding-agent CLI as persisted in config.json. */
+export interface CliAgentEntry {
+  id: string;
+  label: string;
+  command: string;
+  args: string[];
+  enabled: boolean;
+  /** Added by the user rather than seeded from a built-in preset. */
+  custom?: boolean;
+}
+
 export interface SubagentConfig {
   enabled: boolean;
   /** Cap on concurrent subagent runs. */
   maxConcurrent: number;
   /** External CLI agents; each is probed for availability at startup. */
-  cliAgents: Array<{ id: string; label: string; command: string; args: string[]; enabled: boolean }>;
+  cliAgents: CliAgentEntry[];
+}
+
+/**
+ * Where the user works. beeCode never defaults this to the installation
+ * directory: until the user picks a folder, `root` is empty and the renderer
+ * shows the workspace setup step.
+ */
+export interface WorkspaceConfig {
+  /** Absolute path the file/shell tools are rooted at. Empty until configured. */
+  root: string;
+  /** Most-recently used roots, newest first (capped at 8). */
+  recent: string[];
+  /** Reopen the newest session of `root` on start when true. */
+  restoreSession?: boolean;
+}
+
+/** Optional product surfaces the user can switch off. */
+export interface FeaturesConfig {
+  /** Goal + to-do planning tools and the panel above the composer. */
+  goalTodo: boolean;
+}
+
+export interface WorkspaceState {
+  root: string;
+  recent: string[];
+  /** False while the user has not picked a workspace yet (first-run setup). */
+  configured: boolean;
 }
 
 export interface BeeCodeConfig {
@@ -319,6 +396,8 @@ export interface BeeCodeConfig {
   mcpServers: Record<string, McpServerConfig>;
   skills: SkillsConfig;
   plugins: PluginsConfig;
+  workspace: WorkspaceConfig;
+  features: FeaturesConfig;
 }
 
 /* ------------------------------------------------------------ mcp & skills */
@@ -471,6 +550,14 @@ export interface RpcRequests {
   'plugin.reload': { params: Record<string, never>; result: { plugins: PluginInfo[] } };
   'plugin.setEnabled': { params: { id: string; enabled: boolean }; result: { plugins: PluginInfo[] } };
   'app.hello': { params: { clientVersion: string }; result: HelloResult };
+  'workspace.state': { params: Record<string, never>; result: WorkspaceState };
+  'workspace.set': { params: { path: string }; result: WorkspaceState };
+  'workspace.forget': { params: { path: string }; result: WorkspaceState };
+  'goal.set': { params: { sessionId: string; text: string }; result: SessionSnapshot };
+  'goal.clear': { params: { sessionId: string }; result: SessionSnapshot };
+  'todo.list': { params: { sessionId: string }; result: { todos: TodoItem[] } };
+  'agents.detect': { params: { probe?: boolean }; result: { agents: AgentInfo[] } };
+  'agents.save': { params: { agents: CliAgentEntry[] }; result: { agents: AgentInfo[] } };
   'service.health': { params: Record<string, never>; result: ServiceHealth };
   'service.shutdown': { params: Record<string, never>; result: { stopping: true } };
   'mcp.list': { params: Record<string, never>; result: McpListResult };
@@ -519,6 +606,8 @@ export type ServiceEvent =
   | { type: 'approval.request'; payload: ApprovalRequest }
   | { type: 'approval.resolved'; payload: { sessionId: string; approvalId: string; decision: string } }
   | { type: 'subagent.update'; payload: SubagentRunInfo }
+  | { type: 'session.goal'; payload: { sessionId: string; goal?: SessionGoal } }
+  | { type: 'session.todos'; payload: { sessionId: string; todos: TodoItem[] } }
   | { type: 'desktop.activity'; payload: AuditEntry }
   | { type: 'service.health'; payload: ServiceHealth }
   | { type: 'log'; payload: { level: 'debug' | 'info' | 'warn' | 'error'; message: string; at: string } }

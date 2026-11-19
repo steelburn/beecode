@@ -1,7 +1,7 @@
 import type { AgentInfo, SubagentConfig, SubagentRunInfo } from '../../shared/protocol';
 import type { AuditLog } from '../audit';
 import type { Logger } from '../logger';
-import { CliAgentAdapter } from './adapters';
+import { AGENT_PRESETS, CliAgentAdapter, probeCommand, type CliAgentConfig } from './adapters';
 
 export interface SubagentRequest {
   parentSessionId: string;
@@ -63,10 +63,69 @@ export class SubagentRunner {
     this.runInternal = runner;
   }
 
+  /** Rebuild the CLI adapters from config (startup here, `agents.save` through `reload`). */
   private syncAdapters(): void {
+    this.adapters.clear();
     for (const agent of this.deps.config().cliAgents) {
       this.adapters.set(agent.id, new CliAgentAdapter(agent));
     }
+    this.probeCache = undefined;
+  }
+
+  /** Pick up a configuration change without restarting the service. */
+  reload(): void {
+    this.syncAdapters();
+  }
+
+  /**
+   * The whole CLI catalogue: the built-in presets merged with the user's own entries.
+   *
+   * A preset that is not configured is still listed (`enabled: false`) so Settings can
+   * offer it the moment it turns up on PATH. Probing is best-effort — a missing CLI is
+   * `available: false` with the reason, never a thrown error.
+   */
+  detect(probe = true): AgentInfo[] {
+    const configured = new Map(this.deps.config().cliAgents.map((agent) => [agent.id, agent]));
+    const agents: AgentInfo[] = [];
+    for (const preset of AGENT_PRESETS) {
+      agents.push(this.describe(preset, configured.get(preset.id), probe));
+      configured.delete(preset.id);
+    }
+    // Configured entries that are not presets are the user's own commands.
+    for (const entry of configured.values()) {
+      agents.push(
+        this.describe({ id: entry.id, label: entry.label, command: entry.command, args: entry.args }, entry, probe),
+      );
+    }
+    return agents;
+  }
+
+  private describe(
+    base: Omit<CliAgentConfig, 'enabled'>,
+    entry: CliAgentConfig | undefined,
+    probe: boolean,
+  ): AgentInfo {
+    const command = entry?.command?.trim() || base.command;
+    const enabled = entry?.enabled === true;
+    const result = probe ? probeCommand(command) : undefined;
+    const onPath = result?.onPath === true;
+    let detail: string;
+    if (probe && !onPath) detail = `${command} not found on PATH`;
+    else if (!enabled) detail = onPath ? 'found on PATH — enable it to delegate' : 'not configured';
+    else detail = result?.version ?? 'enabled';
+    return {
+      id: base.id,
+      label: entry?.label || base.label,
+      kind: 'cli',
+      available: enabled && onPath,
+      detail,
+      command,
+      version: result?.version,
+      onPath,
+      args: entry?.args?.length ? entry.args : base.args,
+      custom: entry?.custom === true || !AGENT_PRESETS.some((preset) => preset.id === base.id),
+      enabled,
+    };
   }
 
   availableAgents(): AgentInfo[] {
@@ -81,17 +140,8 @@ export class SubagentRunner {
         available: this.deps.config().enabled && Boolean(this.runInternal),
         detail: this.runInternal ? 'runs inside the service' : 'internal runner not wired',
       },
+      ...this.detect(true),
     ];
-    for (const adapter of this.adapters.values()) {
-      const probe = adapter.probe();
-      agents.push({
-        id: adapter.id,
-        label: adapter.label,
-        kind: 'cli',
-        available: probe.available,
-        detail: probe.detail,
-      });
-    }
     this.probeCache = { at: now, agents };
     return agents;
   }

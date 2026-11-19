@@ -4,7 +4,7 @@ import type { DesktopController } from '../desktop/controller';
 import type { McpManager } from '../mcp/manager';
 import type { PolicyEngine } from '../policy';
 import type { SkillStore } from '../skills/store';
-import type { MemoryStore, TodoStore } from '../stores';
+import type { GoalStore, MemoryStore, TodoStore } from '../stores';
 import type { SubagentRunner } from '../subagents/runner';
 import type { BrowserController } from '../browser/controller';
 import { agentTools } from './agents';
@@ -22,8 +22,11 @@ export interface ToolDeps {
   policy: PolicyEngine;
   audit: AuditLog;
   subagents: SubagentRunner;
+  goals: GoalStore;
   todos: TodoStore;
   memory: MemoryStore;
+  /** Goal/to-do feature switch: when false the planning tools are not registered. */
+  goalTodoEnabled: boolean;
   skills: SkillStore;
   /** Rescans the skill roots for a working directory (config-aware). */
   scanSkills: (cwd: string) => Promise<SkillInfo[]>;
@@ -44,6 +47,7 @@ export const SUBAGENT_TOOL_ALLOWLIST = new Set([
   'fs_search',
   'todo_write',
   'todo_read',
+  'goal_read',
   'memory_read',
   'skill',
 ]);
@@ -54,7 +58,12 @@ export function buildToolRegistry(deps: ToolDeps, options: { allowDelegation: bo
     ...browserTools({ controller: deps.browser, policy: deps.policy }),
     ...fileTools({ policy: deps.policy, audit: deps.audit }),
     ...shellTools({ policy: deps.policy, audit: deps.audit }),
-    ...controlTools({ todos: deps.todos, memory: deps.memory }),
+    ...controlTools({
+      goals: deps.goals,
+      todos: deps.todos,
+      memory: deps.memory,
+      goalTodoEnabled: deps.goalTodoEnabled,
+    }),
     ...skillTools({ store: deps.skills, scan: deps.scanSkills }),
     ...agentTools({ subagents: deps.subagents, allowDelegation: options.allowDelegation }),
     ...(deps.mcp ? deps.mcp.toolDefinitions() : []),
