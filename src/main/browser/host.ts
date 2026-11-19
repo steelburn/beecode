@@ -21,6 +21,7 @@
  */
 import { BrowserWindow, WebContentsView } from 'electron';
 import type {
+  BrowserAction,
   BrowserBounds,
   BrowserExecParams,
   BrowserExecResult,
@@ -214,7 +215,14 @@ export class BrowserHost {
 
   private async dispatch(params: BrowserExecParams): Promise<BrowserExecResult> {
     const action = params.action;
-    if (action !== 'close' && action !== 'tabs') this.visible = true;
+    // Driving a page is not the same as showing it. Only `open` — the agent explicitly asking
+    // for a page someone should look at — brings the dock on screen; `navigate`, `click`,
+    // `type` and the rest act on whatever surface the tab already has. A collapsed dock then
+    // stays collapsed (the renderer follows `state.visible` and reports no bounds, so
+    // `syncView` keeps the view detached) while the page keeps running — see the
+    // `backgroundThrottling: false` in `createTab`. That is what lets the agent work while the
+    // user is elsewhere in the app; `capture` is how it then sees the page.
+    if (action === 'open') this.visible = true;
 
     switch (action) {
       case 'open': {
@@ -273,6 +281,7 @@ export class BrowserHost {
       }
       case 'screenshot': {
         const tab = this.requireActive(params.tabId);
+        this.requireSurface(tab, action);
         const image = await tab.view.webContents.capturePage();
         const dataBase64 = image.toPNG().toString('base64');
         return {
@@ -301,6 +310,7 @@ export class BrowserHost {
 
   private async click(params: BrowserExecParams): Promise<BrowserExecResult> {
     const tab = this.requireActive(params.tabId);
+    this.requireSurface(tab, 'click');
     const located = await this.locate(tab, params);
     await this.moveCursor(tab, located, params.label ?? `click ${located.name ?? located.role ?? 'element'}`, 'click');
     await delay(this.cursorOn() ? CURSOR_LEAD_MS : 0);
@@ -389,6 +399,7 @@ export class BrowserHost {
 
   private async scroll(params: BrowserExecParams): Promise<BrowserExecResult> {
     const tab = this.requireActive(params.tabId);
+    this.requireSurface(tab, 'scroll');
     const deltaY = Number.isFinite(params.deltaY) ? Number(params.deltaY) : 600;
     const client = await this.cdp(tab);
     if (client) {
@@ -409,6 +420,7 @@ export class BrowserHost {
 
   private async hover(params: BrowserExecParams): Promise<BrowserExecResult> {
     const tab = this.requireActive(params.tabId);
+    this.requireSurface(tab, 'hover');
     const located = await this.locate(tab, params);
     await this.moveCursor(tab, located, params.label ?? `hover ${located.name ?? 'element'}`, 'move');
     const client = await this.cdp(tab);
@@ -610,7 +622,9 @@ export class BrowserHost {
     this.activeId = tabId;
     tab.lastUsed = Date.now();
     this.syncView();
-    tab.view.webContents.focus();
+    // Only a page the user can actually see may take the keyboard: in a silent drive the view
+    // is detached, and focusing it would pull every keystroke out of the composer.
+    if (this.visible) tab.view.webContents.focus();
   }
 
   /**
@@ -706,6 +720,21 @@ export class BrowserHost {
   private async settle(tab: Tab, timeoutMs = 3000): Promise<void> {
     const started = Date.now();
     while (tab.loading && Date.now() - started < timeoutMs) await delay(100);
+  }
+
+  /**
+   * Pointer input, hover, wheel scrolling and screenshots all need a compositor surface, and a
+   * surface only exists while the view is attached to the window. Measured on a detached
+   * WebContentsView, a synthetic click silently misses, `Input.dispatchMouseEvent` (move/wheel)
+   * never answers at all — which also wedges the debugger for every later command — and
+   * `capturePage` returns an empty 0x0 image. So a hidden dock cannot serve those actions: say
+   * so instead of stalling the agent loop.
+   */
+  private requireSurface(tab: Tab, action: BrowserAction): void {
+    if (this.attached.has(tab.id) && this.bounds.width > 1 && this.bounds.height > 1) return;
+    throw new Error(
+      `"${action}" needs the page on screen and the browser dock is hidden — call browser_open to reveal it, or read the DOM snapshot instead`,
+    );
   }
 
   /* ------------------------------------------------------------------ the page */

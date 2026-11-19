@@ -90,6 +90,16 @@ const composerOk =
   composerVisibleOk(composerOf('maximized')) &&
   composerVisibleOk(composerOf('unmaximized'));
 
+// Driving the browser must not force the dock on screen: after an explicit open and a
+// collapse, the dock stays hidden and navigation still works. The actions that need a surface
+// fail fast with an explanation (a detached view has none) instead of hanging the agent loop.
+const silent = report.browser?.silent ?? {};
+const silentOk =
+  silent.reopened === true &&
+  silent.collapsed === true &&
+  silent.navigated === true &&
+  silent.guarded === true;
+
 const ok =
   report.serviceReady === true &&
   report.dom?.bridge === true &&
@@ -97,10 +107,12 @@ const ok =
   markdownOk &&
   integrationsOk &&
   pluginsOk &&
-  composerOk;
+  composerOk &&
+  silentOk;
 if (!markdownOk) console.error(`[smoke] markdown/chart render check failed: ${JSON.stringify(rendered)}`);
 if (!integrationsOk) console.error(`[smoke] integrations panel check failed: ${JSON.stringify(integrations)}`);
 if (!pluginsOk) console.error(`[smoke] plugins card check failed: ${JSON.stringify(integrations)}`);
+if (!silentOk) console.error(`[smoke] silent browser drive check failed: ${JSON.stringify(silent)}`);
 if (!composerOk) {
   console.error(
     `[smoke] composer visibility check failed: ${JSON.stringify({

@@ -34,12 +34,20 @@ function render(result: Awaited<ReturnType<BrowserController['exec']>>): ToolRes
   if (!result.ok) return errorResult(result.error ?? 'the browser action failed', { action: result.action });
   const lines: string[] = [`${result.action}: ${result.message ?? 'ok'}`];
   if (result.tabId) lines.push(`tab: ${result.tabId}`);
+  // Nobody is watching a hidden dock, so say so: it changes how the model works (it has to take
+  // a screenshot to see the page) and explains why the user is not reacting to it.
+  if (result.state && !result.state.visible) {
+    lines.push(
+      'dock: hidden — driving in the background (navigate, read and type work; click, hover, scroll and screenshots need the page on screen)',
+    );
+  }
   if (result.snapshot) {
     lines.push('', formatSnapshot(result.snapshot));
   }
   if (result.screenshot) {
     const kilobytes = Math.round((result.screenshot.dataBase64.length * 3) / 4 / 1024);
-    lines.push('', `screenshot: ${result.screenshot.mimeType}, ~${kilobytes} KB (shown in the browser panel)`);
+    const where = result.state?.visible === false ? 'the dock is hidden' : 'shown in the browser panel';
+    lines.push('', `screenshot: ${result.screenshot.mimeType}, ~${kilobytes} KB (${where})`);
   }
   const meta: Record<string, unknown> = { action: result.action, tabId: result.tabId, state: result.state };
   if (result.screenshot) {

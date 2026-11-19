@@ -454,6 +454,30 @@ async function runSmokeCheck(serviceReady: boolean): Promise<void> {
       )) as Record<string, unknown>;
 
       browser = { ...browser, controls, afterControls: { visible: browserHost.state().visible, tabs: browserHost.state().tabs.length } };
+
+      // Silent drive: showing the dock must not be a side effect of driving it. Re-open a page,
+      // collapse the dock the way the ✕ does, then keep driving — `visible` stays false, reading
+      // and navigation still work, and the actions that need a surface fail fast instead of
+      // hanging the agent loop.
+      const silent = await (async () => {
+        const reopened = await browserHost.exec({ action: 'open', url: 'about:blank' });
+        browserHost.command({ kind: 'close' });
+        await new Promise((resolve) => setTimeout(resolve, 400));
+        const navigated = await browserHost.exec({ action: 'navigate', url: 'about:blank' });
+        const scrolled = await browserHost.exec({ action: 'scroll', deltaY: 200 });
+        const shot = await browserHost.exec({ action: 'screenshot' });
+        const after = browserHost.state();
+        return {
+          reopened: reopened.ok,
+          collapsed: after.visible === false,
+          navigated: navigated.ok,
+          guarded:
+            !scrolled.ok && !shot.ok && /dock is hidden/.test(String(scrolled.error ?? shot.error ?? '')),
+          tabs: after.tabs.length,
+          error: navigated.error ?? scrolled.error ?? shot.error,
+        };
+      })();
+      browser = { ...browser, silent };
     }
   } catch (err) {
     browser = { error: (err as Error).message };

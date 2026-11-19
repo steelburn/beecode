@@ -65,6 +65,15 @@ All notable changes to beeCode will be documented in this file.
 
 ### Fixed
 
+- **Driving the browser no longer forces the browser dock on screen.** Every agent action
+  used to set the dock visible, so a navigate, a keystroke or a DOM snapshot yanked the
+  user's layout back to the page mid-task, and an agent-driven tab switch took keyboard focus
+  away from the composer. Only `browser_open` reveals the dock now; navigate, type, key,
+  back/forward, reload and DOM snapshots keep working on a hidden page, while click, hover,
+  scroll and screenshots fail fast with an explanation instead of hanging, because a detached
+  view is not painted and silently drops synthetic input (`src/main/browser/host.ts`,
+  `src/renderer/browserDock.ts`, `src/service/tools/browser.ts`).
+
 - **The Workspace Files view and the skill drop-zone were refused by the main process.**
   Both are renderer features that call RPCs the renderer allow-list never learned about, so
   the panel died on `renderer may not call "fs.list"` (and the drag-and-drop skill install

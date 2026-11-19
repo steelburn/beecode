@@ -165,10 +165,14 @@ export function mountBrowserDock(host: HTMLElement, api: BrowserPanelApi): Brows
       // The view can only be positioned once the dock has a layout box, hence the frame.
       if (visible) scheduleBounds();
     }
-    // An agent action always gets a visible page: a minimized panel would hide the very
-    // cursor the user is meant to watch, which defeats the point of driving it in-app.
+    // Only an explicit `open` is worth surfacing — that is the agent asking for a page to be
+    // looked at. Every other action drives the page silently, so a minimized dock stays exactly
+    // as the user left it (and a collapsed one stays collapsed: the host flips `visible` for
+    // nothing but `open`).
     const actionAt = next.lastAction?.at;
-    if (mode === 'minimized' && actionAt && actionAt !== lastActionAt) applyMode('normal');
+    if (mode === 'minimized' && actionAt && actionAt !== lastActionAt && next.lastAction?.action === 'open') {
+      applyMode('normal');
+    }
     lastActionAt = actionAt;
 
     if (!visible) {
