@@ -26,6 +26,8 @@ export interface BrowserDock {
 
 const MIN_HEIGHT = 180;
 const CHROME_RESERVE = 220;
+/** Backstop for a report the compositor never asked for (occluded or restoring window). */
+const BOUNDS_BACKSTOP_MS = 120;
 
 /** Collapsed to the title bar, filling the workspace column, or the size the user dragged. */
 type DockMode = 'normal' | 'minimized' | 'maximized';
@@ -82,7 +84,7 @@ export function mountBrowserDock(host: HTMLElement, api: BrowserPanelApi): Brows
 
   let current: BrowserState | null = null;
   let shown = false;
-  let frame = 0;
+  let pending = false;
   let mode: DockMode = 'normal';
   /** Height to restore when leaving minimize/maximize (0 = whatever the CSS says). */
   let normalHeight = 0;
@@ -90,7 +92,6 @@ export function mountBrowserDock(host: HTMLElement, api: BrowserPanelApi): Brows
 
   /** Report the reserved rectangle to main; only meaningful while the dock is on screen. */
   const sendBounds = (): void => {
-    frame = 0;
     if (!shown) return;
     const rect = surface.getBoundingClientRect();
     if (rect.width < 1 || rect.height < 1) {
@@ -107,9 +108,23 @@ export function mountBrowserDock(host: HTMLElement, api: BrowserPanelApi): Brows
     });
   };
 
+  /**
+   * Report the rectangle once per frame, with a timer as backstop. Chromium does not always
+   * deliver the animation frame — while the window is occluded, or right after it comes back
+   * from minimized — and a dropped report leaves the page view at its previous rectangle,
+   * painted straight over the dock's own minimize/maximize/close buttons. The timer is not
+   * starved the same way, so the rectangle always lands.
+   */
   const scheduleBounds = (): void => {
-    if (frame) return;
-    frame = requestAnimationFrame(sendBounds);
+    if (pending) return;
+    pending = true;
+    const flush = (): void => {
+      if (!pending) return;
+      pending = false;
+      sendBounds();
+    };
+    requestAnimationFrame(flush);
+    setTimeout(flush, BOUNDS_BACKSTOP_MS);
   };
 
   const renderTabs = (next: BrowserState): void => {
@@ -236,6 +251,12 @@ export function mountBrowserDock(host: HTMLElement, api: BrowserPanelApi): Brows
     scheduleBounds();
   };
   window.addEventListener('resize', onWindowResize);
+  const onWindowFocus = (): void => scheduleBounds();
+  const onVisibilityChange = (): void => {
+    if (!document.hidden) scheduleBounds();
+  };
+  window.addEventListener('focus', onWindowFocus);
+  document.addEventListener('visibilitychange', onVisibilityChange);
 
   // Dragging the splitter changes the dock's own height; the ResizeObserver above then
   // reports the new rectangle, so the page view follows the drag without extra plumbing.
@@ -272,6 +293,8 @@ export function mountBrowserDock(host: HTMLElement, api: BrowserPanelApi): Brows
     destroy(): void {
       observer.disconnect();
       window.removeEventListener('resize', onWindowResize);
+      window.removeEventListener('focus', onWindowFocus);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
       onPointerUp();
     },
   };

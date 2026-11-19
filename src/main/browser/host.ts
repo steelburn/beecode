@@ -140,13 +140,12 @@ export class BrowserHost {
       width: Math.round(Number(bounds?.width) || 0),
       height: Math.round(Number(bounds?.height) || 0),
     };
-    const unchanged =
-      next.x === this.bounds.x &&
-      next.y === this.bounds.y &&
-      next.width === this.bounds.width &&
-      next.height === this.bounds.height;
     this.bounds = next;
-    if (!unchanged) this.syncView();
+    // Always resync, even when the numbers repeat. A report that arrives while the window is
+    // occluded — or while it is coming back from minimized or a resize — can be applied to
+    // `bounds` without the attached view following it, and a skipped resync on the next
+    // identical report would then leave the page painted over the dock chrome for good.
+    this.syncView();
   }
 
   command(command: BrowserPanelCommand): void {
