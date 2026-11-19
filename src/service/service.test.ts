@@ -186,6 +186,22 @@ test('background service answers JSON-RPC over loopback HTTP', async () => {
     const internal = agents.find((a) => a.id === 'internal');
     assert.equal(internal?.available, true, 'internal subagent runner must be wired');
 
+    // `pi` is a preset, so Settings can offer it instead of the user typing the command.
+    const catalogue = (await rpc('agents.detect', { probe: false })).result as {
+      agents: Array<{ id: string; enabled: boolean }>;
+    };
+    assert.ok(catalogue.agents.some((agent) => agent.id === 'pi'), 'pi must be a listed preset');
+
+    // A custom command that is switched off stays in the config as `enabled: false`;
+    // the UI used to drop it, which deleted the command on the next unrelated save.
+    const savedAgents = (await rpc('agents.save', {
+      agents: [
+        { id: 'mine', label: 'mine', command: 'my-agent', args: [], enabled: false, custom: true },
+      ],
+    })).result as { agents: Array<{ id: string; enabled: boolean }> };
+    const mine = savedAgents.agents.find((agent) => agent.id === 'mine');
+    assert.equal(mine?.enabled, false, 'a disabled custom command must survive a save');
+
     const unknown = await rpc('session.explode');
     assert.match(unknown.error?.message ?? '', /unknown method/);
 

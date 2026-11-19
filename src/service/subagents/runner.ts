@@ -1,7 +1,13 @@
 import type { AgentInfo, SubagentConfig, SubagentRunInfo } from '../../shared/protocol';
 import type { AuditLog } from '../audit';
 import type { Logger } from '../logger';
-import { AGENT_PRESETS, CliAgentAdapter, probeCommand, type CliAgentConfig } from './adapters';
+import {
+  AGENT_PRESETS,
+  CliAgentAdapter,
+  probeCommand,
+  type CliAgentConfig,
+  type CommandProbe,
+} from './adapters';
 
 export interface SubagentRequest {
   parentSessionId: string;
@@ -54,6 +60,13 @@ export class SubagentRunner {
   private waiters: Array<() => void> = [];
   private runInternal?: InternalRunner;
   private probeCache?: { at: number; agents: AgentInfo[] };
+  /**
+   * PATH probes, keyed by command. A probe is a synchronous `where`/`--version` spawn
+   * and `agents.save` re-runs `detect` on every checkbox click, so without a cache each
+   * toggle stalled the service while it re-probed every configured CLI.
+   */
+  private probes = new Map<string, { at: number; probe: CommandProbe }>();
+  private static readonly PROBE_TTL_MS = 120_000;
 
   constructor(private readonly deps: SubagentRunnerDeps) {
     this.syncAdapters();
@@ -84,17 +97,22 @@ export class SubagentRunner {
    * offer it the moment it turns up on PATH. Probing is best-effort — a missing CLI is
    * `available: false` with the reason, never a thrown error.
    */
-  detect(probe = true): AgentInfo[] {
+  detect(probe = true, force = false): AgentInfo[] {
     const configured = new Map(this.deps.config().cliAgents.map((agent) => [agent.id, agent]));
     const agents: AgentInfo[] = [];
     for (const preset of AGENT_PRESETS) {
-      agents.push(this.describe(preset, configured.get(preset.id), probe));
+      agents.push(this.describe(preset, configured.get(preset.id), probe, force));
       configured.delete(preset.id);
     }
     // Configured entries that are not presets are the user's own commands.
     for (const entry of configured.values()) {
       agents.push(
-        this.describe({ id: entry.id, label: entry.label, command: entry.command, args: entry.args }, entry, probe),
+        this.describe(
+          { id: entry.id, label: entry.label, command: entry.command, args: entry.args },
+          entry,
+          probe,
+          force,
+        ),
       );
     }
     return agents;
@@ -104,10 +122,11 @@ export class SubagentRunner {
     base: Omit<CliAgentConfig, 'enabled'>,
     entry: CliAgentConfig | undefined,
     probe: boolean,
+    force: boolean,
   ): AgentInfo {
     const command = entry?.command?.trim() || base.command;
     const enabled = entry?.enabled === true;
-    const result = probe ? probeCommand(command) : undefined;
+    const result = probe ? this.probeOf(command, force) : undefined;
     const onPath = result?.onPath === true;
     let detail: string;
     if (probe && !onPath) detail = `${command} not found on PATH`;
@@ -126,6 +145,19 @@ export class SubagentRunner {
       custom: entry?.custom === true || !AGENT_PRESETS.some((preset) => preset.id === base.id),
       enabled,
     };
+  }
+
+  /**
+   * Cached PATH probe. `force` is what the explicit “Detect agents” action asks for;
+   * everything else (saving the list, listing the tools) reuses a recent result.
+   */
+  private probeOf(command: string, force: boolean): CommandProbe {
+    const now = Date.now();
+    const cached = this.probes.get(command);
+    if (!force && cached && now - cached.at < SubagentRunner.PROBE_TTL_MS) return cached.probe;
+    const probe = probeCommand(command);
+    this.probes.set(command, { at: now, probe });
+    return probe;
   }
 
   availableAgents(): AgentInfo[] {

@@ -989,7 +989,9 @@ function renderPanelBody(): void {
       state.detectedAgents = result.agents;
       state.agents = result.agents;
       state.config = await api.getConfig();
-      renderPanelBody();
+      // No `renderPanelBody()` here: rebuilding Settings on every checkbox click threw
+      // away the caret in the command box and the scroll position. The card keeps its
+      // own enable state and re-renders only on an explicit detect.
       return result.agents;
     },
     setWorkspace: async (path: string) => {

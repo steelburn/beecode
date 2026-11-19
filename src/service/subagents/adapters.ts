@@ -33,6 +33,9 @@ export const AGENT_PRESETS: ReadonlyArray<Omit<CliAgentConfig, 'enabled'>> = [
   { id: 'hermes', label: 'Hermes', command: 'hermes', args: [] },
   { id: 'cursor-agent', label: 'Cursor Agent', command: 'cursor-agent', args: ['-p'] },
   { id: 'dsh', label: 'dsh', command: 'dsh', args: [] },
+  // `pi` runs one-shot with `-p <prompt>`; without the flag it opens its own TUI and
+  // the delegation would block until the timeout fires.
+  { id: 'pi', label: 'pi', command: 'pi', args: ['-p'] },
 ];
 
 /** Ids the runner reserves for itself — a CLI may not take them over. */

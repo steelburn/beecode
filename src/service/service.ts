@@ -434,7 +434,8 @@ export class BeeCodeService {
         return { todos: this.todos.read(this.requireString(args, 'sessionId')) };
 
       case 'agents.detect':
-        return { agents: this.subagents.detect(args.probe !== false) };
+        // An explicit detect is the user asking to look again, so it bypasses the cache.
+        return { agents: this.subagents.detect(args.probe !== false, args.probe !== false) };
 
       case 'agents.save': {
         // The UI cannot know a preset's flags (they are what makes `claude -p` a one-shot
@@ -452,6 +453,7 @@ export class BeeCodeService {
         await this.persistConfig();
         this.subagents.reload();
         this.log.info('subagent CLIs saved', { agents: entries.length });
+        // Reuses the probe cache: saving must not re-spawn every CLI on PATH.
         return { agents: this.subagents.detect(true) };
       }
 

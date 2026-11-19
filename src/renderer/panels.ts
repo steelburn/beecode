@@ -810,42 +810,111 @@ function renderAgentsCard(
   setNote: (text: string) => void,
 ): HTMLElement {
   const catalogue = agents.filter((agent) => agent.kind === 'cli');
-  const configured = (agent: AgentInfo): CliAgentEntry => ({
+  /**
+   * Enable state of the catalogue, held locally and mutated in place. The card used to
+   * rebuild every save from the `agents` snapshot it was rendered with, so a second
+   * click that landed before the save round-trip finished reverted the first one.
+   */
+  const on = new Map(catalogue.map((agent) => [agent.id, agent.enabled === true]));
+  /** Commands added in this card that the probed catalogue does not know yet. */
+  const extra: CliAgentEntry[] = [];
+  /** Checkbox per agent id, so a rejected entry can be put back without a re-render. */
+  const boxes = new Map<string, HTMLInputElement>();
+  /** Bumped on every click; a save only reconciles a response nobody has superseded. */
+  let version = 0;
+
+  const entryFor = (agent: AgentInfo): CliAgentEntry => ({
     id: agent.id,
     label: agent.label,
     command: agent.command ?? agent.id,
     args: agent.args ?? [],
-    enabled: true,
+    enabled: on.get(agent.id) === true,
     ...(agent.custom ? { custom: true } : {}),
   });
 
-  const save = async (next: CliAgentEntry[]): Promise<void> => {
-    setNote('saving agents…');
-    try {
-      await cb.saveAgents?.(next);
-      setNote('agents saved ✓');
-    } catch (error) {
-      setNote(`agents failed: ${(error as Error).message}`);
+  /**
+   * The list to persist: every enabled agent, plus the user’s own commands even when
+   * they are off (`enabled: false`). The old code dropped them, so unticking a custom
+   * command deleted it from config.json the next time any other agent was toggled.
+   */
+  const buildEntries = (): CliAgentEntry[] => {
+    const list: CliAgentEntry[] = [];
+    for (const agent of catalogue) {
+      const entry = entryFor(agent);
+      if (!entry.enabled && agent.custom !== true) continue;
+      list.push(entry);
     }
+    return [...list, ...extra];
   };
 
-  const toggled = (agent: AgentInfo, enabled: boolean): CliAgentEntry[] => {
-    const others = catalogue
-      .filter((other) => other.id !== agent.id && other.enabled)
-      .map((other) => configured(other));
-    return enabled ? [...others, configured(agent)] : others;
+  let queue: Promise<void> = Promise.resolve();
+  let refreshPending = false;
+
+  /**
+   * Persist the model, one request at a time: overlapping `agents.save` calls raced and
+   * the slower answer won. A save never re-renders the panel — the checkbox keeps its
+   * own state and only an explicit detect (or a new custom row) refreshes the card.
+   */
+  const persist = (refresh = false): Promise<void> => {
+    if (refresh) refreshPending = true;
+    queue = queue.then(async () => {
+      const stamp = version;
+      setNote('saving agents…');
+      let saved: AgentInfo[] | undefined;
+      try {
+        saved = await cb.saveAgents?.(buildEntries());
+      } catch (error) {
+        setNote(`agents failed: ${(error as Error).message}`);
+        return;
+      }
+      // The service normalises what it is given (duplicate commands and reserved ids are
+      // dropped), so the echo is the truth — but only for a list nobody has superseded:
+      // applying an older echo would undo the click that came after it.
+      if (saved && stamp === version) {
+        const live = new Set(saved.map((agent) => agent.id));
+        for (const agent of saved) {
+          if (agent.kind !== 'cli' || typeof agent.enabled !== 'boolean') continue;
+          on.set(agent.id, agent.enabled);
+          const box = boxes.get(agent.id);
+          if (box) box.checked = agent.enabled;
+        }
+        for (const agent of catalogue) {
+          if (live.has(agent.id) || on.get(agent.id) !== true) continue;
+          on.set(agent.id, false);
+          const box = boxes.get(agent.id);
+          if (box) box.checked = false;
+        }
+        for (let index = extra.length - 1; index >= 0; index -= 1) {
+          if (live.has(extra[index].id)) extra.splice(index, 1);
+        }
+      }
+      setNote('agents saved ✓');
+      if (refreshPending) {
+        refreshPending = false;
+        await cb.detectAgents?.();
+      }
+    });
+    return queue;
   };
 
-  const rows = catalogue.map((agent) =>
-    h(
+  const toggle = (agent: AgentInfo, enabled: boolean): void => {
+    version += 1;
+    on.set(agent.id, enabled);
+    void persist();
+  };
+
+  const agentRow = (agent: AgentInfo): HTMLElement => {
+    const box = h('input', {
+      type: 'checkbox',
+      checked: agent.enabled === true,
+      on: { change: (event: Event) => toggle(agent, (event.target as HTMLInputElement).checked) },
+    });
+    boxes.set(agent.id, box);
+    return h(
       'div',
       { class: 'agent-row' },
       h('label', { class: 'agent-name' },
-        h('input', {
-          type: 'checkbox',
-          checked: agent.enabled === true,
-          on: { change: (event: Event) => void save(toggled(agent, (event.target as HTMLInputElement).checked)) },
-        }),
+        box,
         h('span', { text: agent.label }),
         agent.custom ? h('span', { class: 'badge', text: 'custom' }) : null,
       ),
@@ -854,8 +923,10 @@ function renderAgentsCard(
         h('span', { class: 'mono sub', text: agent.command ?? agent.id }),
         agent.version ? h('span', { class: 'sub', text: agent.version }) : null,
       ),
-    ),
-  );
+    );
+  };
+
+  const rows = catalogue.map(agentRow);
 
   const customInput = h('input', {
     class: 'settings-input',
@@ -865,9 +936,11 @@ function renderAgentsCard(
   const addCustom = (): void => {
     const command = customInput.value.trim();
     if (!command) return;
-    const others = catalogue.filter((agent) => agent.enabled).map((agent) => configured(agent));
     const label = command.split(/[\\/]/).pop() || command;
-    void save([...others, { id: label, label, command, args: [], enabled: true, custom: true }]);
+    customInput.value = '';
+    // Kept aside until the service reports it back, then folded into the catalogue.
+    extra.push({ id: label, label, command, args: [], enabled: true, custom: true });
+    void persist(true);
   };
 
   return h(

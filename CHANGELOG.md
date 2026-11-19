@@ -2,6 +2,22 @@
 
 All notable changes to beeCode will be documented in this file.
 
+## [Unreleased]
+
+### Added
+- **`pi` agent.** The CLI-agent catalogue now includes `pi` (`pi -p <prompt>`), so
+  Settings → external agents offers it as soon as it is on PATH.
+
+### Fixed
+- **Saving external agents.** The Settings card no longer rebuilds the whole panel on
+  every checkbox click (the command box lost its caret and the list jumped), saves are
+  serialised and reconciled against the latest click instead of an echoed snapshot — a
+  rapid second click can no longer revert the first — an unticked custom command is
+  kept in `config.json` as `enabled: false` instead of being deleted, and a save reuses
+  cached PATH probes rather than re-spawning every configured CLI; only an explicit
+  **Detect agents** forces a fresh probe (`src/service/subagents/runner.ts`,
+  `src/renderer/panels.ts`).
+
 ## [0.1.0] - 2026-11-19
 
 ### Added
