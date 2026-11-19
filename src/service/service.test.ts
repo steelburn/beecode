@@ -98,6 +98,13 @@ test('background service answers JSON-RPC over loopback HTTP', async () => {
       assert.ok(names.includes(expected), `missing tool ${expected}`);
     }
 
+    // Builtin plugins activate even when config.json has no `plugins` block, so their tools
+    // must reach the catalogue the model sees — not only PluginHost.toolDefinitions().
+    const pluginTools = tools.filter((tool) => tool.group === 'plugins').map((tool) => tool.name);
+    for (const expected of ['pdf_generate', 'pdf_open', 'excel_export']) {
+      assert.ok(pluginTools.includes(expected), `missing plugin tool ${expected}`);
+    }
+
     const policy = (await rpc('policy.get')).result as { allowedApps: Array<{ id: string }> };
     assert.ok(policy.allowedApps.some((a) => a.id === 'notepad'));
 
@@ -150,6 +157,9 @@ test('background service answers JSON-RPC over loopback HTTP', async () => {
       (tool) => tool.name,
     );
     assert.ok(afterAddTools.includes('mcp__second__read_note'), 'registry rebuilt with the new server');
+    // A rebuild (config change, MCP or plugin reload) must not lose the plugin tools: the
+    // core names are reserved for the host, so a plugin tool never reserves its own name.
+    assert.ok(afterAddTools.includes('pdf_generate'), 'plugin tools survive a registry rebuild');
     assert.ok(!afterAddTools.includes('mcp__broken__read_note'));
 
     // Removing it again drops the connection *and* the tools it contributed.

@@ -11,6 +11,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { inflateRawSync } from 'node:zlib';
+import type { HostCall } from '../shared/browser';
 import type { PluginsConfig } from '../shared/protocol';
 import type { ToolContext, ToolDefinition } from '../shared/tools';
 import type { AuditLog } from '../service/audit';
@@ -58,6 +59,7 @@ function hostWith(
     builtins?: PluginDefinition[];
     policy?: PolicyEngine;
     reserved?: string[];
+    hostCall?: HostCall;
   } = {},
 ): PluginHost {
   return new PluginHost({
@@ -66,7 +68,7 @@ function hostWith(
     log: silentLog,
     policy: () => options.policy ?? allowPolicy,
     audit: () => ({ record() {} }) as unknown as AuditLog,
-    hostCall: () => undefined,
+    hostCall: () => options.hostCall,
     reservedNames: () => options.reserved ?? [],
   });
 }
@@ -551,6 +553,135 @@ test('pdf/render needs files:write as well as pdf:render', () => {
   // demand the permission, or it becomes a way around the file policy.
   assert.deepEqual(HOST_METHOD_PERMISSION['pdf/render'], ['pdf:render', 'files:write']);
   assert.deepEqual(HOST_METHOD_PERMISSION['pdf/open'], ['pdf:view']);
+});
+
+test('pdf_generate declares pdf:view so open: true can actually reach the viewer', async () => {
+  // pdf/open is gated on pdf:view in the host. While the manifest did not declare it the call
+  // threw and the tool swallowed the error, so `open: true` never produced a viewer at all.
+  const manifest = BUILTIN_PLUGINS.find((plugin) => plugin.manifest.id === 'pdf-generator')?.manifest;
+  assert.ok(manifest?.permissions?.includes('pdf:view'), 'the manifest must declare pdf:view');
+
+  const calls: string[] = [];
+  const hostCall = (async (method: string) => {
+    calls.push(method);
+    if (method === 'pdf/render') return { ok: true, path: '', bytes: 2048 };
+    return { ok: false, path: '', error: 'no viewer on this desktop' };
+  }) as HostCall;
+  const host = hostWith({ hostCall });
+  await host.start();
+  try {
+    const tool = host.toolDefinitions().find((entry) => entry.name === 'pdf_generate');
+    assert.ok(tool);
+    await withTempDir(async (dir) => {
+      const result = await tool.handler({ path: join(dir, 'r.pdf'), markdown: '# Hi', open: true }, context(dir));
+      assert.deepEqual(calls, ['pdf/render', 'pdf/open'], 'open: true must reach pdf/open');
+      assert.ok(!result.failed, 'a viewer that will not open must not fail the write');
+      assert.match(result.content, /The viewer did not open: no viewer on this desktop/);
+      assert.doesNotMatch(result.content, /did not declare/, 'the grant must be in the manifest');
+    });
+  } finally {
+    await host.stop();
+  }
+});
+
+test('every bundled plugin declares the permissions its tools actually reach for', async () => {
+  // A permission the manifest forgets only shows up when a handler runs: the host throws and the
+  // tool turns it into an in-band failure (or swallowed it — that was the pdf:view gap). Scan the
+  // sources so drift is caught statically instead of by a silently degraded tool.
+  const dir = join(process.cwd(), 'src', 'plugins', 'builtin');
+  const files = (await readdir(dir)).filter((name) => name.endsWith('.ts') && name !== 'index.ts');
+  assert.ok(files.length > 0, `no bundled plugin sources under ${dir}`);
+
+  const seen: string[] = [];
+  for (const name of files) {
+    const source = await readFile(join(dir, name), 'utf8');
+    const id = /id: '([a-z0-9-]+)'/.exec(source)?.[1];
+    assert.ok(id, `${name} declares no plugin id`);
+    seen.push(id);
+
+    const plugin = BUILTIN_PLUGINS.find((entry) => entry.manifest.id === id);
+    assert.ok(plugin, `${name} is not exported from builtin/index.ts`);
+    const declared = new Set(plugin.manifest.permissions ?? []);
+
+    for (const [, method] of source.matchAll(/api\.host\.call\('([^']+)'/g)) {
+      const required = HOST_METHOD_PERMISSION[method as keyof typeof HOST_METHOD_PERMISSION];
+      assert.ok(required, `${id} calls host method "${method}", which has no permission mapping`);
+      for (const permission of required) {
+        assert.ok(declared.has(permission), `${id} calls "${method}" without declaring "${permission}"`);
+      }
+    }
+
+    for (const [, call] of source.matchAll(/api\.fs\.(\w+)\(/g)) {
+      const permission =
+        call.startsWith('write') || call === 'assertWrite'
+          ? 'files:write'
+          : call.startsWith('read') || call === 'assertRead'
+            ? 'files:read'
+            : undefined;
+      if (permission) {
+        assert.ok(declared.has(permission), `${id} calls api.fs.${call} without declaring "${permission}"`);
+      }
+    }
+  }
+
+  assert.deepEqual(seen.sort(), BUILTIN_PLUGINS.map((plugin) => plugin.manifest.id).sort());
+});
+
+test('pdf_open hands a real PDF to the viewer and rejects the rest in-band', async () => {
+  const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
+  const hostCall = (async (method: string, params: Record<string, unknown>) => {
+    calls.push({ method, params });
+    return { ok: true, path: String(params.path ?? ''), title: params.title as string | undefined };
+  }) as unknown as HostCall;
+  const host = hostWith({ hostCall });
+  await host.start();
+  try {
+    const tool = host.toolDefinitions().find((entry) => entry.name === 'pdf_open');
+    assert.ok(tool);
+    await withTempDir(async (dir) => {
+      const target = join(dir, 'report.pdf');
+      await writeFile(target, '%PDF-1.4\n%%EOF\n');
+
+      const opened = await tool.handler({ path: target, page: 2 }, context(dir));
+      assert.ok(!opened.failed, 'a real PDF must open');
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0].method, 'pdf/open');
+      assert.equal(calls[0].params.path, target);
+      assert.equal(calls[0].params.page, 2);
+
+      const missing = await tool.handler({ path: join(dir, 'nope.pdf') }, context(dir));
+      assert.equal(missing.failed, true);
+      await writeFile(join(dir, 'notes.txt'), 'not a pdf at all');
+      const notPdf = await tool.handler({ path: join(dir, 'notes.txt') }, context(dir));
+      assert.equal(notPdf.failed, true);
+      assert.match(notPdf.content, /Not a PDF/);
+      assert.equal(calls.length, 1, 'a rejected path must not reach the host');
+    });
+  } finally {
+    await host.stop();
+  }
+});
+
+test('excel_export parses a delimited block with an explicit delimiter', async () => {
+  const host = hostWith();
+  await host.start();
+  try {
+    const tool = host.toolDefinitions().find((entry) => entry.name === 'excel_export');
+    assert.ok(tool);
+    await withTempDir(async (dir) => {
+      const target = join(dir, 'table.xlsx');
+      const result = await tool.handler(
+        { path: target, csv: 'a;1\nb;2', delimiter: ';' },
+        context(dir),
+      );
+      assert.ok(!result.failed, String(result.content));
+      assert.match(result.content, /2 rows × 2 columns/);
+      const bytes = await readFile(target);
+      assert.equal(bytes.subarray(0, 2).toString('binary'), 'PK', 'a real xlsx archive');
+    });
+  } finally {
+    await host.stop();
+  }
 });
 
 test('pdf_generate applies the file policy before it creates or writes anything', async () => {

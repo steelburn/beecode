@@ -1,4 +1,5 @@
 import type { SkillInfo } from '../../shared/protocol';
+import type { ToolDefinition } from '../../shared/tools';
 import type { AuditLog } from '../audit';
 import type { DesktopController } from '../desktop/controller';
 import type { McpManager } from '../mcp/manager';
@@ -32,6 +33,11 @@ export interface ToolDeps {
   scanSkills: (cwd: string) => Promise<SkillInfo[]>;
   /** MCP servers; when present their tools join the catalogue. */
   mcp?: McpManager;
+  /**
+   * Plugins; when present their tools join the catalogue exactly like MCP tools. The
+   * host is given the names already taken so a plugin can never shadow a core tool.
+   */
+  plugins?: { toolDefinitions(reserved: Iterable<string>): ToolDefinition[] };
 }
 
 /** Read-only tools a nested (internal) subagent is allowed to use. */
@@ -68,6 +74,12 @@ export function buildToolRegistry(deps: ToolDeps, options: { allowDelegation: bo
     ...agentTools({ subagents: deps.subagents, allowDelegation: options.allowDelegation }),
     ...(deps.mcp ? deps.mcp.toolDefinitions() : []),
   );
+
+  // Plugin tools are appended after the core ones, and the names taken so far are
+  // handed over as reserved: a plugin tool therefore never shadows a core tool, and
+  // a rebuild triggered by `plugins.reload()` cannot make a plugin tool collide with
+  // the copy of itself that the previous registry still reports.
+  if (deps.plugins) registry.register(...deps.plugins.toolDefinitions(registry.names()));
 
   if (!options.readOnly) return registry;
   return registry.subset((tool) => SUBAGENT_TOOL_ALLOWLIST.has(tool.name));

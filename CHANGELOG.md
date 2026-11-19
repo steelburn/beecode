@@ -9,6 +9,22 @@ All notable changes to beeCode will be documented in this file.
   Settings → external agents offers it as soon as it is on PATH.
 
 ### Fixed
+- **Plugin tools were never offered to the model.** The plugin host built its tool
+  catalogue but nothing handed it to the agent, so `pdf_generate`, `pdf_open` and
+  `excel_export` were loaded and green in their own tests yet absent from the tool list —
+  a "research this and generate a PDF" request finished with no PDF and no error.
+  `buildToolRegistry` now takes the plugin definitions the same way it takes MCP servers,
+  and every registry rebuild asks the host for its current set (core tool names only are
+  treated as reserved, so the rebuild is idempotent). Covered by a service-level test that
+  asserts `pdf_generate` is in `tools.list` and survives a rebuild
+  (`src/service/tools/index.ts`, `src/service/service.ts`).
+- **`pdf_generate` with `open: true` never showed the PDF.** `pdf/open` requires
+  `pdf:view`, which the PDF generator manifest did not declare, so the host refused the
+  call and the rejection was swallowed — the file was written, the viewer never opened.
+  The permission is declared now, and a viewer that still refuses is reported in the tool
+  result instead of disappearing. A new invariant test scans every bundled plugin and fails
+  when a tool reaches for a host method or file API its manifest does not declare
+  (`src/plugins/builtin/pdfGenerator.ts`).
 - **Saving external agents.** The Settings card no longer rebuilds the whole panel on
   every checkbox click (the command box lost its caret and the list jumped), saves are
   serialised and reconciled against the latest click instead of an echoed snapshot — a

@@ -191,6 +191,9 @@ export class BeeCodeService {
       skills: this.skills,
       scanSkills: (cwd) => this.scanSkills(cwd),
       mcp: this.mcp,
+      // Same contract as MCP: the thunk is re-read on every rebuildRegistries(), which
+      // service.ts already runs after `plugins.reload()`.
+      plugins: { toolDefinitions: (reserved) => this.plugins.toolDefinitions(reserved) },
     };
     this.rebuildRegistries();
 
@@ -628,7 +631,7 @@ export class BeeCodeService {
     this.log.info('service stopping');
   }
 
-  /** Rebuilds the main and subagent catalogues (needed after an MCP reload). */
+  /** Rebuilds the main and subagent catalogues (needed after an MCP or plugin reload). */
   private rebuildRegistries(): void {
     this.registry = buildToolRegistry(this.deps, { allowDelegation: true });
     this.subagentRegistry = buildToolRegistry(this.deps, { allowDelegation: false, readOnly: true });

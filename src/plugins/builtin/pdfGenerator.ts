@@ -74,11 +74,19 @@ function pdfGenerateTool(api: PluginApi): ToolDefinition {
           background: true,
         });
         if (!result.ok) return failResult(result.error ?? `Could not write ${path}.`);
+        // Opening is a convenience, not the deliverable — but a failure has to reach the result
+        // instead of being swallowed, or a missing grant fails silently.
+        let note = '';
         if (bool(args, 'open')) {
-          await api.host.call('pdf/open', { path, title }).catch(() => undefined);
+          try {
+            const opened = await api.host.call('pdf/open', { path, title });
+            if (!opened.ok) note = ` The viewer did not open: ${opened.error ?? 'unknown reason'}`;
+          } catch (error) {
+            note = ` The viewer did not open: ${(error as Error).message}`;
+          }
         }
         const kb = Math.round((result.bytes ?? 0) / 1024);
-        return okResult(`Wrote ${path} (${kb} KB, ${result.bytes ?? 0} bytes).`, {
+        return okResult(`Wrote ${path} (${kb} KB, ${result.bytes ?? 0} bytes).${note}`, {
           path,
           bytes: result.bytes,
           plugin: api.manifest.id,
@@ -102,7 +110,7 @@ export const pdfGeneratorPlugin: PluginDefinition = {
     description: 'Renders Markdown or HTML to PDF via the desktop host (Chromium printToPDF).',
     author: 'beeCode',
     api: PLUGIN_API_VERSION,
-    permissions: ['files:write', 'pdf:render'],
+    permissions: ['files:write', 'pdf:render', 'pdf:view'],
   },
   activate(api) {
     api.log.info('registered pdf_generate');
