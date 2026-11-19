@@ -1,10 +1,12 @@
 import type {
   AgentInfo,
+  AgentMode,
   AppRule,
   AuditEntry,
   BeeCodeConfig,
   CliAgentEntry,
   DesktopAction,
+  DesktopConfig,
   McpServerConfig,
   McpServerStatus,
   ModelPreset,
@@ -1012,6 +1014,250 @@ function uniqueModelId(models: ModelPreset[], seed: string): string {
  * only NAME the environment variable holding the key, because config.json is world
  * readable user state and must stay shareable.
  */
+/* ------------------------------------------- config cards (non-policy state) */
+
+type Note = (text: string) => void;
+
+/** Clamped number input: config.json values are user-editable, so the UI pins the range. */
+function settingsNumber(
+  value: number,
+  onChange: (next: number) => void,
+  limits: { min: number; max: number } = { min: 0, max: Number.MAX_SAFE_INTEGER },
+): HTMLInputElement {
+  const input = h('input', {
+    class: 'settings-input',
+    type: 'number',
+    min: String(limits.min),
+    max: String(limits.max),
+  });
+  input.value = Number.isFinite(value) ? String(value) : String(limits.min);
+  input.addEventListener('change', () => {
+    const parsed = Number(input.value);
+    if (!Number.isFinite(parsed)) {
+      input.value = String(value);
+      return;
+    }
+    const clamped = Math.min(limits.max, Math.max(limits.min, Math.round(parsed)));
+    input.value = String(clamped);
+    onChange(clamped);
+  });
+  return input;
+}
+
+function settingsText(
+  value: string,
+  onChange: (next: string) => void,
+  placeholder = '',
+): HTMLInputElement {
+  const input = h('input', { class: 'settings-input', type: 'text', placeholder });
+  input.value = value;
+  input.addEventListener('change', () => onChange(input.value.trim()));
+  return input;
+}
+
+function settingsChoice<T extends string>(
+  values: ReadonlyArray<{ value: T; label: string }>,
+  current: T,
+  onChange: (next: T) => void,
+): HTMLSelectElement {
+  const select = h('select', { class: 'settings-input' });
+  for (const entry of values) {
+    const option = h('option', { text: entry.label });
+    option.value = entry.value;
+    option.selected = entry.value === current;
+    select.append(option);
+  }
+  select.addEventListener('change', () => onChange(select.value as T));
+  return select;
+}
+
+/**
+ * Every config.json field the Permissions tab does not own, editable here.
+ *
+ * The point is discoverability: an error message may say "raise agent.maxSteps in settings",
+ * and settings must then actually contain that field. Rules (what the agent may do) stay in
+ * the Permissions tab; preferences (how it runs) live here.
+ */
+function renderConfigCards(draft: BeeCodeConfig, note: Note): HTMLElement[] {
+  const touch = (): void => note('unsaved changes');
+
+  const agentCard = h(
+    'div',
+    { class: 'card' },
+    h('h4', { text: 'Agent' }),
+    h('p', {
+      class: 'sub',
+      text: 'How the loop behaves. Max steps is the cap behind "Stopped after N steps without finishing": raise it here for long tasks. Approval rules and the auto-approved tool list stay in the Permissions tab.',
+    }),
+    settingsField(
+      'Default mode',
+      settingsChoice<AgentMode>(
+        [
+          { value: 'ask', label: 'ask — read only' },
+          { value: 'plan', label: 'plan — plan, then ask' },
+          { value: 'act', label: 'act — act, with approvals' },
+          { value: 'autonomous', label: 'autonomous — act, no approvals' },
+        ],
+        draft.agent.defaultMode,
+        (next) => {
+          draft.agent.defaultMode = next;
+          touch();
+        },
+      ),
+    ),
+    settingsField(
+      'Max steps',
+      settingsNumber(
+        draft.agent.maxSteps,
+        (next) => {
+          draft.agent.maxSteps = next;
+          touch();
+        },
+        { min: 1, max: 500 },
+      ),
+    ),
+    settingsField(
+      'Working directory',
+      settingsText(
+        draft.agent.workingDir,
+        (next) => {
+          draft.agent.workingDir = next;
+          touch();
+        },
+        draft.workspace.root || 'uses the workspace folder',
+      ),
+    ),
+  );
+
+  const serviceCard = h(
+    'div',
+    { class: 'card' },
+    h('h4', { text: 'Service' }),
+    h('p', {
+      class: 'sub',
+      text: 'The background agent service. It speaks JSON-RPC over stdio to this window; the HTTP transport is for headless use and other clients.',
+    }),
+    toggle('Start the service with the app', draft.service.autoStart, (checked) => {
+      draft.service.autoStart = checked;
+      touch();
+    }),
+    settingsField(
+      'HTTP port (0 = ephemeral)',
+      settingsNumber(
+        draft.service.httpPort,
+        (next) => {
+          draft.service.httpPort = next;
+          touch();
+        },
+        { min: 0, max: 65535 },
+      ),
+    ),
+  );
+
+  const desktopCard = h(
+    'div',
+    { class: 'card' },
+    h('h4', { text: 'Desktop control' }),
+    h('p', {
+      class: 'sub',
+      text: 'Whether the agent may see and drive windows at all. The hard stop for input is in the Permissions tab; this switch removes the desktop tools entirely.',
+    }),
+    toggle('Desktop tools enabled', draft.desktop.enabled, (checked) => {
+      draft.desktop.enabled = checked;
+      touch();
+    }),
+    settingsField(
+      'Driver',
+      settingsChoice<DesktopConfig['driver']>(
+        [
+          { value: 'windows', label: 'windows — UI Automation + CDP' },
+          { value: 'mock', label: 'mock — tests and CI' },
+        ],
+        draft.desktop.driver,
+        (next) => {
+          draft.desktop.driver = next;
+          touch();
+        },
+      ),
+    ),
+  );
+
+  const browserCard = h(
+    'div',
+    { class: 'card' },
+    h('h4', { text: 'Internal browser' }),
+    h('p', {
+      class: 'sub',
+      text: 'Cookies and cache are kept per workspace: two workspaces never share a login, and switching back to a workspace restores its session.',
+    }),
+    toggle('Browser tools enabled', draft.browser.enabled, (checked) => {
+      draft.browser.enabled = checked;
+      touch();
+    }),
+    toggle('Keep cookies and cache (per workspace)', draft.browser.persistSession, (checked) => {
+      draft.browser.persistSession = checked;
+      touch();
+    }),
+    toggle('Run page scripts', draft.browser.allowScripts, (checked) => {
+      draft.browser.allowScripts = checked;
+      touch();
+    }),
+    toggle('Show the AI cursor', draft.browser.showCursor, (checked) => {
+      draft.browser.showCursor = checked;
+      touch();
+    }),
+    settingsField(
+      'Max open tabs',
+      settingsNumber(
+        draft.browser.maxTabs,
+        (next) => {
+          draft.browser.maxTabs = next;
+          touch();
+        },
+        { min: 1, max: 32 },
+      ),
+    ),
+    settingsField(
+      'Home page',
+      settingsText(
+        draft.browser.homeUrl,
+        (next) => {
+          draft.browser.homeUrl = next;
+          touch();
+        },
+        'https://example.com',
+      ),
+    ),
+  );
+
+  const subagentCard = h(
+    'div',
+    { class: 'card' },
+    h('h4', { text: 'Subagents' }),
+    h('p', {
+      class: 'sub',
+      text: 'Delegated runs the parent agent can spawn. Sessions run in parallel too — one slow turn in a session no longer blocks the others.',
+    }),
+    toggle('Subagent tools enabled', draft.subagents.enabled, (checked) => {
+      draft.subagents.enabled = checked;
+      touch();
+    }),
+    settingsField(
+      'Max concurrent runs',
+      settingsNumber(
+        draft.subagents.maxConcurrent,
+        (next) => {
+          draft.subagents.maxConcurrent = next;
+          touch();
+        },
+        { min: 1, max: 16 },
+      ),
+    ),
+  );
+
+  return [agentCard, serviceCard, desktopCard, browserCard, subagentCard];
+}
+
 export function renderSettings(
   host: HTMLElement,
   config: BeeCodeConfig,
@@ -1024,6 +1270,9 @@ export function renderSettings(
     workspace: { ...config.workspace, root: config.workspace?.root ?? '', recent: [...(config.workspace?.recent ?? [])] },
     features: { ...config.features, goalTodo: config.features?.goalTodo ?? true },
     subagents: { ...config.subagents, cliAgents: (config.subagents.cliAgents ?? []).map((agent) => ({ ...agent })) },
+    service: { ...config.service },
+    desktop: { ...config.desktop },
+    browser: { ...config.browser },
     models: config.models.map((model) => ({ ...model })),
   };
   let note: HTMLElement = h('span', { class: 'settings-note' });
@@ -1323,6 +1572,9 @@ export function renderSettings(
         }),
       ),
     );
+
+    /* ----- everything else in config.json ----- */
+    host.append(...renderConfigCards(draft, setNote));
 
     /* ----- external CLI agents ----- */
     host.append(renderAgentsCard(agents, cb, setNote));

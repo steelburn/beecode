@@ -1,5 +1,5 @@
-import { mkdir, stat } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { mkdir, open, readdir, stat } from 'node:fs/promises';
+import { basename, dirname, join, resolve, sep } from 'node:path';
 import {
   defaultConfig,
   defaultPolicy,
@@ -18,6 +18,9 @@ import type {
   ServiceHealth,
   AuditEntry,
   WorkspaceState,
+  FsEntry,
+  FsFile,
+  FsListing,
 } from '../shared/protocol';
 import type { HostCall } from '../shared/browser';
 import { paths } from '../shared/tools';
@@ -57,6 +60,13 @@ const SERVICE_VERSION = '0.1.0';
  * Transports (stdio for the desktop app, HTTP/SSE for headless use) are thin adapters
  * on top, so the same runtime can live behind the Electron window or in a terminal.
  */
+/**
+ * Explorer limits: enough entries for a real folder and enough bytes for a source file,
+ * small enough that one RPC reply stays cheap to serialise.
+ */
+const FS_LIST_LIMIT = 500;
+const FS_PREVIEW_BYTES = 256 * 1024;
+
 export class BeeCodeService {
   private config: BeeCodeConfig = defaultConfig();
   private log!: Logger;
@@ -402,6 +412,12 @@ export class BeeCodeService {
       case 'workspace.state':
         return this.workspaceState();
 
+      case 'fs.list':
+        return this.listDirectory(typeof args.path === 'string' ? args.path : undefined);
+
+      case 'fs.read':
+        return this.readPreview(this.requireString(args, 'path'));
+
       case 'workspace.set': {
         const dir = resolve(this.requireString(args, 'path').trim());
         const info = await stat(dir).catch(() => undefined);
@@ -635,6 +651,72 @@ export class BeeCodeService {
   private rebuildRegistries(): void {
     this.registry = buildToolRegistry(this.deps, { allowDelegation: true });
     this.subagentRegistry = buildToolRegistry(this.deps, { allowDelegation: false, readOnly: true });
+  }
+
+  /* -------------------------------------------------------------- explorer */
+
+  /** True when `target` is one of the configured roots or lives below one of them. */
+  private isInsideRoots(target: string): boolean {
+    return this.workspaceRoots()
+      .map((root) => resolve(root))
+      .some((root) => target === root || target.startsWith(`${root}${sep}`) || target.startsWith(`${root}/`));
+  }
+
+  /**
+   * Resolve a renderer-supplied path. The explorer is a read-only view of the workspace,
+   * so it may walk the workspace root and the agent's working directory and nothing else.
+   */
+  private resolveExplorerPath(input?: string): string {
+    const base = this.config.workspace.root || this.config.agent.workingDir;
+    if (!base) throw new Error('no workspace is configured');
+    const target = input?.trim() ? resolve(base, input) : resolve(base);
+    if (!this.isInsideRoots(target)) throw new Error(`path is outside the workspace: ${target}`);
+    return target;
+  }
+
+  private async listDirectory(input?: string): Promise<FsListing> {
+    const dir = this.resolveExplorerPath(input);
+    const dirents = await readdir(dir, { withFileTypes: true });
+    const entries: FsEntry[] = [];
+    for (const dirent of dirents.slice(0, FS_LIST_LIMIT)) {
+      const path = join(dir, dirent.name);
+      const isDir = dirent.isDirectory();
+      let size: number | undefined;
+      if (!isDir) size = (await stat(path).catch(() => undefined))?.size;
+      entries.push({ name: dirent.name, path, dir: isDir, size, link: dirent.isSymbolicLink() });
+    }
+    entries.sort((a, b) => (a.dir === b.dir ? a.name.localeCompare(b.name) : a.dir ? -1 : 1));
+    const up = dirname(dir);
+    return {
+      path: dir,
+      parent: up !== dir && this.isInsideRoots(up) ? up : undefined,
+      entries,
+      truncated: dirents.length > FS_LIST_LIMIT,
+    };
+  }
+
+  private async readPreview(input: string): Promise<FsFile> {
+    const path = this.resolveExplorerPath(input);
+    const info = await stat(path);
+    if (!info.isFile()) throw new Error(`not a file: ${path}`);
+    const length = Math.min(info.size, FS_PREVIEW_BYTES);
+    const buffer = Buffer.alloc(length);
+    const handle = await open(path, 'r');
+    try {
+      if (length) await handle.read(buffer, 0, length, 0);
+    } finally {
+      await handle.close();
+    }
+    // A NUL byte in the first block is the cheap, reliable "this is not text" signal.
+    const binary = buffer.includes(0);
+    return {
+      path,
+      name: basename(path),
+      size: info.size,
+      truncated: info.size > FS_PREVIEW_BYTES,
+      binary,
+      text: binary ? '' : buffer.toString('utf8'),
+    };
   }
 
   /* ------------------------------------------------------------- workspace */

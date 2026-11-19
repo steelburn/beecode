@@ -376,6 +376,40 @@ export interface FeaturesConfig {
   goalTodo: boolean;
 }
 
+/** One entry of a directory listing in the workspace explorer. */
+export interface FsEntry {
+  name: string;
+  /** Absolute path, so the renderer never has to join paths itself. */
+  path: string;
+  dir: boolean;
+  /** Byte size for files. Directories and unreadable entries leave it out. */
+  size?: number;
+  /** True for a symlink — shown as such, never followed by the explorer. */
+  link?: boolean;
+}
+
+/** A directory as the workspace explorer sees it. */
+export interface FsListing {
+  path: string;
+  /** Parent directory, absent when the listed directory is a workspace root. */
+  parent?: string;
+  entries: FsEntry[];
+  /** True when the directory held more entries than the service returns. */
+  truncated: boolean;
+}
+
+/** A file preview: text when it is text, a binary flag when it is not. */
+export interface FsFile {
+  path: string;
+  name: string;
+  size: number;
+  /** True when the file was clipped to the preview budget. */
+  truncated: boolean;
+  /** True when the content is not text; `text` is then empty. */
+  binary: boolean;
+  text: string;
+}
+
 export interface WorkspaceState {
   root: string;
   recent: string[];
@@ -553,6 +587,8 @@ export interface RpcRequests {
   'workspace.state': { params: Record<string, never>; result: WorkspaceState };
   'workspace.set': { params: { path: string }; result: WorkspaceState };
   'workspace.forget': { params: { path: string }; result: WorkspaceState };
+  'fs.list': { params: { path?: string }; result: FsListing };
+  'fs.read': { params: { path: string }; result: FsFile };
   'goal.set': { params: { sessionId: string; text: string }; result: SessionSnapshot };
   'goal.clear': { params: { sessionId: string }; result: SessionSnapshot };
   'todo.list': { params: { sessionId: string }; result: { todos: TodoItem[] } };

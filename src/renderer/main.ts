@@ -8,6 +8,7 @@ import type {
   PolicyDocument,
   SessionGoal,
   SessionSnapshot,
+  SessionStatus,
   SessionSummary,
   PluginInfo,
   SkillInfo,
@@ -20,6 +21,7 @@ import type {
 } from '../shared/protocol';
 import { clear, formatJsonForDisplay, h, renderMarkdown } from './dom';
 import { mountBrowserDock } from './browserDock';
+import { renderExplorer, type ExplorerState } from './explorer';
 import { renderActivity, renderIntegrations, renderPermissions, renderSettings, renderSubagents } from './panels';
 import { renderPlan, renderWorkspaceGate, type WorkspaceActions } from './plan';
 
@@ -135,7 +137,7 @@ window.__renderDocsSample = () => {
 window.addEventListener('error', (event) => rendererErrors.push(String(event.message)));
 window.addEventListener('unhandledrejection', (event) => rendererErrors.push(String((event as PromiseRejectionEvent).reason)));
 
-type PanelTab = 'permissions' | 'subagents' | 'integrations' | 'activity' | 'settings';
+type PanelTab = 'permissions' | 'subagents' | 'integrations' | 'activity' | 'settings' | 'explorer';
 
 interface State {
   info?: AppInfo;
@@ -165,6 +167,15 @@ interface State {
   mcpServers: McpServerStatus[];
   skills: SkillInfo[];
   plugins: PluginInfo[];
+  /**
+   * Status of every live session. A background session keeps running while another one is
+   * on screen, so the list is painted from this map rather than from the current session.
+   */
+  statuses: Record<string, SessionStatus>;
+  /** Sessions that produced output while the user was looking elsewhere. */
+  unread: Set<string>;
+  /** Workspace explorer state; the listing itself comes from the service. */
+  explorer: ExplorerState;
   panel: PanelTab;
   ready: boolean;
 }
@@ -187,6 +198,9 @@ const state: State = {
   mcpServers: [],
   skills: [],
   plugins: [],
+  statuses: {},
+  unread: new Set<string>(),
+  explorer: {},
   panel: 'permissions',
   ready: false,
 };
@@ -312,6 +326,7 @@ async function loadAll(): Promise<void> {
 /* ------------------------------------------------------------------ ui bindings */
 
 function bindUi(): void {
+  document.getElementById('workspace-btn')?.addEventListener('click', () => toggleWorkspaceMenu());
   els.composer.addEventListener('submit', (event) => {
     event.preventDefault();
     void sendPrompt();
@@ -422,6 +437,9 @@ async function changeWorkingDirectory(): Promise<void> {
 
 async function openSession(sessionId: string): Promise<void> {
   const snapshot = await api.invoke('session.get', { sessionId });
+  // Opening a session is what clears its "new output" flag; its transcript is re-read whole.
+  state.unread.delete(sessionId);
+  state.statuses[sessionId] = snapshot.status;
   state.current = snapshot;
   state.lastCwd = snapshot.cwd;
   state.entries = snapshot.entries;
@@ -489,6 +507,24 @@ async function savePolicy(next: PolicyDocument): Promise<void> {
 
 /* ----------------------------------------------------------------- events */
 
+/**
+ * Output arrived for a session the user is not looking at. Nothing is lost — the agent keeps
+ * running and the service owns the transcript — but the list is flagged so switching back is
+ * discoverable. Repainted only when the flag actually flips: deltas arrive in bursts.
+ */
+function markBackground(sessionId: string): void {
+  if (state.unread.has(sessionId)) return;
+  state.unread.add(sessionId);
+  renderSessions();
+}
+
+/** Record a session status and repaint the list only when it changed. */
+function noteStatus(sessionId: string, status: SessionStatus): void {
+  const previous = state.statuses[sessionId];
+  state.statuses[sessionId] = status;
+  if (previous !== status) renderSessions();
+}
+
 function handleEvent(event: import('../shared/protocol').ServiceEvent): void {
   switch (event.type) {
     case 'service.health':
@@ -500,23 +536,35 @@ function handleEvent(event: import('../shared/protocol').ServiceEvent): void {
     case 'session.snapshot':
       void api.invoke('session.list', {}).then((sessions) => {
         state.sessions = sessions;
+        for (const session of sessions) {
+          if (!state.statuses[session.id]) state.statuses[session.id] = session.status;
+        }
         renderSessions();
       });
       break;
 
     case 'session.entry':
-      if (event.payload.sessionId !== state.current?.id) return;
+      if (event.payload.sessionId !== state.current?.id) {
+        markBackground(event.payload.sessionId);
+        return;
+      }
       upsertEntry(event.payload.entry);
       break;
 
     case 'assistant.delta': {
-      if (event.payload.sessionId !== state.current?.id) return;
+      if (event.payload.sessionId !== state.current?.id) {
+        markBackground(event.payload.sessionId);
+        return;
+      }
       appendDelta(event.payload.entryId, event.payload.text);
       break;
     }
 
     case 'tool.result': {
-      if (event.payload.sessionId !== state.current?.id) return;
+      if (event.payload.sessionId !== state.current?.id) {
+        markBackground(event.payload.sessionId);
+        return;
+      }
       upsertEntry({
         id: `tool_${event.payload.callId}`,
         role: 'tool',
@@ -543,6 +591,8 @@ function handleEvent(event: import('../shared/protocol').ServiceEvent): void {
     }
 
     case 'session.status':
+      // A background session changes status too — record it before deciding what to paint.
+      noteStatus(event.payload.sessionId, event.payload.status);
       if (event.payload.sessionId !== state.current?.id) return;
       if (state.current) state.current.status = event.payload.status;
       renderBusy();
@@ -639,14 +689,27 @@ function renderSessions(): void {
     return;
   }
   for (const session of state.sessions) {
+    // The live status wins over the one the list was loaded with: several sessions can run.
+    const live = state.statuses[session.id] ?? session.status;
+    const unread = state.unread.has(session.id) && session.id !== state.current?.id;
     const item = h(
       'div',
       {
-        class: `session-item${session.id === state.current?.id ? ' active' : ''}`,
+        class: `session-item${session.id === state.current?.id ? ' active' : ''}${live === 'idle' ? '' : ' busy'}`,
         on: { click: () => void openSession(session.id) },
         title: session.cwd,
       },
       h('div', { class: 's-title', text: session.parentSessionId ? `↳ ${session.title}` : session.title }),
+      // A background session keeps working while another one is on screen; this badge is
+      // the only signal in the list that it is still running (and that there is new output).
+      live === 'idle' && !unread
+        ? null
+        : h(
+            'div',
+            { class: 's-badges' },
+            live === 'idle' ? null : h('span', { class: 's-badge run', text: live }),
+            unread ? h('span', { class: 's-badge unread', text: 'new output' }) : null,
+          ),
       // The goal is the most useful subtitle a persisted session can carry.
       h('div', {
         class: 's-meta',
@@ -1005,15 +1068,40 @@ function renderPanelBody(): void {
     },
   };
 
+  const explorerCallbacks = {
+    open: (path?: string) => void openExplorer(path),
+    preview: (path: string) => void previewFile(path),
+    close: () => {
+      state.explorer = { ...state.explorer, file: undefined };
+      renderPanelBody();
+    },
+  };
+
   if (state.panel === 'permissions') renderPermissions(els.panelBody, state.policy, state.config, callbacks);
   else if (state.panel === 'subagents') renderSubagents(els.panelBody, state.subagents, state.agents, callbacks);
   else if (state.panel === 'integrations')
     renderIntegrations(els.panelBody, state.mcpServers, state.skills, state.plugins, state.config, callbacks);
   else if (state.panel === 'settings') {
     if (state.config) renderSettings(els.panelBody, state.config, callbacks, state.detectedAgents);
-    else clear(els.panelBody);
+    else {
+      clear(els.panelBody);
+      els.panelBody.append(h('div', { class: 'empty', text: 'Reading the configuration…' }));
+      // Boot skips the bulk load until a workspace exists, so Settings fetches what it
+      // needs itself rather than showing an empty panel on a fresh profile.
+      void api
+        .getConfig()
+        .then((config) => {
+          state.config = config;
+          if (state.panel === 'settings') renderPanelBody();
+        })
+        .catch((error: unknown) => setHint(`Could not read the config: ${(error as Error).message}`));
+    }
   }
-  else renderActivity(els.panelBody, state.audit, callbacks);
+  else if (state.panel === 'explorer') {
+    // First visit reads the workspace root; the listing is cached until a switch or reload.
+    if (state.explorer.listing || state.explorer.error) renderExplorer(els.panelBody, state.explorer, explorerCallbacks);
+    else void openExplorer();
+  } else renderActivity(els.panelBody, state.audit, callbacks);
 }
 
 /* -------------------------------------------------------------------- plan */
@@ -1084,6 +1172,8 @@ async function applyWorkspace(path: string): Promise<void> {
   try {
     state.workspace = await api.invoke('workspace.set', { path });
     state.config = await api.getConfig();
+    // The explorer is rooted in the workspace, so its cache belongs to the previous one.
+    state.explorer = {};
     if (state.current?.cwd !== state.workspace.root) {
       state.current = undefined;
       state.entries = [];
@@ -1101,6 +1191,105 @@ async function applyWorkspace(path: string): Promise<void> {
   } catch (error) {
     setHint(`Could not use that folder: ${(error as Error).message}`);
   }
+}
+
+/* -------------------------------------------------------------- explorer */
+
+/** List one directory of the workspace; no path means the workspace root. */
+async function openExplorer(path?: string): Promise<void> {
+  try {
+    const listing = await api.invoke('fs.list', path ? { path } : {});
+    state.explorer = { path: listing.path, listing };
+  } catch (error) {
+    state.explorer = { ...state.explorer, error: (error as Error).message };
+  }
+  if (state.panel === 'explorer') renderPanelBody();
+}
+
+/** Preview one file, clipped to the service's preview budget. */
+async function previewFile(path: string): Promise<void> {
+  try {
+    const file = await api.invoke('fs.read', { path });
+    state.explorer = { ...state.explorer, file, error: undefined };
+  } catch (error) {
+    state.explorer = { ...state.explorer, error: (error as Error).message };
+  }
+  if (state.panel === 'explorer') renderPanelBody();
+}
+
+/* ------------------------------------------------------------- workspace menu */
+
+/**
+ * The workspace switcher: the folders this app has opened, most recent first, plus a way to
+ * pick a new one. The list is the service's MRU (workspace.state), so it reflects what was
+ * actually used rather than a guess the renderer keeps locally.
+ */
+function toggleWorkspaceMenu(): void {
+  const existing = document.getElementById('workspace-menu');
+  if (existing) {
+    existing.remove();
+    return;
+  }
+  const menu = h('div', { class: 'workspace-menu', id: 'workspace-menu' });
+  const root = state.workspace?.root ?? '';
+  menu.append(h('div', { class: 'workspace-menu-title', text: root || 'No workspace yet' }));
+  for (const path of state.workspace?.recent ?? []) {
+    const name = path.split(/[\\/]/).filter(Boolean).pop() ?? path;
+    menu.append(
+      h(
+        'button',
+        {
+          class: `workspace-menu-item${path === root ? ' active' : ''}`,
+          type: 'button',
+          title: path,
+          on: {
+            click: () => {
+              menu.remove();
+              void applyWorkspace(path);
+            },
+          },
+        },
+        h('span', { class: 'workspace-menu-name', text: name }),
+        h('span', { class: 'workspace-menu-path', text: path }),
+      ),
+    );
+  }
+  if (!(state.workspace?.recent ?? []).length) {
+    menu.append(h('div', { class: 'workspace-menu-empty', text: 'Folders you open show up here.' }));
+  }
+  menu.append(
+    h(
+      'button',
+      {
+        class: 'workspace-menu-item action',
+        type: 'button',
+        on: {
+          click: () => {
+            menu.remove();
+            void workspaceActions.choose();
+          },
+        },
+      },
+      h('span', { class: 'workspace-menu-name', text: 'Open another folder…' }),
+    ),
+  );
+  // Anchor the menu to the button it came from: the topbar layout is free to change.
+  const button = document.getElementById('workspace-btn');
+  if (button) {
+    const rect = button.getBoundingClientRect();
+    menu.style.top = `${Math.round(rect.bottom + 6)}px`;
+    menu.style.left = `${Math.round(Math.min(rect.left, window.innerWidth - 320))}px`;
+  }
+  els.app.append(menu);
+  // One-shot dismissal: any click outside the menu closes it, like every other popup here.
+  setTimeout(() => {
+    const close = (event: Event): void => {
+      if (menu.contains(event.target as Node)) return;
+      menu.remove();
+      document.removeEventListener('click', close, true);
+    };
+    document.addEventListener('click', close, true);
+  }, 0);
 }
 
 function scrollToBottom(): void {

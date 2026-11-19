@@ -36,6 +36,11 @@ export interface BrowserHostOptions {
   getWindow: () => BrowserWindow | null;
   /** Live browser config (tab cap, home page, cursor, scripts, persistence). */
   config: () => BrowserConfig;
+  /**
+   * Workspace the cookie partition belongs to. Read per tab so a workspace switch inside
+   * the running app re-scopes persistence without restarting it.
+   */
+  workspaceRoot?: () => string | undefined;
   onState: (state: BrowserState) => void;
   log?: (level: 'info' | 'warn' | 'error', message: string) => void;
 }
@@ -514,7 +519,10 @@ export class BrowserHost {
     const config = this.opts.config();
     const view = new WebContentsView({
       webPreferences: {
-        session: browserSession({ persistSession: config.persistSession }),
+        session: browserSession({
+            persistSession: config.persistSession,
+            workspace: this.opts.workspaceRoot?.(),
+          }),
         sandbox: true,
         contextIsolation: true,
         nodeIntegration: false,
@@ -613,6 +621,14 @@ export class BrowserHost {
     for (const id of [...this.tabs.keys()]) this.closeTab(id);
     this.hide();
     this.emit();
+  }
+
+  /**
+   * The workspace changed: drop every tab. A tab keeps the partition it was born with, so
+   * leaving one open would carry the previous workspace's cookies into the new one.
+   */
+  resetWorkspace(): void {
+    this.closeAll();
   }
 
   private closeTab(tabId: string): void {

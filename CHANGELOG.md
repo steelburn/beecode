@@ -8,6 +8,42 @@ All notable changes to beeCode will be documented in this file.
 - **`pi` agent.** The CLI-agent catalogue now includes `pi` (`pi -p <prompt>`), so
   Settings → external agents offers it as soon as it is on PATH.
 
+- **Settings can configure the whole app.** The panel only ever exposed models and
+  the workspace folder, so advice such as "raise `agent.maxSteps` in Settings" pointed at a
+  field no screen rendered — the agent stopped after 24 steps with nowhere to change it.
+  Five cards now cover the rest of `config.json`: **Agent** (default mode, **max steps**,
+  working directory), **Service** (auto-start, HTTP port), **Desktop control** (enabled,
+  driver), **Internal browser** (enabled, cookie/session persistence, page scripts, cursor,
+  max tabs, home page) and **Subagents** (enabled, max concurrent runs). Values are edited
+  in a draft and only written on **Save**, like the existing cards
+  (`src/renderer/panels.ts`).
+- **Concurrent sessions.** Every session already had its own run queue in the service, but
+  the renderer dropped events for anything that was not the visible session — a second
+  session's answer simply never appeared. Events from every session are now recorded: the
+  session list shows a `running` badge (and a count of new results) per session, and
+  switching to it shows the finished transcript. Tool results, status flips and drafts stay
+  per session, so two runs can be in flight without either losing output
+  (`src/renderer/main.ts`, `src/renderer/styles.css`).
+- **Workspace explorer.** A new **Files** panel tab browses the workspace from the app: a
+  breadcrumb and parent row, folders first with sizes, and a text preview for files — no
+  more leaving beeCode to look at the tree. The listing comes from two new RPCs,
+  `fs.list` and `fs.read`, which are confined to the workspace and agent working
+  directory, cap a listing at 500 entries and a preview at 256 KB, and report binary files
+  instead of dumping them (`src/service/service.ts`, `src/renderer/explorer.ts`).
+- **Workspace switcher and history.** A `⌂` button in the topbar opens the recent
+  workspaces (most recent first, current one marked) and switches to one with a click, or
+  opens another folder through the picker. The list is the service's own MRU
+  (`workspace.state.recent`), so it reflects every folder the app has been pointed at
+  (`src/renderer/main.ts`).
+- **Per-workspace browser session.** The internal browser used one global cookie jar, so a
+  tab opened in project A kept its login for project B. The persistent partition name is now
+  derived from the workspace root (`persist:beecode-browser-<hash>`), and switching
+  workspaces closes the open tabs instead of carrying them across
+  (`src/main/browser/session.ts`, `src/main/browser/host.ts`).
+- **The goal panel can be minimised.** A toggle on the goal line folds the plan down to a
+  one-line summary (`n/m steps`) and the choice is remembered per window, so a long plan no
+  longer pushes the transcript off-screen (`src/renderer/plan.ts`).
+
 ### Fixed
 - **Plugin tools were never offered to the model.** The plugin host built its tool
   catalogue but nothing handed it to the agent, so `pdf_generate`, `pdf_open` and
@@ -33,6 +69,13 @@ All notable changes to beeCode will be documented in this file.
   cached PATH probes rather than re-spawning every configured CLI; only an explicit
   **Detect agents** forces a fresh probe (`src/service/subagents/runner.ts`,
   `src/renderer/panels.ts`).
+
+- **The smoke check raced the first paint.** It clicked the Settings and Plugins tabs
+  after a fixed 600 ms and read the panel, so a slower boot reported an empty settings panel
+  (0 cards) and no plugin badges even though both rendered a moment later — the check was
+  flaky, not the UI. The probe now polls for the cards and badges it asserts on, and reads
+  the working directory from its labelled field instead of "the last input on the page"
+  (`src/main/main.ts`).
 
 ## [0.1.0] - 2026-11-19
 

@@ -3,7 +3,7 @@ import { mkdtemp, rm, writeFile, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import type { McpListResult, SkillListResult, SkillReadResult } from '../shared/protocol';
+import type { FsFile, FsListing, McpListResult, SkillListResult, SkillReadResult } from '../shared/protocol';
 
 /** A real stdio MCP server with one read-only and one mutating tool. */
 const FAKE_MCP_SERVER = `
@@ -128,6 +128,27 @@ test('background service answers JSON-RPC over loopback HTTP', async () => {
     const detail = (await rpc('skill.read', { name: 'release', cwd: workspace })).result as SkillReadResult;
     assert.match(detail.content, /^# Release/);
     assert.match(detail.content, /Tag, build, publish\./);
+
+    // Workspace explorer: the renderer gets the tree from the service, so the listing has to
+    // describe folders and files and every path has to stay inside the roots.
+    await writeFile(join(workspace, 'notes.txt'), 'hello explorer', 'utf8');
+    await mkdir(join(workspace, 'nested'), { recursive: true });
+    const listing = (await rpc('fs.list', { path: '.' })).result as FsListing;
+    const entries = new Map(listing.entries.map((entry) => [entry.name, entry]));
+    assert.equal(entries.get('notes.txt')?.dir, false);
+    assert.equal(entries.get('notes.txt')?.size, 14);
+    assert.equal(entries.get('nested')?.dir, true);
+    assert.equal(listing.parent, undefined, 'the root has no parent to walk up to');
+
+    const preview = (await rpc('fs.read', { path: 'notes.txt' })).result as FsFile;
+    assert.equal(preview.name, 'notes.txt');
+    assert.equal(preview.truncated, false);
+    assert.match(preview.text ?? '', /hello explorer/);
+
+    const escaped = await rpc('fs.list', { path: '../..' });
+    assert.match(escaped.error?.message ?? '', /outside the workspace/);
+    const escapedRead = await rpc('fs.read', { path: '../../etc/passwd' });
+    assert.match(escapedRead.error?.message ?? '', /outside the workspace/);
 
     // Config editing: the integrations panel writes mcpServers through config.set, so a
     // saved edit has to reconnect right there and the tool catalogue has to follow.

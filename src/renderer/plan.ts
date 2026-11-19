@@ -34,6 +34,28 @@ const STATUS_MARK: Record<TodoItem['status'], string> = {
  * full height of the transcript. The goal is editable here; the write goes through the same
  * `goal.set` RPC the agent's `goal_write` tool uses.
  */
+const PLAN_COLLAPSED_KEY = 'beecode.plan.collapsed';
+
+/**
+ * Collapsed state is a display preference of this window, not a service setting: it lives
+ * in localStorage so it survives a reload without a round trip to the agent.
+ */
+function readPlanCollapsed(): boolean {
+  try {
+    return localStorage.getItem(PLAN_COLLAPSED_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function writePlanCollapsed(collapsed: boolean): void {
+  try {
+    localStorage.setItem(PLAN_COLLAPSED_KEY, collapsed ? '1' : '0');
+  } catch {
+    /* storage unavailable (private profile): the panel simply stays open */
+  }
+}
+
 export function renderPlan(host: HTMLElement, state: PlanState, actions: PlanActions): void {
   clear(host);
   if (!state.enabled) {
@@ -44,7 +66,9 @@ export function renderPlan(host: HTMLElement, state: PlanState, actions: PlanAct
   const todos = state.todos;
   if (!state.goal && !todos.length) return;
 
-  const card = h('div', { class: 'plan' });
+  const collapsed = readPlanCollapsed();
+
+  const card = h('div', { class: `plan${collapsed ? ' collapsed' : ''}` });
 
   /* ----- the one-line goal ----- */
   const goalRow = h('div', { class: 'plan-goal' });
@@ -109,7 +133,32 @@ export function renderPlan(host: HTMLElement, state: PlanState, actions: PlanAct
       }),
     );
   }
+  // The toggle rides on the goal line, so minimizing costs no extra row.
+  goalRow.prepend(
+    h('button', {
+      class: 'plan-min',
+      type: 'button',
+      text: collapsed ? '▸' : '▾',
+      title: collapsed ? 'Expand the plan' : 'Minimize the plan',
+      on: {
+        click: () => {
+          writePlanCollapsed(!collapsed);
+          renderPlan(host, state, actions);
+        },
+      },
+    }),
+  );
   card.append(goalRow);
+
+  if (collapsed) {
+    // Folded away: the step count is the only part worth a permanent line.
+    if (todos.length) {
+      const done = todos.filter((item) => item.status === 'completed').length;
+      card.append(h('div', { class: 'plan-summary', text: `${done}/${todos.length} steps · minimized` }));
+    }
+    host.append(card);
+    return;
+  }
 
   /* ----- the plan ----- */
   if (todos.length) {

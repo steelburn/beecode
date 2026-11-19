@@ -37,6 +37,12 @@ let pluginHostBridge: PluginHostBridge | null = null;
 /** Mirrors config.browser so the host can read it synchronously when it opens a tab. */
 let browserConfig: BrowserConfig = defaultConfig().browser;
 
+/**
+ * Workspace the browser's cookie partition belongs to. Kept next to the config mirror so
+ * the host can read it synchronously; a change resets the tabs into a fresh partition.
+ */
+let browserWorkspace = workspace;
+
 app.setName('beeCode');
 
 if (!app.requestSingleInstanceLock()) {
@@ -207,6 +213,7 @@ function createBrowserHost(): BrowserHost {
   return new BrowserHost({
     getWindow: () => mainWindow,
     config: () => browserConfig,
+    workspaceRoot: () => browserWorkspace,
     onState: sendBrowserState,
     log: (level, message) => console.log(`[${level}]`, message),
   });
@@ -216,6 +223,13 @@ async function refreshBrowserConfig(): Promise<void> {
   try {
     const config = await supervisor.request('config.get', {});
     if (config?.browser) browserConfig = { ...browserConfig, ...config.browser };
+    if (config?.workspace) {
+      const next = config.workspace.root?.trim() || workspace;
+      if (next !== browserWorkspace) {
+        browserWorkspace = next;
+        browserHost?.resetWorkspace();
+      }
+    }
   } catch {
     /* the defaults keep the browser usable while the service is starting */
   }
@@ -277,16 +291,20 @@ async function runSmokeCheck(serviceReady: boolean): Promise<void> {
   let dom: Record<string, unknown> = { error: 'window unavailable' };
   try {
     dom = (await win?.webContents.executeJavaScript(
-      `(async () => ({
+      `(async () => {
+        const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+        const waitFor = async (fn, ms = 8000) => { const end = Date.now() + ms; while (Date.now() < end) { if (fn()) return true; await sleep(100); } return false; };
+        return {
         bridge: typeof window.beeCode === 'object',
         sessions: document.querySelectorAll('.session-item').length,
         status: document.getElementById('service-text')?.textContent ?? '',
         title: document.getElementById('session-title')?.textContent ?? '',
         composer: Boolean(document.getElementById('input')),
-        settings: (() => {
+        settings: await (async () => {
           const tab = document.querySelector('.tab[data-panel="settings"]');
           if (!tab) return { tab: false };
           tab.click();
+          await waitFor(() => document.querySelectorAll('#panel-body .card').length > 0);
           const body = document.getElementById('panel-body');
           const inputs = Array.from(body.querySelectorAll('.settings-input'));
           const labels = Array.from(body.querySelectorAll('.settings-field > span')).map((n) => n.textContent);
@@ -295,11 +313,15 @@ async function runSmokeCheck(serviceReady: boolean): Promise<void> {
             cards: body.querySelectorAll('.card').length,
             fields: labels,
             defaultRadios: body.querySelectorAll('input[type="radio"]').length,
-            workingDir: inputs.length ? inputs[inputs.length - 1].value : '',
+            workingDir: (() => {
+              const field = Array.from(body.querySelectorAll('.settings-field')).find((n) =>
+                (n.querySelector('span')?.textContent ?? '').toLowerCase().includes('working directory'));
+              return field?.querySelector('.settings-input')?.value ?? '';
+            })(),
             hasSave: Array.from(body.querySelectorAll('button')).some((b) => b.textContent === 'Save'),
           };
         })(),
-        integrations: await (async () => { const tab = document.querySelector('.tab[data-panel="integrations"]'); if (!tab) return { tab: false }; tab.click(); await new Promise((r) => setTimeout(r, 600)); const body = document.getElementById('panel-body'); return { tab: true, headings: Array.from(body.querySelectorAll('h4')).map((n) => n.textContent.trim()), badges: Array.from(body.querySelectorAll('.badge')).map((n) => n.textContent.trim()) }; })(),
+        integrations: await (async () => { const tab = document.querySelector('.tab[data-panel="integrations"]'); if (!tab) return { tab: false }; tab.click(); await waitFor(() => document.querySelectorAll('#panel-body .badge').length > 0); const body = document.getElementById('panel-body'); return { tab: true, headings: Array.from(body.querySelectorAll('h4')).map((n) => n.textContent.trim()), badges: Array.from(body.querySelectorAll('.badge')).map((n) => n.textContent.trim()) }; })(),
         configRoundTrip: await (async () => {
           const before = await window.beeCode.getConfig();
           const saved = await window.beeCode.saveConfig(before);
@@ -325,7 +347,8 @@ async function runSmokeCheck(serviceReady: boolean): Promise<void> {
           return { tag: chip?.tagName ?? '', title: chip?.getAttribute('title') ?? '' };
         })(),
         health: await window.beeCode.serviceStatus().catch((e) => String(e)),
-      }))()`,
+      };
+      })()`,
     )) as Record<string, unknown>;
   } catch (err) {
     dom = { error: (err as Error).message };

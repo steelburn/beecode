@@ -561,3 +561,242 @@ body.dragging-browser-dock { cursor: row-resize; user-select: none; }
 .browser-dock.minimized .browser-surface,
 .browser-dock.minimized .browser-splitter { display: none; }
 .browser-dock.maximized .browser-splitter { display: none; }
+
+/* ---------------------------------------------------------------- explorer */
+.explorer {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.explorer-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.explorer-head .card-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.explorer-crumbs {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.explorer-path {
+  font-size: 11px;
+  opacity: 0.65;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.explorer-list {
+  display: flex;
+  flex-direction: column;
+  max-height: 46vh;
+  overflow-y: auto;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+}
+
+.explorer-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.explorer-row:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.explorer-row.active {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.explorer-row.dir .explorer-name {
+  font-weight: 600;
+}
+
+.explorer-icon {
+  width: 12px;
+  opacity: 0.6;
+}
+
+.explorer-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.explorer-size {
+  font-size: 10px;
+  opacity: 0.55;
+}
+
+.explorer-tag {
+  font-size: 9px;
+  text-transform: uppercase;
+  opacity: 0.5;
+}
+
+.explorer-empty {
+  font-size: 11px;
+  opacity: 0.65;
+  padding: 6px 2px;
+}
+
+.explorer-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.explorer-preview-body {
+  max-height: 40vh;
+  overflow: auto;
+}
+
+.explorer-code {
+  margin: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre;
+}
+
+/* -------------------------------------------------- session running / unread */
+.session-item.busy .s-title {
+  color: #7ad0ff;
+}
+
+.s-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 2px;
+}
+
+.s-badge {
+  padding: 1px 5px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.12);
+  font-size: 9px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.s-badge.run {
+  background: rgba(122, 208, 255, 0.22);
+}
+
+.s-badge.unread {
+  background: rgba(255, 196, 0, 0.25);
+}
+
+/* ------------------------------------------------------------- plan collapse */
+.plan-min {
+  padding: 0 2px;
+  border: 0;
+  background: none;
+  color: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  opacity: 0.7;
+}
+
+.plan-min:hover {
+  opacity: 1;
+}
+
+.plan-summary {
+  padding: 0 0 2px 18px;
+  font-size: 10px;
+  opacity: 0.6;
+}
+
+/* ------------------------------------------------------------ workspace menu */
+.workspace-menu {
+  position: fixed;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 260px;
+  max-width: 320px;
+  padding: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  background: rgba(24, 26, 32, 0.98);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+}
+
+.workspace-menu-title {
+  padding: 4px 8px;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  opacity: 0.55;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-menu-item {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.workspace-menu-item:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.workspace-menu-item.active {
+  background: rgba(122, 208, 255, 0.16);
+}
+
+.workspace-menu-name {
+  font-size: 12px;
+}
+
+.workspace-menu-path {
+  max-width: 100%;
+  font-size: 10px;
+  opacity: 0.55;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-menu-empty {
+  padding: 4px 8px;
+  font-size: 11px;
+  opacity: 0.6;
+}
