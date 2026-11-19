@@ -21,6 +21,14 @@ import { clear, h } from './dom';
 export interface BrowserDock {
   /** Apply a host state push. Cheap and idempotent — main pushes on every tab or load change. */
   render(state: BrowserState): void;
+  /**
+   * Force a mode from outside the dock: the main-area browser tab fills the column with the
+   * page. Nothing is locked — the user can still minimize or drag, and the following render
+   * keeps whatever is current.
+   */
+  setMode(mode: DockMode): void;
+  /** The mode the dock is in right now, so a caller can put it back. */
+  currentMode(): DockMode;
   destroy(): void;
 }
 
@@ -30,7 +38,7 @@ const CHROME_RESERVE = 220;
 const BOUNDS_BACKSTOP_MS = 120;
 
 /** Collapsed to the title bar, filling the workspace column, or the size the user dragged. */
-type DockMode = 'normal' | 'minimized' | 'maximized';
+export type DockMode = 'normal' | 'minimized' | 'maximized';
 
 export function mountBrowserDock(host: HTMLElement, api: BrowserPanelApi): BrowserDock {
   const tabsEl = h('div', { class: 'browser-tabs', role: 'tablist' });
@@ -296,6 +304,8 @@ export function mountBrowserDock(host: HTMLElement, api: BrowserPanelApi): Brows
 
   return {
     render,
+    setMode: applyMode,
+    currentMode: () => mode,
     destroy(): void {
       observer.disconnect();
       window.removeEventListener('resize', onWindowResize);

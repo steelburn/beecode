@@ -37,6 +37,8 @@ export interface ExplorerCallbacks {
   close: () => void;
   /** Switch the preview between the rendered view and the raw source. */
   setView: (view: FileView) => void;
+  /** Open the previewed file as a tab in the main area. */
+  openDoc: (path: string) => void;
 }
 
 export function renderExplorer(host: HTMLElement, state: ExplorerState, cb: ExplorerCallbacks): void {
@@ -171,6 +173,16 @@ function renderPreview(file: FsFile, state: ExplorerState, cb: ExplorerCallbacks
             ),
           )
         : null,
+      // The panel is 240px wide: it peeks at a file, the main area is where one is read.
+      file.binary
+        ? null
+        : h('button', {
+            class: 'btn ghost small',
+            type: 'button',
+            text: '⤢',
+            title: 'Open in the main area as a tab',
+            on: { click: () => cb.openDoc(file.path) },
+          }),
       h('button', {
         class: 'btn ghost small',
         type: 'button',

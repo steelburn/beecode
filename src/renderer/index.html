@@ -63,6 +63,12 @@
           </div>
         </header>
 
+        <!-- Main-area tabs: the chat, one rendered document per open tab, and the embedded
+             browser. The pane and the dock sit above the composer, so a page view can never
+             cover the input. The strip stays hidden until there is something to switch to. -->
+        <nav class="view-tabs" id="view-tabs" role="tablist" aria-label="Main area views" hidden></nav>
+        <section class="doc-pane" id="doc-pane" hidden></section>
+
         <section class="transcript" id="transcript" aria-live="polite"></section>
 
         <!-- Reserves the rectangle the main process paints the sandboxed page view into.

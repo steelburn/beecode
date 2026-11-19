@@ -1,0 +1,235 @@
+import { clear, h, renderMarkdown } from './dom';
+import {
+  BROWSER_TAB,
+  CHAT_TAB,
+  activeDoc,
+  docId,
+  docThemeClass,
+  type DocTab,
+  type DocTabsState,
+  type DocTheme,
+} from './docTabs';
+import { canSwitchView, htmlPreviewMarkup, type FileView } from './preview';
+
+/**
+ * The main-area tab strip and the document pane below it.
+ *
+ * The main column shows exactly one view: the chat transcript, one open document, or the
+ * embedded browser. The strip is the only switch, and everything below the pane — approval
+ * and goal slots, the composer — keeps its place, so the page view can only ever paint
+ * inside the rectangle it reserves.
+ *
+ * A rendered HTML document is mounted in its own shadow root, exactly like the explorer
+ * preview: the file's stylesheets stay inside the tab instead of restyling the whole app,
+ * and `.explorer-rendered.html`'s containment keeps a `position: fixed` page off the app
+ * chrome. The theme arrives as inherited custom properties, which do cross the shadow
+ * boundary — that is why the preview CSS reads `var(--doc-*, fallback)` throughout.
+ */
+
+export interface MainAreaHandlers {
+  activate(id: string): void;
+  close(path: string): void;
+  setView(path: string, view: FileView): void;
+  toggleTheme(): void;
+}
+
+export interface MainAreaHost {
+  /** Receives `view-chat` / `view-doc` / `view-browser`: CSS shows one of the three. */
+  workspace: HTMLElement;
+  strip: HTMLElement;
+  pane: HTMLElement;
+}
+
+export interface MainArea {
+  /** Repaint the strip and the document pane. Cheap and idempotent. */
+  render(state: DocTabsState, view: { browserVisible: boolean }): void;
+}
+
+export function mountMainArea(host: MainAreaHost, handlers: MainAreaHandlers): MainArea {
+  return {
+    render(state, view) {
+      const doc = activeDoc(state);
+      const browserActive = state.active === BROWSER_TAB && view.browserVisible;
+      renderStrip(host.strip, state, view.browserVisible, handlers);
+      host.workspace.classList.toggle('view-doc', Boolean(doc));
+      host.workspace.classList.toggle('view-browser', browserActive);
+      host.workspace.classList.toggle('view-chat', !doc && !browserActive);
+      host.pane.hidden = !doc;
+      if (doc) renderDoc(host.pane, doc, state.theme, handlers);
+      else clear(host.pane);
+    },
+  };
+}
+
+/**
+ * The strip only exists once there is something to switch between: with chat alone the
+ * column looks exactly as it did before tabs existed.
+ */
+function renderStrip(
+  strip: HTMLElement,
+  state: DocTabsState,
+  browserVisible: boolean,
+  handlers: MainAreaHandlers,
+): void {
+  clear(strip);
+  strip.hidden = state.tabs.length === 0 && !browserVisible;
+  if (strip.hidden) return;
+
+  const tabs = [
+    tabButton(CHAT_TAB, 'Chat', 'The chat transcript', state.active === CHAT_TAB, () =>
+      handlers.activate(CHAT_TAB),
+    ),
+    ...state.tabs.map((tab) =>
+      docTabButton(tab, state.active === docId(tab.path), handlers),
+    ),
+  ];
+  if (browserVisible) {
+    tabs.push(
+      tabButton(BROWSER_TAB, 'Browser', 'The embedded browser page', state.active === BROWSER_TAB, () =>
+        handlers.activate(BROWSER_TAB),
+      ),
+    );
+  }
+
+  strip.append(
+    h('div', { class: 'view-tablist', role: 'tablist' }, ...tabs),
+    h(
+      'div',
+      { class: 'view-tabs-actions' },
+      h('button', {
+        type: 'button',
+        class: 'view-theme',
+        title: `Rendered documents: switch to ${state.theme === 'light' ? 'dark' : 'light'} mode`,
+        text: state.theme === 'light' ? '☾ Dark' : '☀ Light',
+        on: { click: () => handlers.toggleTheme() },
+      }),
+    ),
+  );
+}
+
+function tabButton(
+  id: string,
+  label: string,
+  title: string,
+  active: boolean,
+  onClick: () => void,
+): HTMLElement {
+  return h(
+    'div',
+    { class: `view-tab${active ? ' active' : ''}`, role: 'tab', title, dataset: { tab: id } },
+    h('button', { type: 'button', class: 'view-tab-label', text: label, on: { click: onClick } }),
+  );
+}
+
+function docTabButton(tab: DocTab, active: boolean, handlers: MainAreaHandlers): HTMLElement {
+  return h(
+    'div',
+    {
+      class: `view-tab${active ? ' active' : ''}`,
+      role: 'tab',
+      title: tab.path,
+      dataset: { tab: docId(tab.path) },
+    },
+    h('button', {
+      type: 'button',
+      class: 'view-tab-label',
+      text: tab.name,
+      on: { click: () => handlers.activate(docId(tab.path)) },
+    }),
+    h('button', {
+      type: 'button',
+      class: 'view-tab-close',
+      title: `Close ${tab.name}`,
+      text: '✕',
+      on: { click: () => handlers.close(tab.path) },
+    }),
+  );
+}
+
+function renderDoc(
+  pane: HTMLElement,
+  tab: DocTab,
+  theme: DocTheme,
+  handlers: MainAreaHandlers,
+): void {
+  clear(pane);
+  pane.append(
+    h(
+      'div',
+      { class: 'doc-head' },
+      h(
+        'div',
+        { class: 'doc-title' },
+        h('span', { class: 'doc-name', text: tab.name }),
+        h('span', { class: 'doc-path', text: tab.path, title: tab.path }),
+      ),
+      h('span', { class: 'doc-size', text: formatBytes(tab.size) }),
+      canSwitchView(tab.kind) && !tab.binary ? viewToggle(tab, handlers) : null,
+      h('button', {
+        type: 'button',
+        class: 'btn ghost small',
+        title: 'Close this tab',
+        text: '✕',
+        on: { click: () => handlers.close(tab.path) },
+      }),
+    ),
+    h('div', { class: `doc-body ${docThemeClass(theme)}` }, ...docPaneBody(tab)),
+  );
+}
+
+/** Rendered / source, for the kinds where both answers exist. */
+function viewToggle(tab: DocTab, handlers: MainAreaHandlers): HTMLElement {
+  const button = (view: FileView, label: string): HTMLElement =>
+    h('button', {
+      type: 'button',
+      class: `doc-view${tab.view === view ? ' active' : ''}`,
+      text: label,
+      on: { click: () => handlers.setView(tab.path, view) },
+    });
+  return h(
+    'div',
+    { class: 'doc-viewtoggle', role: 'group', title: 'View mode' },
+    button('rendered', 'Rendered'),
+    button('source', 'Source'),
+  );
+}
+
+function docPaneBody(tab: DocTab): Node[] {
+  const body: Node[] = [];
+  if (tab.binary) {
+    body.push(
+      h('p', { class: 'doc-empty', text: 'This file is not text, so there is nothing to render.' }),
+    );
+  } else if (tab.view === 'source' || tab.kind === 'text') {
+    body.push(h('pre', { class: 'doc-source', text: tab.text }));
+  } else if (tab.kind === 'markdown') {
+    // The transcript's `md-*` output is styled by the same prose rules the explorer
+    // preview uses, so a document looks identical in both places.
+    body.push(h('div', { class: 'doc-rendered explorer-rendered', html: renderMarkdown(tab.text) }));
+  } else {
+    body.push(htmlPreview(tab.text));
+  }
+  if (tab.truncated) {
+    body.push(
+      h('p', {
+        class: 'doc-truncated',
+        text: 'Preview clipped: this file is longer than the preview budget.',
+      }),
+    );
+  }
+  return body;
+}
+
+/** A rendered HTML file, isolated in its own shadow root. */
+function htmlPreview(html: string): HTMLElement {
+  const surface = h('div', { class: 'doc-rendered explorer-rendered html' });
+  const root = surface.attachShadow({ mode: 'open' });
+  root.innerHTML = htmlPreviewMarkup(html);
+  return surface;
+}
+
+function formatBytes(size: number): string {
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(size < 10 * 1024 ? 1 : 0)} KB`;
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+}

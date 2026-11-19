@@ -22,8 +22,21 @@ import type {
   WorkspaceState,
 } from '../shared/protocol';
 import { clear, formatJsonForDisplay, h, renderMarkdown } from './dom';
-import { mountBrowserDock } from './browserDock';
+import { mountBrowserDock, type BrowserDock, type DockMode } from './browserDock';
 import { renderExplorer, type ExplorerState } from './explorer';
+import { mountMainArea, type MainArea } from './mainArea';
+import {
+  BROWSER_TAB,
+  CHAT_TAB,
+  activateTab,
+  closeDoc,
+  emptyDocTabs,
+  openDoc,
+  setDocView,
+  toggleTheme,
+  type DocTheme,
+  type DocTabsState,
+} from './docTabs';
 import type { TerminalState } from '../shared/terminal';
 import { renderTerminal } from './terminal';
 import type { FileView } from './preview';
@@ -183,6 +196,8 @@ interface State {
   unread: Set<string>;
   /** Workspace explorer state; the listing itself comes from the service. */
   explorer: ExplorerState;
+  /** Main-area tabs: the open documents, the active view and the rendered theme. */
+  docs: DocTabsState;
   panel: PanelTab;
   ready: boolean;
 }
@@ -208,6 +223,7 @@ const state: State = {
   statuses: {},
   unread: new Set<string>(),
   explorer: {},
+  docs: emptyDocTabs(readDocTheme()),
   panel: 'permissions',
   ready: false,
 };
@@ -217,6 +233,9 @@ const els = {
   sessionList: document.getElementById('session-list') as HTMLElement,
   transcript: document.getElementById('transcript') as HTMLElement,
   browserDock: document.getElementById('browser-dock') as HTMLElement,
+  workspace: document.querySelector('.workspace') as HTMLElement,
+  viewTabs: document.getElementById('view-tabs') as HTMLElement,
+  docPane: document.getElementById('doc-pane') as HTMLElement,
   approvalSlot: document.getElementById('approval-slot') as HTMLElement,
   questionSlot: document.getElementById('question-slot') as HTMLElement,
   goalSlot: document.getElementById('goal-slot') as HTMLElement,
@@ -239,14 +258,40 @@ const els = {
   togglePanel: document.getElementById('toggle-panel') as HTMLButtonElement,
 };
 
+/* ------------------------------------------------- main-area tab handles */
+
+/** Created in `boot()`, before the first render; every reader tolerates "not yet". */
+let dock: BrowserDock | undefined;
+let mainArea: MainArea | undefined;
+/** Whether the host currently has a browser panel on screen, so the tab list can offer it. */
+let browserShown = false;
+/** The dock mode to restore when the user leaves the browser tab. */
+let dockModeBeforeTab: DockMode = 'normal';
+
 /* ------------------------------------------------------------------ boot */
 
 void boot();
 
 async function boot(): Promise<void> {
   bindUi();
-  const browserDock = mountBrowserDock(els.browserDock, api.browser);
-  api.browser.onState((next) => browserDock.render(next));
+  dock = mountBrowserDock(els.browserDock, api.browser);
+  mainArea = mountMainArea(
+    { workspace: els.workspace, strip: els.viewTabs, pane: els.docPane },
+    {
+      activate: activateMainTab,
+      close: closeDocTab,
+      setView: setDocTabView,
+      toggleTheme: toggleDocTheme,
+    },
+  );
+  renderMainArea();
+  api.browser.onState((next) => {
+    browserShown = next.visible;
+    // A browser the host closed cannot stay the active tab: go back to the chat.
+    if (!next.visible && state.docs.active === BROWSER_TAB) state.docs = activateTab(state.docs, CHAT_TAB);
+    dock?.render(next);
+    renderMainArea();
+  });
   api.terminal.onState(applyTerminal);
   api.onEvent(handleEvent);
   api.onServiceStatus((payload) => {
@@ -1190,6 +1235,7 @@ function renderPanelBody(): void {
   const explorerCallbacks = {
     open: (path?: string) => void openExplorer(path),
     preview: (path: string) => void previewFile(path),
+    openDoc: (path: string) => void openDocTab(path),
     close: () => {
       state.explorer = { ...state.explorer, file: undefined, view: undefined };
       renderPanelBody();
@@ -1299,6 +1345,9 @@ function paintWorkspaceGate(): void {
 async function applyWorkspace(path: string): Promise<void> {
   try {
     state.workspace = await api.invoke('workspace.set', { path });
+    // Document tabs are rooted in the old folder, so they no longer describe the workspace.
+    state.docs = emptyDocTabs(state.docs.theme);
+    renderMainArea();
     state.config = await api.getConfig();
     // The explorer is rooted in the workspace, so its cache belongs to the previous one.
     state.explorer = {};
@@ -1337,6 +1386,81 @@ async function openExplorer(path?: string): Promise<void> {
 }
 
 /** Preview one file, clipped to the service's preview budget. */
+/* ------------------------------------------------------------ main-area tabs */
+
+const DOC_THEME_KEY = 'beecode.docTheme';
+
+/**
+ * The theme belongs to this machine, not to the agent service: it says how *this* user reads
+ * a rendered document, so it is kept in the renderer's own storage.
+ */
+function readDocTheme(): DocTheme {
+  try {
+    return localStorage.getItem(DOC_THEME_KEY) === 'light' ? 'light' : 'dark';
+  } catch {
+    return 'dark';
+  }
+}
+
+function writeDocTheme(theme: DocTheme): void {
+  try {
+    localStorage.setItem(DOC_THEME_KEY, theme);
+  } catch {
+    /* storage can be unavailable; the theme still holds for this run */
+  }
+}
+
+function renderMainArea(): void {
+  mainArea?.render(state.docs, { browserVisible: browserShown });
+}
+
+/**
+ * Switch the main-area view. The browser tab and the dock are the same page view: entering
+ * the tab fills the column with it, leaving restores the size the user had chosen.
+ */
+function activateMainTab(id: string): void {
+  const previous = state.docs.active;
+  state.docs = activateTab(state.docs, id);
+  if (dock && previous !== state.docs.active) {
+    if (state.docs.active === BROWSER_TAB) {
+      dockModeBeforeTab = dock.currentMode();
+      dock.setMode('maximized');
+    } else if (previous === BROWSER_TAB) {
+      dock.setMode(dockModeBeforeTab);
+    }
+  }
+  renderMainArea();
+}
+
+/** Open a file as a main-area tab, reusing the text the panel already fetched. */
+async function openDocTab(path: string): Promise<void> {
+  try {
+    const file =
+      state.explorer.file?.path === path ? state.explorer.file : await api.invoke('fs.read', { path });
+    state.docs = openDoc(state.docs, file);
+    renderMainArea();
+  } catch (error) {
+    state.explorer = { ...state.explorer, error: (error as Error).message };
+    renderPanelBody();
+  }
+}
+
+function closeDocTab(path: string): void {
+  state.docs = closeDoc(state.docs, path);
+  renderMainArea();
+}
+
+function setDocTabView(path: string, view: FileView): void {
+  state.docs = setDocView(state.docs, path, view);
+  renderMainArea();
+}
+
+function toggleDocTheme(): void {
+  state.docs = toggleTheme(state.docs);
+  writeDocTheme(state.docs.theme);
+  renderMainArea();
+}
+
 async function previewFile(path: string): Promise<void> {
   try {
     const file = await api.invoke('fs.read', { path });

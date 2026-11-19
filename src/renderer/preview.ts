@@ -182,10 +182,10 @@ export function sanitizeHtml(html: string): string {
  * Base typography for the isolated HTML preview. A rendered HTML file is mounted in its
  * own shadow root (see `htmlPreviewMarkup`), so the application's `.explorer-rendered`
  * rules cannot reach inside it and the essentials are restated here. Custom properties
- * inherit across the shadow boundary, so the preview still follows the app theme.
+ * inherit across the shadow boundary, so the preview still follows the app theme: the `--doc-*`
  */
 const HTML_PREVIEW_CSS = [
-  ':host{display:block;font:inherit;font-size:12px;line-height:1.55;color:var(--text);overflow-wrap:anywhere;}',
+  ':host{display:block;font:inherit;font-size:12px;line-height:1.55;color:var(--doc-text,var(--text));background:var(--doc-bg,transparent);color-scheme:var(--doc-scheme,dark);overflow-wrap:anywhere;}',
   ':host>.html-preview>:first-child{margin-top:0;}',
   'h1,h2,h3,h4,h5,h6{margin:14px 0 6px;line-height:1.3;font-weight:650;}',
   'h1{font-size:16px;}',
@@ -195,10 +195,10 @@ const HTML_PREVIEW_CSS = [
   'p{margin:6px 0;}',
   'ul,ol{margin:6px 0;padding-left:20px;}',
   'li{margin:2px 0;}',
-  'a{color:#7ad0ff;text-decoration:none;}',
+  'a{color:var(--doc-link,#7ad0ff);text-decoration:none;}',
   'a:hover{text-decoration:underline;}',
-  'code{padding:1px 4px;border-radius:4px;background:rgba(255,255,255,0.08);font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;}',
-  'pre{margin:8px 0;padding:8px 10px;overflow:auto;border:1px solid var(--line);border-radius:8px;background:rgba(0,0,0,0.25);}',
+  'code{padding:1px 4px;border-radius:4px;background:var(--doc-code-bg,rgba(255,255,255,0.08));font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;}',
+  'pre{margin:8px 0;padding:8px 10px;overflow:auto;border:1px solid var(--line);border-radius:8px;background:var(--doc-pre-bg,rgba(0,0,0,0.25));}',
   'pre code{padding:0;background:none;}',
   'blockquote{margin:8px 0;padding:2px 0 2px 10px;border-left:2px solid var(--line);color:var(--text-dim);}',
   'hr{border:0;border-top:1px solid var(--line);margin:12px 0;}',

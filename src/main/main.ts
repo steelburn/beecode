@@ -418,6 +418,44 @@ async function runSmokeCheck(serviceReady: boolean): Promise<void> {
           }
           return out;
         })().catch((err) => ({ error: String(err) })),
+        // Main-area tabs: the explorer's rendered preview can be sent to the column as a tab.
+        // The chat is not shown at the same time, the composer keeps its place, and the theme
+        // toggle restates the document surface without restyling the app around it. Every
+        // selector is written without backticks: this script is itself a template literal.
+        mainArea: await (async () => {
+          const out = { tab: false };
+          const opener = document.querySelector('.explorer-preview .btn[title^="Open in the main area"]');
+          if (!opener) return { tab: false, opener: false };
+          opener.click();
+          const bodyOf = () => document.querySelector('#doc-pane .doc-body');
+          out.strip = await waitFor(() => Boolean(document.querySelector('.view-tabs:not([hidden])')), 20000);
+          out.pane = await waitFor(() => Boolean(bodyOf()), 20000);
+          out.docTab = document.querySelector('#doc-pane .doc-name')?.textContent ?? null;
+          out.tabs = document.querySelectorAll('.view-tab').length;
+          const host = document.querySelector('#doc-pane .doc-rendered.html');
+          out.isolated = Boolean(host && host.shadowRoot) && !document.querySelector('#doc-pane .doc-rendered.html style');
+          out.rendered = Boolean(host && host.shadowRoot && host.shadowRoot.querySelector('.html-preview'));
+          out.transcriptHidden =
+            (document.querySelector('.transcript')?.getBoundingClientRect().height ?? 0) === 0;
+          const composerBox = () => document.querySelector('.composer').getBoundingClientRect();
+          out.composerVisible = composerBox().height > 0 && composerBox().bottom <= window.innerHeight + 1;
+          out.before = getComputedStyle(bodyOf()).backgroundColor;
+          document.querySelector('.view-theme')?.click();
+          out.light = await waitFor(() => (bodyOf()?.className ?? '').includes('doc-light'), 20000);
+          out.after = getComputedStyle(bodyOf()).backgroundColor;
+          out.themeFlipped = out.before !== out.after && out.after === 'rgb(255, 255, 255)';
+          out.chromeDark = getComputedStyle(document.body).backgroundColor !== out.after;
+          document.querySelector('.view-theme')?.click();
+          await waitFor(() => (bodyOf()?.className ?? '').includes('doc-dark'), 20000);
+          document.querySelector('.view-tab[data-tab="chat"] .view-tab-label')?.click();
+          out.backToChat = await waitFor(
+            () => (document.querySelector('.transcript')?.getBoundingClientRect().height ?? 0) > 0,
+            20000,
+          );
+          document.querySelector('.view-tabs .view-tab-close')?.click();
+          out.closed = await waitFor(() => !document.querySelector('.view-tabs:not([hidden])'), 20000);
+          return out;
+        })().catch((err) => ({ error: String(err) })),
         // Workspace terminal: the renderer mounts the panel, the main process runs the
         // command and streams the output back — this drives that whole chain.
         terminal: await (async () => {
@@ -558,13 +596,27 @@ async function runSmokeCheck(serviceReady: boolean): Promise<void> {
           pick('Maximize')?.click();
           await wait(350);
           const maximized = state();
+          // The main-area Browser tab is the same page view: activating it fills the column
+          // with the page while the composer keeps its place below, and leaving it restores.
+          const tabOf = (id) => document.querySelector('.view-tab[data-tab="' + id + '"]');
+          tabOf('browser')?.querySelector('.view-tab-label')?.click();
+          await wait(350);
+          const tabActivated = state({
+            offered: Boolean(tabOf('browser')),
+            active: Boolean(tabOf('browser')?.classList.contains('active')),
+            transcriptHidden:
+              (document.querySelector('.transcript')?.getBoundingClientRect().height ?? 0) === 0,
+          });
+          tabOf('chat')?.querySelector('.view-tab-label')?.click();
+          await wait(350);
+          const tabClosed = state({ active: Boolean(tabOf('chat')?.classList.contains('active')) });
           pick('Restore')?.click();
           await wait(350);
           const unmaximized = state();
           pick('Close')?.click();
           await wait(500);
           const closed = state();
-          return { before, minimized, restored, maximized, unmaximized, closed };
+          return { before, minimized, restored, maximized, tabActivated, tabClosed, unmaximized, closed };
         })()`,
       )) as Record<string, unknown>;
 

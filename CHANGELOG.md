@@ -15,6 +15,21 @@ All notable changes to beeCode will be documented in this file.
   mounted in its own shadow root with layout containment, so a stylesheet inside it cannot
   restyle the app chrome and a `position: fixed` page cannot paint over it. Plain text keeps
   its source view and gets no switch (`src/renderer/preview.ts`, `src/renderer/explorer.ts`).
+- **Documents and the browser open as main-area tabs.** A rendered file was pinned to the
+  narrow Files panel, so a Markdown document or a generated HTML report could only be read
+  in a column a few hundred pixels wide. Every file now has **Open in the main area as a
+  tab** (`⤢` on the preview header): the main area gains a tab strip — **Chat**, one tab per
+  open document, **Browser** — and the chat transcript yields to a document pane showing the
+  file name, path, size, a **Rendered / Source** toggle and a close button, while the
+  composer stays at the bottom. Re-opening a file reuses its tab and remembers the view the
+  user picked; a rendered HTML document is still mounted in its own shadow root, so the
+  file's stylesheet cannot restyle the app. A **Light / Dark** switch recolours rendered
+  content only (CSS custom properties, which cross the shadow boundary): it is remembered
+  across restarts and leaves the app chrome dark. The browser dock doubles as the
+  **Browser** tab — selecting it maximises the dock over the main area, deselecting restores
+  the previous dock mode, and because the page is bounded by the dock rectangle it never
+  covers the composer (`src/renderer/docTabs.ts`, `src/renderer/mainArea.ts`,
+  `src/renderer/browserDock.ts`, `src/renderer/explorer.ts`, `src/renderer/styles.css`).
 - **Workspace terminal.** A new **Terminal** panel tab runs shell commands from the app,
   confined to the workspace: the working directory can never leave the root (`cd ..` at the
   root is refused, so is an absolute path outside it, and switching workspace re-confines

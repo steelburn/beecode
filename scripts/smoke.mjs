@@ -119,6 +119,30 @@ const previewOk =
   preview.markdownSource === true &&
   htmlPreviewOk;
 
+// Main-area tabs: a rendered document opens in the column as a tab, the theme toggle
+// restates only the document surface, and the browser tab fills the column with the composer
+// still clear underneath.
+const mainArea = report.dom?.mainArea ?? {};
+const mainAreaOk =
+  mainArea.strip === true &&
+  mainArea.pane === true &&
+  mainArea.rendered === true &&
+  mainArea.isolated === true &&
+  mainArea.transcriptHidden === true &&
+  mainArea.composerVisible === true &&
+  mainArea.light === true &&
+  mainArea.themeFlipped === true &&
+  mainArea.chromeDark === true &&
+  mainArea.backToChat === true &&
+  mainArea.closed === true;
+
+const browserTab = report.browser?.controls?.tabActivated ?? {};
+const browserTabOk =
+  browserTab.offered === true &&
+  browserTab.active === true &&
+  browserTab.transcriptHidden === true &&
+  report.browser?.controls?.tabClosed?.active === true;
+
 const terminal = report.dom?.terminal ?? {};
 const terminalOk =
   terminal.tab === true &&
@@ -136,12 +160,17 @@ const ok =
   composerOk &&
   silentOk &&
   previewOk &&
+  mainAreaOk &&
+  browserTabOk &&
   terminalOk;
 if (!markdownOk) console.error(`[smoke] markdown/chart render check failed: ${JSON.stringify(rendered)}`);
 if (!integrationsOk) console.error(`[smoke] integrations panel check failed: ${JSON.stringify(integrations)}`);
 if (!pluginsOk) console.error(`[smoke] plugins card check failed: ${JSON.stringify(integrations)}`);
 if (!silentOk) console.error(`[smoke] silent browser drive check failed: ${JSON.stringify(silent)}`);
 if (!previewOk) console.error(`[smoke] files preview check failed: ${JSON.stringify(preview)}`);
+if (!mainAreaOk) console.error(`[smoke] main-area tab check failed: ${JSON.stringify(mainArea)}`);
+if (!browserTabOk)
+  console.error(`[smoke] browser tab check failed: ${JSON.stringify(report.browser?.controls)}`);
 if (!terminalOk) console.error(`[smoke] terminal check failed: ${JSON.stringify(terminal)}`);
 if (!composerOk) {
   console.error(

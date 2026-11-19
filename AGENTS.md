@@ -72,6 +72,8 @@ If Electron starts as plain Node, `ELECTRON_RUN_AS_NODE` is leaking from the she
 | Browser policy + URL matching | `src/service/policy.ts` (`evaluateBrowser`) |
 | Browser controller + tools | `src/service/browser/controller.ts`, `src/service/tools/browser.ts` |
 | Browser dock (chrome + bounds reporting) | `src/renderer/browserDock.ts` |
+| Main-area tabs (Chat / document / Browser) | `src/renderer/docTabs.ts` (model), `src/renderer/mainArea.ts` (DOM) |
+| Rendered file preview + sanitiser | `src/renderer/preview.ts`, hosted by `src/renderer/explorer.ts` |
 | Service wiring | `src/service/service.ts` |
 | Plugin contract + host (discovery, permissions, tool wrapping) | `src/plugins/types.ts`, `src/plugins/host.ts` |
 | Bundled starter plugins (PDF viewer, PDF generator, Excel export) | `src/plugins/builtin/*.ts` |

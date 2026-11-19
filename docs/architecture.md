@@ -156,6 +156,37 @@ terminal. Output is pushed back over `beecode:terminal-update` and capped at 400
 400 KB; Stop kills the process tree and Clear empties the scrollback. When the configured
 workspace root changes, the runner re-confines (`setRoot`) and drops the old scrollback.
 
+### Main-area tabs
+
+The main area is one column with two occupants that exclude each other, plus a header.
+
+```
+tab strip   Chat · <doc> · <doc> · Browser          [☀ Light]
+────────────────────────────────────────────────────────────
+view-chat     transcript
+view-doc      document pane   (name · path · size · Rendered/Source · ×)
+view-browser  (document pane hidden; the dock grows to fill the column)
+────────────────────────────────────────────────────────────
+browser dock  chrome + WebContentsView bounds
+composer      always visible
+```
+
+* `docTabs.ts` is a pure model — open / close / activate / view / theme — with no DOM, so
+  the transition rules are unit-tested directly. Opening a file that is already open
+  activates its tab instead of duplicating it and keeps the remembered Rendered/Source view.
+* `mainArea.ts` owns the strip and the document pane. Rendered **Markdown** goes through
+  the transcript renderer; rendered **HTML** goes through the same sanitiser as the Files
+  peek and is mounted in a **shadow root**, which is what keeps a report's `body {}` rule
+  from restyling the app.
+* The **Light/Dark** toggle sets custom properties on the document pane. Custom properties
+  inherit through a shadow boundary, so the preview inside the shadow root follows without
+  any script injected into the file, and the app chrome (which does not read those
+  properties) stays dark. The choice lives in `localStorage`.
+* The **Browser** tab is not a second view: it asks the existing dock for
+  `setMode('maximized')` and restores the previous mode when the tab is left. Because the
+  `WebContentsView` is placed inside the dock's reported rectangle, the page cannot cover
+  the composer — and hiding the dock hides the page.
+
 ## MCP servers and skills
 
 Tools come from three places: the built-in catalogue (`desktop_*`, `fs_*`, `shell_*`,

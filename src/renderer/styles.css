@@ -949,3 +949,209 @@ body.dragging-browser-dock { cursor: row-resize; user-select: none; }
 .term-form { display: flex; gap: 8px; margin-top: 8px; }
 .term-input { flex: 1; min-width: 0; }
 .term-note { margin: 8px 0 0; }
+
+/* ------------------------------------------------------------ main-area tabs */
+
+/* One view per column: the chat transcript, one open document, or the browser page view.
+   The strip is the only switch and the composer below it never moves, so a page view can
+   only ever paint inside the rectangle it reserves. */
+.view-tabs {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px 0;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg);
+  flex: 0 0 auto;
+}
+.view-tabs[hidden] { display: none; }
+
+.view-tablist {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.view-tab {
+  display: inline-flex;
+  align-items: center;
+  max-width: 220px;
+  border: 1px solid transparent;
+  border-bottom: 0;
+  border-radius: 8px 8px 0 0;
+  color: var(--text-dim);
+  flex: 0 0 auto;
+}
+.view-tab:hover { background: var(--bg-raised); color: var(--text); }
+.view-tab.active {
+  background: var(--bg-raised);
+  border-color: var(--line);
+  color: var(--text);
+}
+
+.view-tab-label {
+  padding: 6px 4px 6px 10px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.view-tab-close {
+  padding: 2px 6px;
+  margin-right: 4px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-faint);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+.view-tab-close:hover { background: var(--line); color: var(--text); }
+
+.view-tabs-actions { display: flex; align-items: center; flex: 0 0 auto; padding-bottom: 4px; }
+
+.view-theme {
+  padding: 3px 9px;
+  border: 1px solid var(--line-soft);
+  border-radius: 6px;
+  background: var(--bg-inset);
+  color: var(--text-dim);
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.view-theme:hover { border-color: var(--line); color: var(--text); }
+
+/* ------------------------------------------------------------ document pane */
+
+.doc-pane {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+}
+.doc-pane[hidden] { display: none; }
+
+.doc-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line-soft);
+  background: var(--bg-raised);
+  flex: 0 0 auto;
+}
+
+.doc-title { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1 1 auto; }
+.doc-name {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.doc-path {
+  color: var(--text-faint);
+  font-family: var(--mono);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.doc-size { color: var(--text-faint); font-size: 11px; flex: 0 0 auto; }
+
+.doc-viewtoggle {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--line-soft);
+  border-radius: 7px;
+  background: var(--bg-inset);
+  flex: 0 0 auto;
+}
+.doc-view {
+  padding: 3px 8px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 11px;
+  cursor: pointer;
+}
+.doc-view.active { background: var(--bg-raised); color: var(--text); }
+
+.doc-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 14px 18px 24px;
+  background: var(--doc-bg, var(--bg));
+  color: var(--doc-text, var(--text));
+}
+
+.doc-source {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: inherit;
+}
+.doc-empty { margin: 0; color: var(--text-dim); font-size: 13px; }
+.doc-truncated { margin: 14px 0 0; color: var(--text-faint); font-size: 11px; }
+.doc-rendered { max-width: 900px; }
+
+/* Rendered documents only — the chrome keeps the app palette. These tokens are also read
+   from inside the HTML preview's shadow root: custom properties cross that boundary, so the
+   theme reaches in while the file's own colors still stay in. */
+.doc-dark {
+  --doc-bg: transparent;
+  --doc-text: var(--text);
+  --doc-scheme: dark;
+  --doc-link: #7ad0ff;
+  --doc-code-bg: rgba(255, 255, 255, 0.08);
+  --doc-pre-bg: rgba(0, 0, 0, 0.25);
+}
+
+.doc-light {
+  --doc-bg: #ffffff;
+  --doc-text: #1b2430;
+  --doc-scheme: light;
+  --doc-link: #0b63c5;
+  --doc-code-bg: #eef2f7;
+  --doc-pre-bg: #f3f6fa;
+  /* The prose rules below reuse the app tokens, so the light set is restated for them. */
+  --bg: #ffffff;
+  --bg-raised: #f6f8fb;
+  --bg-inset: #eef2f7;
+  --line: #d7dee8;
+  --line-soft: #e6ebf2;
+  --text: #1b2430;
+  --text-dim: #4b5b70;
+  --text-faint: #6b7a90;
+}
+
+.doc-light .explorer-rendered code { background: var(--doc-code-bg); }
+.doc-light .explorer-rendered pre { background: var(--doc-pre-bg); }
+.doc-light .explorer-rendered blockquote { background: var(--bg-raised); }
+.doc-light .explorer-rendered a { color: var(--doc-link); }
+
+/* One view per column: the other two are simply not displayed. The page view is bounded by
+   the dock's rectangle, so hiding it also hides the WebContentsView behind it. */
+.workspace.view-doc .transcript,
+.workspace.view-browser .transcript { display: none; }
+.workspace.view-doc .browser-dock { display: none; }
