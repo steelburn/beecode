@@ -24,6 +24,9 @@ import type {
 import { clear, formatJsonForDisplay, h, renderMarkdown } from './dom';
 import { mountBrowserDock } from './browserDock';
 import { renderExplorer, type ExplorerState } from './explorer';
+import type { TerminalState } from '../shared/terminal';
+import { renderTerminal } from './terminal';
+import type { FileView } from './preview';
 import { renderActivity, renderIntegrations, renderPermissions, renderSettings, renderSubagents } from './panels';
 import { renderPlan, renderWorkspaceGate, type WorkspaceActions } from './plan';
 
@@ -139,10 +142,12 @@ window.__renderDocsSample = () => {
 window.addEventListener('error', (event) => rendererErrors.push(String(event.message)));
 window.addEventListener('unhandledrejection', (event) => rendererErrors.push(String((event as PromiseRejectionEvent).reason)));
 
-type PanelTab = 'permissions' | 'subagents' | 'integrations' | 'activity' | 'settings' | 'explorer';
+type PanelTab = 'permissions' | 'subagents' | 'integrations' | 'activity' | 'settings' | 'explorer' | 'terminal';
 
 interface State {
   info?: AppInfo;
+  /** Workspace terminal scrollback; undefined until the first fetch answers. */
+  terminal?: TerminalState;
   status: ServiceStatusPayload['supervisor'];
   health?: ServiceStatusPayload['health'];
   sessions: SessionSummary[];
@@ -242,6 +247,7 @@ async function boot(): Promise<void> {
   bindUi();
   const browserDock = mountBrowserDock(els.browserDock, api.browser);
   api.browser.onState((next) => browserDock.render(next));
+  api.terminal.onState(applyTerminal);
   api.onEvent(handleEvent);
   api.onServiceStatus((payload) => {
     state.status = payload.supervisor;
@@ -1086,6 +1092,27 @@ function renderApproval(): void {
   els.approvalSlot.append(card);
 }
 
+/**
+ * Draw the terminal panel. The actions are rebuilt per render because the panel re-mounts
+ * whenever the panel body is rebuilt, and they close over nothing else.
+ */
+function renderTerminalPanel(next: TerminalState): void {
+  renderTerminal(els.panelBody, next, {
+    run: (command) => void api.terminal.run(command).then(applyTerminal),
+    cancel: () => void api.terminal.cancel().then(applyTerminal),
+    clear: () => void api.terminal.clear().then(applyTerminal),
+  });
+}
+
+/**
+ * One entry point for every terminal state: the answer to run/cancel/clear, and the updates
+ * the main process pushes while a command is still producing output.
+ */
+function applyTerminal(next: TerminalState): void {
+  state.terminal = next;
+  if (state.panel === 'terminal') renderTerminalPanel(next);
+}
+
 function renderPanelBody(): void {
   const callbacks = {
     savePolicy,
@@ -1164,7 +1191,11 @@ function renderPanelBody(): void {
     open: (path?: string) => void openExplorer(path),
     preview: (path: string) => void previewFile(path),
     close: () => {
-      state.explorer = { ...state.explorer, file: undefined };
+      state.explorer = { ...state.explorer, file: undefined, view: undefined };
+      renderPanelBody();
+    },
+    setView: (view: FileView) => {
+      state.explorer = { ...state.explorer, view };
       renderPanelBody();
     },
   };
@@ -1194,7 +1225,11 @@ function renderPanelBody(): void {
     // is opened again (see the tab handler) or when the user navigates.
     if (state.explorer.listing || state.explorer.error) renderExplorer(els.panelBody, state.explorer, explorerCallbacks);
     else void openExplorer(state.explorer.path);
-  } else renderActivity(els.panelBody, state.audit, callbacks);
+  } else if (state.panel === 'terminal') {
+      // Pushed updates only arrive once a command has run, so the first visit fetches.
+      if (state.terminal) renderTerminalPanel(state.terminal);
+      else void api.terminal.state().then(applyTerminal);
+    } else renderActivity(els.panelBody, state.audit, callbacks);
 }
 
 /* -------------------------------------------------------------------- plan */
@@ -1305,7 +1340,7 @@ async function openExplorer(path?: string): Promise<void> {
 async function previewFile(path: string): Promise<void> {
   try {
     const file = await api.invoke('fs.read', { path });
-    state.explorer = { ...state.explorer, file, error: undefined };
+    state.explorer = { ...state.explorer, file, view: undefined, error: undefined };
   } catch (error) {
     state.explorer = { ...state.explorer, error: (error as Error).message };
   }

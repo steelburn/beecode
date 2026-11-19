@@ -665,6 +665,33 @@ function renderSkillsCard(skills: SkillInfo[], cb: PanelCallbacks): HTMLElement 
       : 'Nothing installable in that drop.';
   };
 
+  const urlInput = h('input', { class: 'skill-url-input settings-input', type: 'text', placeholder: 'https://…/SKILL.md or …/skill.zip' }) as HTMLInputElement;
+  const urlButton = h('button', { class: 'btn ghost small', type: 'button', text: 'Install from URL' }) as HTMLButtonElement;
+  const installFromUrl = async (): Promise<void> => {
+    const url = urlInput.value.trim();
+    if (!url) {
+      note.textContent = 'Paste an https:// URL of a SKILL.md or a skill .zip first.';
+      return;
+    }
+    urlButton.disabled = true;
+    note.textContent = `Downloading ${url}…`;
+    try {
+      const installed = (await cb.installSkill?.({ url })) ?? [];
+      note.textContent = installed.length
+        ? `Installed ${installed.join(', ')} ✓`
+        : 'Nothing installable at that URL.';
+      if (installed.length) urlInput.value = '';
+    } catch (error) {
+      note.textContent = `Could not install from ${url}: ${(error as Error).message}`;
+    } finally {
+      urlButton.disabled = false;
+    }
+  };
+  urlButton.addEventListener('click', () => void installFromUrl());
+  urlInput.addEventListener('keydown', (event) => {
+    if ((event as KeyboardEvent).key === 'Enter') void installFromUrl();
+  });
+
   picker.addEventListener('change', () => {
     if (picker.files) void install(picker.files);
     picker.value = '';
@@ -695,6 +722,8 @@ function renderSkillsCard(skills: SkillInfo[], cb: PanelCallbacks): HTMLElement 
       note,
     ),
   );
+
+  card.append(h('div', { class: 'skill-url' }, urlInput, urlButton));
 
   if (!skills.length) card.append(h('div', { class: 'empty', text: 'No skills found.' }));
   for (const skill of skills) {

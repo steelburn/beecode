@@ -8,6 +8,7 @@ import type { BrowserConfig } from '../shared/protocol';
 import { beeCodeHome } from '../shared/tools';
 import { BrowserHost } from './browser/host';
 import { pipeServiceEvents, registerIpc } from './ipc';
+import { WorkspaceTerminal } from './terminal';
 import { createPluginHostBridge, type PluginHostBridge } from './pluginHost';
 import { ServiceSupervisor } from './serviceSupervisor';
 
@@ -42,6 +43,20 @@ let browserConfig: BrowserConfig = defaultConfig().browser;
  * the host can read it synchronously; a change resets the tabs into a fresh partition.
  */
 let browserWorkspace = workspace;
+
+/**
+ * The workspace terminal: the one place that spawns a shell. It is created with the app so
+ * the renderer can read its state immediately, and it re-confines itself whenever the
+ * configured workspace root changes.
+ */
+const terminal = new WorkspaceTerminal({
+  root: workspace,
+  onChange: (state) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('beecode:terminal-update', state);
+    }
+  },
+});
 
 app.setName('beeCode');
 
@@ -92,12 +107,13 @@ async function bootstrap(): Promise<void> {
     supervisor,
     getWindow: () => mainWindow,
     workspace,
+    terminal,
     browserCommand: (command) => browserHost?.command(command),
     configChanged: () => {
       void refreshBrowserConfig();
     },
     restartService: async () => {
-      await supervisor.stop();
+        await supervisor.stop();
       const ok = await supervisor.start();
       if (ok) await refreshBrowserConfig();
       return { ok };
@@ -108,6 +124,7 @@ async function bootstrap(): Promise<void> {
     getWindow: () => mainWindow,
     workspace,
     browserCommand: (command) => browserHost?.command(command),
+    terminal,
     restartService: async () => ({ ok: false }),
   });
 
@@ -225,6 +242,8 @@ async function refreshBrowserConfig(): Promise<void> {
     if (config?.browser) browserConfig = { ...browserConfig, ...config.browser };
     if (config?.workspace) {
       const next = config.workspace.root?.trim() || workspace;
+      // The terminal is confined to the same root the browser partitions by.
+      terminal.setRoot(next);
       if (next !== browserWorkspace) {
         browserWorkspace = next;
         browserHost?.resetWorkspace();
@@ -333,6 +352,97 @@ async function runSmokeCheck(serviceReady: boolean): Promise<void> {
               JSON.stringify([after.models, after.defaultModelId, after.agent.workingDir]),
           };
         })().catch((e) => String(e)),
+        // Files preview: Markdown and HTML open rendered, flip to source on request, and
+        // HTML arrives with its scripting stripped.
+        preview: await (async () => {
+          const tab = document.querySelector('.tab[data-panel="explorer"]');
+          if (!tab) return { tab: false };
+          tab.click();
+          const listed = await waitFor(() => document.querySelectorAll('.explorer-row').length > 0, 20000);
+          if (!listed) return { tab: true, listing: false };
+          const names = Array.from(document.querySelectorAll('.explorer-name')).map((n) => n.textContent || '');
+          const pick = (name) => {
+            const row = Array.from(document.querySelectorAll('.explorer-row')).find(
+              (r) => (r.querySelector('.explorer-name')?.textContent || '') === name,
+            );
+            if (row) row.click();
+            return Boolean(row);
+          };
+          const out = {
+            tab: true,
+            listing: true,
+            markdown: names.find((n) => /\.(md|markdown)$/i.test(n)) || null,
+            html: names.find((n) => /\.html?$/i.test(n)) || null,
+          };
+          if (out.markdown && pick(out.markdown)) {
+            out.markdownRendered = await waitFor(() => Boolean(document.querySelector('.explorer-rendered')), 20000);
+            out.toggle = Boolean(document.querySelector('.explorer-viewtoggle'));
+            const source = Array.from(document.querySelectorAll('.explorer-viewtoggle .btn')).find(
+              (b) => (b.textContent || '').trim() === 'Source',
+            );
+            if (source) source.click();
+            out.markdownSource = await waitFor(() => Boolean(document.querySelector('.explorer-code')), 20000);
+          }
+          if (!out.html) {
+            // No HTML at the workspace root: index.html lives in src/renderer, so walk
+            // one folder down at a time and wait for each listing to arrive.
+            const steps = [
+              { folder: 'src', expect: 'renderer' },
+              { folder: 'renderer', expect: '.html' },
+            ];
+            for (const step of steps) {
+              if (!pick(step.folder)) break;
+              const arrived = await waitFor(
+                () =>
+                  Array.from(document.querySelectorAll('.explorer-name')).some((n) => {
+                    const text = n.textContent || '';
+                    return step.expect === '.html' ? /\.html?$/i.test(text) : text === step.expect;
+                  }),
+                20000,
+              );
+              if (!arrived) break;
+            }
+            out.html =
+              Array.from(document.querySelectorAll('.explorer-name'))
+                .map((n) => n.textContent || '')
+                .find((n) => /\.html?$/i.test(n)) || null;
+          }
+          if (out.html && pick(out.html)) {
+            out.htmlRendered = await waitFor(() => Boolean(document.querySelector('.explorer-rendered.html')), 20000);
+            out.htmlScriptStripped = !document.querySelector('.explorer-rendered.html script');
+          }
+          return out;
+        })().catch((err) => ({ error: String(err) })),
+        // Workspace terminal: the renderer mounts the panel, the main process runs the
+        // command and streams the output back — this drives that whole chain.
+        terminal: await (async () => {
+          const tab = document.querySelector('.tab[data-panel="terminal"]');
+          if (!tab) return { tab: false };
+          tab.click();
+          const mounted = await waitFor(() => Boolean(document.querySelector('.term-input')));
+          if (!mounted) return { tab: true, mounted: false };
+          const body = document.getElementById('panel-body');
+          const input = body.querySelector('.term-input');
+          const info = await window.beeCode.appInfo();
+          const cfg = await window.beeCode.invoke('config.get', {});
+          const expected = (cfg && cfg.workspace && cfg.workspace.root) || info.workspace;
+          input.value = 'echo beecode-terminal';
+          body.querySelector('.term-form .btn.primary').click();
+          const ran = await waitFor(
+            () => Array.from(body.querySelectorAll('.term-line')).some((n) =>
+              (n.textContent || '').includes('beecode-terminal')),
+            20000,
+          );
+          return {
+            tab: true,
+            mounted: true,
+            ranCommand: ran,
+            lines: body.querySelectorAll('.term-line').length,
+            where: body.querySelector('.term-where')?.textContent || '',
+            insideWorkspace: (body.querySelector('.term-where')?.textContent || '') === expected,
+            status: body.querySelector('.term-status')?.textContent || '',
+          };
+        })().catch((err) => ({ error: String(err) })),
         errors: window.__rendererErrors ?? [],
         // Markdown + chart rendering, measured in the real sandboxed renderer.
         markdown: (() => {
@@ -504,6 +614,7 @@ async function runSmokeCheck(serviceReady: boolean): Promise<void> {
 
   quitting = true;
   browserHost?.dispose();
+  terminal.dispose();
   await supervisor.stop();
   app.exit(serviceReady && loaded && dom.bridge === true ? 0 : 1);
 }
@@ -526,6 +637,7 @@ app.on('before-quit', (event) => {
     globalShortcut.unregisterAll();
     browserHost?.dispose();
     pluginHostBridge?.closeViewers();
+    terminal.dispose();
     await supervisor?.stop();
     tray?.destroy();
     app.exit(0);

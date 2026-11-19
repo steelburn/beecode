@@ -554,8 +554,8 @@ export interface SkillReadResult {
 }
 
 /**
- * A skill dropped onto the Integrations panel: either the text of a `SKILL.md` or the
- * base64 of a ZIP that carries one or more skill folders.
+ * A skill to install: the text of a `SKILL.md`, the base64 of a ZIP that carries one or
+ * more skill folders, or an `https://` URL the service downloads and installs the same way.
  */
 export interface SkillInstallInput {
   fileName?: string;
@@ -563,6 +563,11 @@ export interface SkillInstallInput {
   text?: string;
   /** Base64 of a dropped `.zip` archive. */
   base64?: string;
+  /**
+   * `https://` URL of a `SKILL.md` or a skill `.zip`. The service downloads it and installs
+   * it exactly like a dropped file; `http://` is accepted for a loopback host only.
+   */
+  url?: string;
 }
 
 export interface SkillInstallResult {

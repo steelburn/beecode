@@ -257,6 +257,41 @@ is label-aware: `*.github.com` covers the apex and its subdomains, but not
 Tab count, home page and session persistence live in `config.json` under `browser`
 (`maxTabs`, `homeUrl`, `persistSession`, `showCursor`, `allowScripts`).
 
+## The Files panel
+
+The **Files** tab reads the workspace one folder at a time (the renderer never touches the
+filesystem — `fs.list` / `fs.readFile` go through the service). Markdown and HTML open
+**rendered**, everything else opens as source, and the Rendered / Source toggle in the
+preview header flips a file that can do both; plain text has no toggle, because rendered
+plain text is the same text.
+
+A preview is arbitrary workspace content, so the HTML is sanitised instead of trusted
+(`src/renderer/preview.ts`): scripting elements, inline handlers, `javascript:` /
+`vbscript:` / non-image `data:` URLs, CSS `expression()` and `url(`, and the document
+wrapper are dropped, while styles, tables, images and links survive. Markdown is rendered
+by the same code the chat transcript uses.
+
+## The workspace terminal
+
+The **Terminal** tab runs commands confined to the workspace: one at a time, always started
+with its working directory inside the workspace root.
+
+* The shell lives in the main process (`src/main/terminal.ts`); the renderer only draws the
+  scrollback and sends a line, so it stays a sandboxed page with no `require`.
+* Confinement is about *where a command starts*. `cd` is interpreted by the runner and
+  cannot climb above the root (an absolute path outside it is refused, as is `..`), but the
+  command itself runs with your account's rights — exactly like a normal shell.
+* Output is pushed back over IPC (`beecode:terminal-update`), because a command keeps
+  producing lines after the invoke has answered. The scrollback is capped at 4000 lines /
+  400 KB.
+* **Stop** kills the process tree (`taskkill /T /F` on Windows), **Clear** drops the
+  scrollback and keeps the working directory, and `↑` / `↓` walk the last 50 commands.
+* Nothing here is an agent tool: the terminal is IPC-only, not a renderer RPC method, so the
+  agent can ask for a shell command but cannot reach this surface.
+
+When the configured workspace root changes, the runner re-confines itself to the new root
+and drops the old scrollback.
+
 ## Modes
 
 | Mode | Behaviour |

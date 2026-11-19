@@ -1,5 +1,12 @@
 import type { FsFile, FsListing } from '../shared/protocol';
-import { clear, h } from './dom';
+import { clear, h, renderMarkdown } from './dom';
+import {
+  canSwitchView,
+  defaultView,
+  fileKind,
+  sanitizeHtml,
+  type FileView,
+} from './preview';
 
 /**
  * The workspace explorer: a read-only view of the folders under the workspace root.
@@ -15,6 +22,8 @@ export interface ExplorerState {
   listing?: FsListing;
   /** Previewed file, if the user opened one. */
   file?: FsFile;
+  /** Rendered or raw text; left out means the file kind's default view. */
+  view?: FileView;
   /** Last failure, shown in place of the listing. */
   error?: string;
 }
@@ -26,6 +35,8 @@ export interface ExplorerCallbacks {
   preview: (path: string) => void;
   /** Close the preview and keep the listing. */
   close: () => void;
+  /** Switch the preview between the rendered view and the raw source. */
+  setView: (view: FileView) => void;
 }
 
 export function renderExplorer(host: HTMLElement, state: ExplorerState, cb: ExplorerCallbacks): void {
@@ -101,16 +112,30 @@ export function renderExplorer(host: HTMLElement, state: ExplorerState, cb: Expl
     card.append(list);
   }
 
-  if (state.file) card.append(renderPreview(state.file, cb));
+  if (state.file) card.append(renderPreview(state.file, state, cb));
   host.append(card);
 }
 
-function renderPreview(file: FsFile, cb: ExplorerCallbacks): HTMLElement {
+/*
+ * Markdown and HTML open rendered and can be flipped to the raw source; every other file
+ * only ever has a source view, so no switch is offered. HTML goes through `sanitizeHtml`
+ * first — see preview.ts for exactly what that removes.
+ */
+function renderPreview(file: FsFile, state: ExplorerState, cb: ExplorerCallbacks): HTMLElement {
+  const kind = fileKind(file.name);
+  const view = file.binary ? 'source' : (state.view ?? defaultView(kind));
   const body = h('div', { class: 'explorer-preview-body' });
   if (file.binary) {
     body.append(h('div', { class: 'explorer-empty', text: 'Binary file — no text preview.' }));
   } else {
-    body.append(h('pre', { class: 'explorer-code', text: file.text }));
+    body.append(
+      view === 'source' || kind === 'text'
+        ? h('pre', { class: 'explorer-code', text: file.text })
+        : h('div', {
+            class: `explorer-rendered${kind === 'html' ? ' html' : ''}`,
+            html: kind === 'html' ? sanitizeHtml(file.text) : renderMarkdown(file.text),
+          }),
+    );
   }
   return h(
     'div',
@@ -120,6 +145,21 @@ function renderPreview(file: FsFile, cb: ExplorerCallbacks): HTMLElement {
       { class: 'explorer-head' },
       h('div', { class: 'card-title', text: file.name, title: file.path }),
       h('span', { class: 'explorer-size', text: formatBytes(file.size) }),
+      canSwitchView(kind) && !file.binary
+        ? h(
+            'div',
+            { class: 'explorer-viewtoggle', role: 'group', title: 'View mode' },
+            ...(['rendered', 'source'] as FileView[]).map((mode) =>
+              h('button', {
+                class: `btn ghost small${mode === view ? ' active' : ''}`,
+                type: 'button',
+                text: mode === 'rendered' ? 'Rendered' : 'Source',
+                title: mode === 'rendered' ? 'Show the rendered file' : 'Show the raw text',
+                on: { click: () => cb.setView(mode) },
+              }),
+            ),
+          )
+        : null,
       h('button', {
         class: 'btn ghost small',
         type: 'button',

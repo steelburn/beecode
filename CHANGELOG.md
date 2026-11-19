@@ -6,6 +6,20 @@ All notable changes to beeCode will be documented in this file.
 
 ### Added
 
+- **Rendered Markdown and HTML in the Files preview.** The preview was plain text, so a
+  `README.md` or a generated HTML report read as markup. The Files panel now has a
+  **Rendered / Source** switch: Markdown goes through the transcript renderer (headings,
+  lists, tables), HTML through a sanitiser that drops scripting blocks, `on*` handlers,
+  `javascript:` URLs and `expression()` styles while keeping inline CSS, tables, images and
+  links — so a report looks like a report without the app trusting it. Plain text keeps its
+  source view and gets no switch (`src/renderer/preview.ts`, `src/renderer/explorer.ts`).
+- **Workspace terminal.** A new **Terminal** panel tab runs shell commands from the app,
+  confined to the workspace: the working directory can never leave the root (`cd ..` at the
+  root is refused, so is an absolute path outside it, and switching workspace re-confines
+  the session), output is capped at 4000 lines / 400 KB, and **Stop** kills the process
+  tree. The main process owns the shell and streams scrollback to the renderer over IPC;
+  the terminal is not an RPC method, so no agent can reach it
+  (`src/main/terminal.ts`, `src/shared/terminal.ts`, `src/renderer/terminal.ts`).
 - **Install a skill by dropping it on the Skills card.** Adding a skill meant creating
   `~/.beecode/skills/<name>/SKILL.md` by hand and restarting. The Skills card is now a drop
   target: drop a `SKILL.md` (written to `~/.beecode/skills/<name>/SKILL.md`) or a `.zip` —
@@ -16,6 +30,14 @@ All notable changes to beeCode will be documented in this file.
   the skills folder, archives over 5 MB and corrupt files are refused with a message instead
   of a half-installed skill (`src/service/skills/zip.ts`, `src/service/skills/install.ts`,
   `src/renderer/panels.ts`).
+- **Install a skill from a URL.** The Skills card now takes an `https://` link as well as
+  a dropped file: **Install from URL** next to the drop zone downloads a `SKILL.md` or a
+  skill `.zip` and installs it through the same path, so the layout under
+  `~/.beecode/skills` is identical either way. The service fetches it (20 s timeout, 5 MB
+  cap, redirects followed by hand so every hop is re-checked and a downgrade is refused,
+  `http://` only for a loopback host so a skill in a local checkout can be tried), rejects
+  a payload that is neither a ZIP nor text, and reports the HTTP status it got
+  (`src/service/skills/download.ts`, `src/service/skills/install.ts`).
 - **One-click step-limit bump.** Running out of steps was a dead end: the note told you to
   raise `agent.maxSteps` "in settings" and stopped there. It now carries the fix — a **Raise
   step limit to N** button (24 → 48, capped at 400) that saves the higher limit through the

@@ -100,6 +100,23 @@ const silentOk =
   silent.navigated === true &&
   silent.guarded === true;
 
+// Files panel view modes (Markdown/HTML rendered vs source) and the workspace terminal
+// must work through the real UI, not just exist as code.
+const preview = report.dom?.preview ?? {};
+const previewOk =
+  preview.tab === true &&
+  preview.listing === true &&
+  preview.markdownRendered === true &&
+  preview.toggle === true &&
+  preview.markdownSource === true;
+
+const terminal = report.dom?.terminal ?? {};
+const terminalOk =
+  terminal.tab === true &&
+  terminal.mounted === true &&
+  terminal.ranCommand === true &&
+  terminal.insideWorkspace === true;
+
 const ok =
   report.serviceReady === true &&
   report.dom?.bridge === true &&
@@ -108,11 +125,15 @@ const ok =
   integrationsOk &&
   pluginsOk &&
   composerOk &&
-  silentOk;
+  silentOk &&
+  previewOk &&
+  terminalOk;
 if (!markdownOk) console.error(`[smoke] markdown/chart render check failed: ${JSON.stringify(rendered)}`);
 if (!integrationsOk) console.error(`[smoke] integrations panel check failed: ${JSON.stringify(integrations)}`);
 if (!pluginsOk) console.error(`[smoke] plugins card check failed: ${JSON.stringify(integrations)}`);
 if (!silentOk) console.error(`[smoke] silent browser drive check failed: ${JSON.stringify(silent)}`);
+if (!previewOk) console.error(`[smoke] files preview check failed: ${JSON.stringify(preview)}`);
+if (!terminalOk) console.error(`[smoke] terminal check failed: ${JSON.stringify(terminal)}`);
 if (!composerOk) {
   console.error(
     `[smoke] composer visibility check failed: ${JSON.stringify({

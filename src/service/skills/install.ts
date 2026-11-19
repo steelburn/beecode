@@ -2,6 +2,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { SkillInstallInput } from '../../shared/protocol';
 import { beeCodeHome } from '../../shared/tools';
+import { downloadSkill } from './download';
 import { slug } from './store';
 import { readZip } from './zip';
 
@@ -70,6 +71,17 @@ function cleanName(name: string): string | undefined {
 export async function installSkills(input: SkillInstallInput): Promise<{ installed: string[] }> {
   const root = join(beeCodeHome(), 'skills');
   const installed: string[] = [];
+
+  // A URL install is downloaded first and then handed to the same code a dropped file
+  // takes, so naming, validation and the /skills/<slug>/ layout cannot drift apart.
+  if (typeof input.url === 'string' && input.url.trim() && !input.text && !input.base64) {
+    const artifact = await downloadSkill(input.url.trim());
+    return installSkills(
+      artifact.zip
+        ? { fileName: artifact.fileName, base64: artifact.data.toString('base64') }
+        : { fileName: artifact.fileName, text: artifact.data.toString('utf8') },
+    );
+  }
 
   if (typeof input.text === 'string' && input.text.trim()) {
     if (Buffer.byteLength(input.text) > MAX_INSTALL_BYTES) throw new Error('that skill file is too large');

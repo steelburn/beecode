@@ -1,4 +1,5 @@
 import type { BrowserPanelApi } from './browser';
+import type { TerminalApi } from './terminal';
 import type {
   BeeCodeConfig,
   PolicyDocument,
@@ -101,4 +102,10 @@ export interface BeeCodeBridge {
    * process, so the renderer only reserves space for it and mirrors its state.
    */
   browser: BrowserPanelApi;
+
+  /**
+   * The workspace terminal. Unlike the browser view it lives entirely in the main process
+   * and streams its scrollback back over IPC; the renderer only renders it.
+   */
+  terminal: TerminalApi;
 }

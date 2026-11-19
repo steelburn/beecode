@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import type { BrowserState } from '../shared/browser';
 import type { BeeCodeBridge, ServiceStatusPayload } from '../shared/bridge';
+import type { TerminalState } from '../shared/terminal';
 import type { RpcMethod, RpcRequests, ServiceEvent } from '../shared/protocol';
 
 /**
@@ -53,6 +54,24 @@ const bridge: BeeCodeBridge = {
       const handler = (_e: unknown, state: BrowserState) => listener(state);
       ipcRenderer.on('beecode:browser-state', handler);
       return () => ipcRenderer.removeListener('beecode:browser-state', handler);
+    },
+  },
+
+  // The terminal is a main-process command runner: fire a command, then follow the state
+  // it pushes back. Nothing is spawned from here — the renderer is sandboxed.
+  terminal: {
+    state: () => ipcRenderer.invoke('beecode:terminal-state'),
+
+    run: (command: string) => ipcRenderer.invoke('beecode:terminal-run', command),
+
+    cancel: () => ipcRenderer.invoke('beecode:terminal-cancel'),
+
+    clear: () => ipcRenderer.invoke('beecode:terminal-clear'),
+
+    onState: (listener: (state: TerminalState) => void) => {
+      const handler = (_e: unknown, state: TerminalState) => listener(state);
+      ipcRenderer.on('beecode:terminal-update', handler);
+      return () => ipcRenderer.removeListener('beecode:terminal-update', handler);
     },
   },
 };

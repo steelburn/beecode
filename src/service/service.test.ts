@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm, writeFile, mkdir } from 'node:fs/promises';
+import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { AddressInfo } from 'node:net';
 import { test } from 'node:test';
 import type { FsFile, FsListing, McpListResult, SkillInstallResult, SkillListResult, SkillReadResult } from '../shared/protocol';
 
@@ -204,6 +206,42 @@ test('background service answers JSON-RPC over loopback HTTP', async () => {
 
     const notAZip = await rpc('skill.install', { fileName: 'broken.zip', base64: 'bm90IGEgemlw' });
     assert.ok(notAZip.error, 'a corrupt archive is refused instead of half installed');
+
+    // Installing from a URL: the service downloads the artifact itself, so a link behaves
+    // exactly like a dropped file — and a URL it refuses to fetch fails up front.
+    const served = createServer((request, response) => {
+      if (request.url === '/remote/SKILL.md') {
+        response.setHeader('content-type', 'text/markdown');
+        response.end('---\nname: from-url\ndescription: Installed from a URL.\n---\nFetch it.');
+        return;
+      }
+      if (request.url === '/remote/pack.zip') {
+        response.setHeader('content-type', 'application/zip');
+        response.end(zipOf({ 'pack/SKILL.md': '---\nname: url-pack\ndescription: Zip from a URL.\n---\nUnpack me.' }));
+        return;
+      }
+      response.statusCode = 404;
+      response.end('missing');
+    });
+    await new Promise<void>((resolve) => served.listen(0, '127.0.0.1', resolve));
+    const origin = 'http://127.0.0.1:' + (served.address() as AddressInfo).port;
+    try {
+      const fromUrl = (await rpc('skill.install', { url: origin + '/remote/SKILL.md' })).result as SkillInstallResult;
+      assert.deepEqual(fromUrl.installed, ['from-url']);
+      assert.match(
+        await readFile(join(home, 'skills', 'from-url', 'SKILL.md'), 'utf8'),
+        /Fetch it/,
+      );
+      const zipFromUrl = (await rpc('skill.install', { url: origin + '/remote/pack.zip' })).result as SkillInstallResult;
+      assert.deepEqual(zipFromUrl.installed, ['url-pack']);
+
+      const plainHttp = await rpc('skill.install', { url: 'http://example.com/SKILL.md' });
+      assert.match(plainHttp.error?.message ?? '', /only https/);
+      const missing = await rpc('skill.install', { url: origin + '/remote/nope.md' });
+      assert.match(missing.error?.message ?? '', /HTTP 404/);
+    } finally {
+      await new Promise<void>((resolve) => served.close(() => resolve()));
+    }
 
     // Workspace explorer: the renderer gets the tree from the service, so the listing has to
     // describe folders and files and every path has to stay inside the roots.

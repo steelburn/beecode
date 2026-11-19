@@ -4,9 +4,12 @@ import { RENDERER_METHODS, type AppInfo, type ServiceStatusPayload } from '../sh
 import type { BeeCodeConfig, PolicyDocument, RpcMethod, RpcRequests } from '../shared/protocol';
 import { beeCodeHome } from '../shared/tools';
 import type { ServiceSupervisor } from './serviceSupervisor';
+import type { WorkspaceTerminal } from './terminal';
 
 export interface IpcDeps {
   supervisor: ServiceSupervisor;
+  /** The one workspace terminal the renderer drives; it owns the child process. */
+  terminal: WorkspaceTerminal;
   getWindow: () => BrowserWindow | null;
   workspace: string;
   restartService: () => Promise<{ ok: boolean }>;
@@ -105,6 +108,16 @@ export function pipeServiceEvents(deps: IpcDeps): void {
     const win = deps.getWindow();
     if (win && !win.isDestroyed()) win.webContents.send('beecode:event', event);
   });
+
+  // Terminal: one command at a time, always started inside the workspace root. Output is
+  // pushed back over `beecode:terminal-update` rather than returned here, because a command
+  // keeps producing lines long after the invoke has answered.
+  ipcMain.handle('beecode:terminal-state', () => deps.terminal.state);
+  ipcMain.handle('beecode:terminal-run', (_event, line: unknown) =>
+    deps.terminal.run(typeof line === 'string' ? line : ''),
+  );
+  ipcMain.handle('beecode:terminal-cancel', () => deps.terminal.cancel());
+  ipcMain.handle('beecode:terminal-clear', () => deps.terminal.clear());
 
   deps.supervisor.on('status', (status: string) => {
     const win = deps.getWindow();

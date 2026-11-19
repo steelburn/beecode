@@ -506,6 +506,7 @@ export class BeeCodeService {
         const cwd = this.skillsCwd(args);
         const result = await installSkills({
           fileName: typeof args.fileName === 'string' ? args.fileName : undefined,
+          url: typeof args.url === 'string' ? args.url.trim() || undefined : undefined,
           text: typeof args.text === 'string' ? args.text : undefined,
           base64: typeof args.base64 === 'string' ? args.base64 : undefined,
         });

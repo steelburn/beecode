@@ -22,7 +22,7 @@ renderer (sandboxed)  →  main (Node, full API)  →  service (child process, n
   parser and the SVG builder are DOM-free, so `chart.test.ts` runs them in plain node.
 * Its entire capability surface is `window.beeCode` (`src/shared/bridge.ts`): a typed RPC
   proxy, four config/policy helpers, a directory picker, an `https`-only link opener and
-  two event subscriptions.
+  event subscriptions, and two panel APIs (the browser view and the workspace terminal).
 
 ### 2. Main — the host
 
@@ -131,6 +131,30 @@ and audits each spawn.
   workspace, caps output, honours abort, 15-minute default timeout.
 
 Depth > 2 is refused, and a subagent's toolset contains no delegating tools.
+
+## Files preview and the workspace terminal
+
+Two renderer surfaces reach outside the sandbox in a narrow, explicit way.
+
+**The Files panel** (`src/renderer/explorer.ts`) reads the workspace through the service
+(`fs.list`, `fs.readFile`) one folder and one file at a time. Markdown and HTML open
+rendered; the preview header carries a Rendered / Source toggle for the files that can do
+both. The HTML path is sanitised in the renderer (`src/renderer/preview.ts`) rather than
+trusted: scripting elements, inline handlers, `javascript:` / `vbscript:` / non-image
+`data:` URLs, CSS `expression()` and `url()` and the document wrapper are stripped, while
+styles, tables, images and links survive. `preview.test.ts` covers the classification and
+the sanitiser.
+
+**The terminal** (`src/main/terminal.ts` + `src/renderer/terminal.ts`) is a command runner
+that lives in the main process and is exposed as IPC channels (`beecode:terminal-*`), not as
+a renderer RPC method — the agent cannot reach it and nothing is added to
+`RENDERER_METHODS`. Each command is a one-shot shell invocation (`cmd.exe /d /s /c` on
+Windows, `/bin/sh -c` elsewhere) with a working directory pinned inside the workspace root;
+`cd` is interpreted by the runner and cannot climb above that root. Confinement is about
+where a command *starts*: the child still runs with the user's own rights, like any
+terminal. Output is pushed back over `beecode:terminal-update` and capped at 4000 lines /
+400 KB; Stop kills the process tree and Clear empties the scrollback. When the configured
+workspace root changes, the runner re-confines (`setRoot`) and drops the old scrollback.
 
 ## MCP servers and skills
 
