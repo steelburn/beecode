@@ -3,6 +3,7 @@ import type {
   BrowserConfig,
   McpServerConfig,
   ModelPreset,
+  PluginsConfig,
   PolicyDocument,
   SkillsConfig,
 } from './protocol';
@@ -63,6 +64,7 @@ export function defaultConfig(): BeeCodeConfig {
     service: { httpPort: 4870, autoStart: true },
     mcpServers: {},
     skills: { enabled: true, dirs: [], maxBytes: 65_536 },
+    plugins: { enabled: true, allowExternal: true, dirs: [], disabled: [] },
     agent: {
       defaultMode: 'ask',
       maxSteps: 24,
@@ -335,5 +337,34 @@ export function normalizeSkills(input: Partial<SkillsConfig> | undefined, fallba
       typeof input?.maxBytes === 'number' && input.maxBytes > 0
         ? Math.round(input.maxBytes)
         : fallback.maxBytes,
+  };
+}
+
+/* ----------------------------------------------------------------- plugins */
+
+export function normalizePlugins(
+  input: Partial<PluginsConfig> | undefined,
+  fallback: PluginsConfig,
+): PluginsConfig {
+  const source = input ?? {};
+  const dirs = Array.isArray(source.dirs)
+    ? source.dirs
+        .filter((dir): dir is string => typeof dir === 'string' && dir.trim().length > 0)
+        .map((dir) => dir.trim())
+    : fallback.dirs;
+  const disabled = Array.isArray(source.disabled)
+    ? [
+        ...new Set(
+          source.disabled
+            .filter((id): id is string => typeof id === 'string' && id.trim().length > 0)
+            .map((id) => id.trim().toLowerCase()),
+        ),
+      ]
+    : fallback.disabled;
+  return {
+    enabled: typeof source.enabled === 'boolean' ? source.enabled : fallback.enabled,
+    allowExternal: typeof source.allowExternal === 'boolean' ? source.allowExternal : fallback.allowExternal,
+    dirs,
+    disabled,
   };
 }

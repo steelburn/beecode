@@ -12,6 +12,8 @@ import type {
 } from '../shared/protocol';
 import type { HostCall } from '../shared/browser';
 import { paths } from '../shared/tools';
+import { BUILTIN_PLUGINS } from '../plugins/builtin';
+import { PluginHost } from '../plugins/host';
 import { AuditLog } from './audit';
 import { BrowserController } from './browser/controller';
 import { DesktopController } from './desktop/controller';
@@ -60,6 +62,7 @@ export class BeeCodeService {
   private registry!: ToolRegistry;
   private skills!: SkillStore;
   private mcp!: McpManager;
+  private plugins!: PluginHost;
   private deps!: ToolDeps;
   private subagentRegistry!: ToolRegistry;
   private listeners = new Set<(event: ServiceEvent) => void>();
@@ -124,6 +127,19 @@ export class BeeCodeService {
     this.mcp = new McpManager({ servers: () => this.config.mcpServers ?? {}, log: this.log });
     await this.mcp.start();
     await this.scanSkills(this.config.agent.workingDir);
+
+    // Plugins contribute tools exactly like MCP servers do, so they are activated here —
+    // before the registries are built — and reloaded whenever the plugin config changes.
+    this.plugins = new PluginHost({
+      plugins: () => this.config.plugins ?? { enabled: true, allowExternal: true, dirs: [], disabled: [] },
+      builtins: BUILTIN_PLUGINS,
+      log: this.log,
+      policy: () => this.policy,
+      audit: () => this.audit,
+      hostCall: () => this.hostCall,
+      reservedNames: () => this.registry?.names() ?? [],
+    });
+    await this.plugins.start();
 
     this.deps = {
       controller: this.desktop,
@@ -269,6 +285,28 @@ export class BeeCodeService {
       case 'service.health':
         return this.health();
 
+      case 'plugin.list':
+        return { plugins: this.plugins.info() };
+
+      case 'plugin.reload':
+        await this.plugins.reload();
+        this.rebuildRegistries();
+        return { plugins: this.plugins.info() };
+
+      case 'plugin.setEnabled': {
+        const id = typeof args.id === 'string' ? args.id : '';
+        if (!id) throw new Error('plugins.setEnabled needs an id');
+        const enabled = args.enabled === true;
+        await this.plugins.setEnabled(id, enabled);
+        const disabled = new Set(this.config.plugins.disabled);
+        if (enabled) disabled.delete(id);
+        else disabled.add(id);
+        this.config.plugins.disabled = [...disabled];
+        await writeJsonFile(paths().config, this.config);
+        this.rebuildRegistries();
+        return { plugins: this.plugins.info() };
+      }
+
       case 'service.shutdown':
         this.stopping = true;
         setImmediate(() => void this.shutdown());
@@ -386,6 +424,7 @@ export class BeeCodeService {
           }),
         };
         const previousMcp = JSON.stringify(this.config.mcpServers ?? {});
+        const previousPlugins = JSON.stringify(this.config.plugins ?? {});
         this.config = this.mergeConfig(normalizeConfig(sanitized, { strict: true }));
         // Drop secrets for presets the normalizer rejected or the user removed.
         this.secrets.prune(this.config.models.map((preset) => preset.id));
@@ -397,6 +436,10 @@ export class BeeCodeService {
         // fails to start is reported in its status — it never fails the save.
         if (JSON.stringify(this.config.mcpServers ?? {}) !== previousMcp) {
           await this.mcp.reload();
+          this.rebuildRegistries();
+        }
+        if (JSON.stringify(this.config.plugins ?? {}) !== previousPlugins) {
+          await this.plugins.reload();
           this.rebuildRegistries();
         }
         this.emit({ type: 'service.health', payload: this.health() });

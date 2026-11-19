@@ -167,9 +167,49 @@ export interface BrowserExecResult {
   error?: string;
 }
 
+/* ------------------------------------------------------------- plugin host */
+
+export interface PdfOpenParams {
+  /** Absolute path to the PDF. */
+  path: string;
+  /** 1-based page to jump to. */
+  page?: number;
+  title?: string;
+}
+
+export interface PdfOpenResult {
+  ok: boolean;
+  path: string;
+  title?: string;
+  error?: string;
+}
+
+export type PdfPageSize = 'A3' | 'A4' | 'A5' | 'Letter' | 'Legal' | 'Tabloid';
+
+export interface PdfRenderParams {
+  /** Absolute output path; the host writes the PDF there. */
+  path: string;
+  /** Complete HTML document to print. */
+  html: string;
+  pageSize?: PdfPageSize;
+  landscape?: boolean;
+  /** Print background colours and images. Default true — reports shade table headers. */
+  background?: boolean;
+  marginsMm?: { top?: number; right?: number; bottom?: number; left?: number };
+}
+
+export interface PdfRenderResult {
+  ok: boolean;
+  path: string;
+  bytes?: number;
+  error?: string;
+}
+
 /** Service → main requests. Keys are JSON-RPC method names. */
 export interface HostRequests {
   'browser/exec': { params: BrowserExecParams; result: BrowserExecResult };
+  'pdf/open': { params: PdfOpenParams; result: PdfOpenResult };
+  'pdf/render': { params: PdfRenderParams; result: PdfRenderResult };
 }
 
 export type HostMethod = keyof HostRequests;

@@ -71,6 +71,9 @@ If Electron starts as plain Node, `ELECTRON_RUN_AS_NODE` is leaking from the she
 | Browser controller + tools | `src/service/browser/controller.ts`, `src/service/tools/browser.ts` |
 | Browser dock (chrome + bounds reporting) | `src/renderer/browserDock.ts` |
 | Service wiring | `src/service/service.ts` |
+| Plugin contract + host (discovery, permissions, tool wrapping) | `src/plugins/types.ts`, `src/plugins/host.ts` |
+| Bundled starter plugins (PDF viewer, PDF generator, Excel export) | `src/plugins/builtin/*.ts` |
+| Host methods plugins may call (PDF open/render) | `src/main/pluginHost.ts` |
 | IPC allow-list | `src/main/ipc.ts` |
 
 ## Internal browser
@@ -104,6 +107,28 @@ rather than around it:
 The service never imports the host: it sends `browser/exec` over the same stdio pipe in
 the reverse direction (`HostCall`) and the main process answers it.
 
+## Plugins
+
+`src/plugins` is a third extension point beside MCP servers and skills: an in-process
+CommonJS module that contributes tools. The starters live in `src/plugins/builtin/`
+(`pdf_open`, `pdf_generate`, `excel_export`); user plugins load from
+`~/.beecode/plugins/<id>/` (`plugin.json` plus the `main` it names, no build step).
+Full contract and config: [docs/plugins.md](docs/plugins.md).
+
+- **`types.ts` stays import-free.** External plugins load that contract as plain JS, so it
+  may import types only — never Electron or the service.
+- **Capability arrives through the manifest.** `api.fs.*` and `api.host.call()` re-check
+  the declared permission on every call and throw in-band when it is missing;
+  `normalizeManifest` drops unknown permissions, so a typo narrows access. Never widen a
+  check inside `PluginHost` to make a starter work.
+- **File access is not a bypass.** `api.fs` runs the same `PolicyEngine.evaluateFile` as
+  `read_file`/`write_file`, and host calls are audited as action `plugin`.
+- **A plugin may not take the loop down.** Bad manifests, a throwing `activate`, duplicate
+  tool names and handler exceptions become an `error` on `PluginInfo` or a failed tool
+  result — never an unhandled rejection at startup.
+- **Names cannot collide.** Plugin tools live in group `plugins`; `mcp__` is reserved and a
+  name already in the core catalogue is dropped with a warning, not shadowed.
+
 ## Recipes
 
 **Add a tool.** Create the `ToolDefinition` in the right `src/service/tools/*.ts` file
@@ -128,6 +153,12 @@ CDP helpers and move the cursor first — never `executeJavaScript` a synthetic 
 **Change the protocol.** Update `RpcRequests`/`ServiceEvent` in `protocol.ts`, the dispatch
 in `service.ts`, the IPC allow-list in `src/shared/bridge.ts` if the renderer needs it, then
 the renderer handler. Bump `PROTOCOL_VERSION` on breaking changes.
+
+**Add a plugin tool.** Prefer a plugin over a core tool when the capability is optional
+— a format, a converter, an integration. Put the `PluginDefinition` in
+`src/plugins/builtin/<name>.ts`, list it in `builtin/index.ts`, take everything outside
+the module from `api` (`fs`, `host.call`), declare each permission in the manifest and
+return `failResult(...)` instead of throwing. Give the tool a distinct prefix.
 
 ## Testing notes
 

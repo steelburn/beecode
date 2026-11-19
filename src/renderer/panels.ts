@@ -9,6 +9,7 @@ import type {
   ModelPreset,
   PolicyDocument,
   ProviderId,
+  PluginInfo,
   SkillInfo,
   SubagentRunInfo,
 } from '../shared/protocol';
@@ -23,6 +24,8 @@ export interface PanelCallbacks {
   refreshAudit(): Promise<void>;
   /** Re-read MCP servers and skills from the service after a reload. */
   reloadIntegrations?(): Promise<void>;
+  /** Enable or disable a plugin; the service rebuilds the tool catalogue. */
+  togglePlugin?(id: string, enabled: boolean): Promise<void>;
 }
 
 /* ---------------------------------------------------------------- permissions */
@@ -302,10 +305,70 @@ function renderAddApp(update: (mutate: (draft: PolicyDocument) => void) => void)
  * service normalizes it, reconnects and reports what actually came up. The panel renders
  * that report, so it cannot advertise a server or a tool the agent loop does not have.
  */
+function renderPluginsCard(plugins: PluginInfo[] | undefined, cb: PanelCallbacks): HTMLElement {
+  const card = h(
+    'div',
+    { class: 'card', style: 'margin-top:18px' },
+    h('h4', { text: 'Plugins' }),
+    h('p', {
+      class: 'sub',
+      text: 'Plugins add tools to the agent. The bundled starters cover PDF viewing, PDF generation and Excel export; drop your own into ~/.beecode/plugins, then reload.',
+    }),
+  );
+  if (!plugins) {
+    card.append(h('div', { class: 'empty', text: 'Loading plugins…' }));
+    return card;
+  }
+  if (!plugins.length) {
+    card.append(
+      h('div', {
+        class: 'empty',
+        text: 'No plugins loaded — plugins.enabled is off, or the plugin failed to activate.',
+      }),
+    );
+    return card;
+  }
+
+  for (const plugin of plugins) {
+    const button = h('button', { class: 'btn', text: plugin.enabled ? 'Disable' : 'Enable' });
+    button.addEventListener('click', () => {
+      if (!cb.togglePlugin) return;
+      button.disabled = true;
+      void cb.togglePlugin(plugin.id, !plugin.enabled).catch(() => {
+        button.disabled = false;
+      });
+    });
+
+    const body = h('div', { class: 'grow' });
+    const title = h('strong', {}, plugin.name, ' ', h('span', { class: 'badge', text: plugin.source }));
+    if (!plugin.enabled) title.append(' ', h('span', { class: 'badge', text: 'disabled' }));
+    if (plugin.error) title.append(' ', h('span', { class: 'badge', text: 'error' }));
+    body.append(title);
+    body.append(h('div', { class: 'sub', text: plugin.description || 'No description.' }));
+    body.append(
+      h('div', {
+        class: 'sub',
+        text: `v${plugin.version} · ${plugin.permissions.length ? plugin.permissions.join(', ') : 'no permissions'}`,
+      }),
+    );
+    body.append(
+      h('div', {
+        class: 'sub',
+        text: plugin.tools.length ? `tools: ${plugin.tools.map((tool) => tool.name).join(', ')}` : 'no tools',
+      }),
+    );
+    if (plugin.error) body.append(h('div', { class: 'sub', text: plugin.error }));
+    card.append(h('div', { class: 'row', style: 'align-items:flex-start;gap:12px' }, body, button));
+  }
+
+  return card;
+}
+
 export function renderIntegrations(
   host: HTMLElement,
   servers: McpServerStatus[] | undefined,
   skills: SkillInfo[] | undefined,
+  plugins: PluginInfo[] | undefined,
   config: BeeCodeConfig | undefined,
   cb: PanelCallbacks,
 ): void {
@@ -546,6 +609,8 @@ export function renderIntegrations(
     host.append(renderOrphan(status));
   }
   if (editable) host.append(renderAddServer());
+
+  host.append(renderPluginsCard(plugins, cb));
 
   host.append(
     h(

@@ -81,7 +81,7 @@ export function fileTools(deps: FileToolDeps): ToolDefinition[] {
         type: 'object',
         properties: {
           path: { type: 'string', description: 'File to read.' },
-          maxBytes: { type: 'number', description: 'Truncate after this many bytes (default 256000).' },
+          maxBytes: { type: 'number', description: 'Truncate after this many bytes (default 262144).' },
         },
         required: ['path'],
         additionalProperties: false,

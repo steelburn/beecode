@@ -8,6 +8,7 @@ import type { BrowserConfig } from '../shared/protocol';
 import { beeCodeHome } from '../shared/tools';
 import { BrowserHost } from './browser/host';
 import { pipeServiceEvents, registerIpc } from './ipc';
+import { createPluginHostBridge } from './pluginHost';
 import { ServiceSupervisor } from './serviceSupervisor';
 
 const isDev = process.env.NODE_ENV === 'development';
@@ -63,8 +64,10 @@ async function bootstrap(): Promise<void> {
   // The host is created before the IPC handlers so the renderer can drive the panel as
   // soon as it mounts, and it answers the service's host requests (the agent's browser tools).
   browserHost = createBrowserHost();
+  const pluginHostBridge = createPluginHostBridge();
   supervisor.setHostHandler(async (method, params) => {
     if (!browserHost) throw new Error('the internal browser is not available');
+    if (method === 'pdf/open' || method === 'pdf/render') return pluginHostBridge.exec(method, params);
     if (method === 'browser/exec') return browserHost.exec(params as BrowserExecParams);
     throw new Error(`unsupported host request: ${method}`);
   });

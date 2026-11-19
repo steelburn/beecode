@@ -69,16 +69,24 @@ const integrations = report.dom?.integrations ?? {};
 const integrationsOk =
   integrations.tab === true &&
   (integrations.headings ?? []).includes('MCP servers') &&
+  (integrations.headings ?? []).includes('Plugins') &&
   (integrations.headings ?? []).includes('Skills');
+
+// Every bundled plugin must reach the Plugins card as a row with its source badge, so a
+// starter that fails to load fails the smoke run instead of only the service log.
+const builtinBadges = (integrations.badges ?? []).filter((badge) => badge === 'builtin').length;
+const pluginsOk = builtinBadges >= 3;
 
 const ok =
   report.serviceReady === true &&
   report.dom?.bridge === true &&
   report.dom?.errors?.length === 0 &&
   markdownOk &&
-  integrationsOk;
+  integrationsOk &&
+  pluginsOk;
 if (!markdownOk) console.error(`[smoke] markdown/chart render check failed: ${JSON.stringify(rendered)}`);
 if (!integrationsOk) console.error(`[smoke] integrations panel check failed: ${JSON.stringify(integrations)}`);
+if (!pluginsOk) console.error(`[smoke] plugins card check failed: ${JSON.stringify(integrations)}`);
 if (!ok) {
   console.error('[smoke] FAILED: see the report above');
   process.exit(1);

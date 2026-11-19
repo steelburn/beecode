@@ -196,6 +196,34 @@ html, body {
 
 /* -------------------------------------------------------------- approval */
 
+.question-slot:empty { display: none; }
+
+.question {
+  border: 1px solid rgba(255, 196, 0, 0.4);
+  background: rgba(255, 196, 0, 0.06);
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin-bottom: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.question h3 { margin: 0; font-size: 13px; color: var(--amber); display: flex; align-items: center; gap: 8px; }
+.question .summary { margin: 0; font-size: 13.5px; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
+.question-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.question-actions .q-option {
+  font: inherit;
+  font-size: 12.5px;
+  padding: 5px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 196, 0, 0.45);
+  background: rgba(255, 196, 0, 0.1);
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+}
+.question-actions .q-option:hover { background: rgba(255, 196, 0, 0.22); }
+
 .approval-slot:empty { display: none; }
 
 .approval {

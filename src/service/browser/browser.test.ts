@@ -12,7 +12,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import type { HostCall } from '../../shared/browser';
+import type { BrowserExecParams, HostCall } from '../../shared/browser';
 import { defaultConfig, defaultPolicy } from '../../shared/defaults';
 import { POLICY_DOCUMENT_VERSION } from '../../shared/protocol';
 import type { BrowserConfig, PolicyDocument } from '../../shared/protocol';
@@ -173,8 +173,9 @@ test('controller: an interaction is judged against the page the tab is on', asyn
   try {
     const seen: string[] = [];
     const host: HostCall = async (_method, params) => {
-      seen.push(params.action);
-      return params.action === 'tabs'
+      const exec = params as BrowserExecParams;
+      seen.push(exec.action);
+      return exec.action === 'tabs'
         ? {
             ok: true,
             action: 'tabs',
@@ -185,7 +186,7 @@ test('controller: an interaction is judged against the page the tab is on', asyn
               cursor: { enabled: true },
             },
           }
-        : { ok: true, action: params.action };
+        : { ok: true, action: exec.action };
     };
     const controller = new BrowserController({
       policy: browserOn((browser) => {

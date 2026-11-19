@@ -59,8 +59,14 @@ in the **Settings** panel (see below) or in `~/.beecode/config.json`.
 
 ## Extending it
 
-Two extension points need no code:
+Three extension points sit beside the built-in tools:
 
+- **Plugins** — bundled starters plus any folder you drop into `~/.beecode/plugins/`: a
+  `plugin.json` manifest and a CommonJS module, no build step. A plugin adds tools and
+  reaches the outside world only through the permissions its manifest declares. Three ship
+  with the app — a PDF viewer (`pdf_open`), a Markdown/HTML → PDF generator
+  (`pdf_generate`) and an Excel exporter (`excel_export`) — and every plugin can be
+  enabled or disabled in the **Plugins** card of the **MCP & skills** panel.
 - **MCP servers** — point `mcpServers` in `~/.beecode/config.json` at any Model Context
   Protocol server (stdio or streamable HTTP); its tools appear as `mcp__<server>__<tool>`
   and go through the approval card unless the server marks them read-only. Servers can also
@@ -69,8 +75,9 @@ Two extension points need no code:
   `.beecode/skills/` in the workspace). The agent sees its name and description, and loads
   the instructions with the `skill` tool only when the task matches.
 
-See [docs/mcp-and-skills.md](docs/mcp-and-skills.md) for the config shape and the RPC
-surface.
+See [docs/plugins.md](docs/plugins.md) for the plugin contract, permissions and host
+methods, and [docs/mcp-and-skills.md](docs/mcp-and-skills.md) for the MCP and skill config
+shape.
 
 ## Settings
 
@@ -295,6 +302,7 @@ src/
     desktop/     driver interface, Windows PowerShell/UIA driver, mock driver, controller
     subagents/   runner + CLI adapters
     transports/  stdio JSON-RPC and loopback HTTP/SSE
+  plugins/   plugin contract, host (discovery + permissions) and bundled starters
   shared/    protocol types, policy/config shapes, defaults, preload bridge contract
 ```
 

@@ -6,6 +6,8 @@ import { readJsonFile, writeJsonFile } from './logger';
 
 export type TodoStatus = 'pending' | 'in_progress' | 'completed';
 
+const TODO_STATUSES: ReadonlySet<string> = new Set(['pending', 'in_progress', 'completed']);
+
 export interface TodoItem {
   id: string;
   content: string;
@@ -29,7 +31,7 @@ export class TodoStore {
       .map((i, idx) => ({
         id: `t${idx + 1}`,
         content: String(i.content).slice(0, 500),
-        status: (i.status ?? 'pending') as TodoStatus,
+        status: TODO_STATUSES.has(i.status ?? '') ? (i.status as TodoStatus) : 'pending',
       }));
     this.bySession.set(sessionId, next);
     return next;

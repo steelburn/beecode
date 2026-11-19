@@ -5,6 +5,22 @@ All notable changes to beeCode will be documented in this file.
 ## [0.1.0]
 
 ### Added
+- **Plugins.** A third extension point beside MCP servers and skills: an in-process
+  CommonJS module that contributes tools, loaded from `~/.beecode/plugins/<id>/` with no
+  build step. Every capability is declared in the manifest — `files:read`, `files:write`,
+  `pdf:view`, `pdf:render` — and re-checked on each call, file access runs through the same
+  policy engine as the built-in file tools, and host calls are audited as action `plugin`.
+  Bad manifests, a throwing `activate` or a failing handler degrade to an error on the
+  plugin or a failed tool result, never a crashed service. Managed from the new
+  **Plugins** card in the **MCP & skills** panel (or `plugin.list` / `plugin.setEnabled` /
+  `plugin.reload`). Three starters ship with it:
+  - **PDF viewer** (`pdf_open`) — shows a PDF in an internal viewer window, reused per
+    file, optionally at a page.
+  - **PDF generator** (`pdf_generate`) — Markdown or HTML to PDF through Chromium
+    `printToPDF`, with paper size, landscape, background printing and margins.
+  - **Excel export** (`excel_export`) — rows (arrays or objects) or a CSV/TSV string to a
+    real `.xlsx`: OOXML written by hand, frozen bold header, column widths, zero
+    dependencies; a `.csv` target falls back to delimited text.
 - **Internal browser.** The agent can browse the web in a window it drives itself, with a
   visible AI cursor it moves to each target before acting. Each tab is a sandboxed
   `WebContentsView` in a dedicated in-memory session — permission requests, downloads,
@@ -110,6 +126,17 @@ All notable changes to beeCode will be documented in this file.
   keystrokes delivered and no fallback to whatever currently has focus.
 - `desktop_list_windows` builds its filtered and unfiltered results from a single enumeration, so
   the filtered set is always a subset of the unfiltered one at the same instant.
+- **`ask_user` actually asks.** The question a tool returns lived in its result metadata, and
+  the metadata was dropped at the protocol boundary: the turn ended correctly and the composer
+  re-enabled, but nothing was ever shown — a silent dead end. `tool.result` now carries an
+  optional `meta` that `AgentLoop` forwards, and the renderer shows the question as a card
+  above the composer whose options are buttons (one click sends the reply) while a typed
+  answer still works and a hint line says the turn is blocked on the user.
+  `src/service/askUser.test.ts` asserts the question and its options reach the event stream.
+- `todo_write` no longer stores an unrecognised status verbatim: an invalid value falls back to
+  `pending` instead of entering the session state as-is and rendering as an unknown class.
+- `fs_read`'s `maxBytes` schema default is now the value the handler enforces (262144), so the
+  model is told the real truncation limit.
 
 ### Changed
 - **Policy scoping follows the session, not the process.** `PolicyEngine.evaluateFile` takes

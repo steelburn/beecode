@@ -7,6 +7,7 @@ import type {
   PolicyDocument,
   SessionSnapshot,
   SessionSummary,
+  PluginInfo,
   SkillInfo,
   McpServerStatus,
   SubagentRunInfo,
@@ -141,6 +142,8 @@ interface State {
   lastCwd?: string;
   entries: TranscriptEntry[];
   approval?: ApprovalRequest;
+  /** Pending `ask_user` question, shown above the composer until answered. */
+  question?: PendingQuestion;
   policy?: PolicyDocument;
   config?: BeeCodeConfig;
   audit: AuditEntry[];
@@ -149,8 +152,14 @@ interface State {
   tools: ToolInfo[];
   mcpServers: McpServerStatus[];
   skills: SkillInfo[];
+  plugins: PluginInfo[];
   panel: PanelTab;
   ready: boolean;
+}
+
+interface PendingQuestion {
+  question: string;
+  options: string[];
 }
 
 const state: State = {
@@ -163,6 +172,7 @@ const state: State = {
   tools: [],
   mcpServers: [],
   skills: [],
+  plugins: [],
   panel: 'permissions',
   ready: false,
 };
@@ -173,6 +183,7 @@ const els = {
   transcript: document.getElementById('transcript') as HTMLElement,
   browserDock: document.getElementById('browser-dock') as HTMLElement,
   approvalSlot: document.getElementById('approval-slot') as HTMLElement,
+  questionSlot: document.getElementById('question-slot') as HTMLElement,
   title: document.getElementById('session-title') as HTMLElement,
   cwd: document.getElementById('session-cwd') as HTMLElement,
   modeSelect: document.getElementById('mode-select') as HTMLSelectElement,
@@ -233,7 +244,8 @@ async function loadAll(): Promise<void> {
   if (loadingAll) return;
   loadingAll = true;
   try {
-    const [sessions, config, policy, audit, subagents, agents, tools, mcp, skills] = await Promise.all([
+    const [sessions, config, policy, audit, subagents, agents, tools, mcp, skills, plugins] =
+      await Promise.all([
       api.invoke('session.list', {}),
       api.getConfig(),
       api.getPolicy(),
@@ -243,6 +255,7 @@ async function loadAll(): Promise<void> {
       api.invoke('tools.list', {}),
       api.invoke('mcp.list', {}),
       api.invoke('skill.list', {}),
+      api.invoke('plugin.list', {}),
     ]);
     state.config = config;
     state.policy = policy;
@@ -252,6 +265,7 @@ async function loadAll(): Promise<void> {
     state.tools = tools;
     state.mcpServers = mcp.servers;
     state.skills = skills.skills;
+    state.plugins = plugins.plugins;
     state.sessions = sessions;
     state.ready = true;
 
@@ -383,6 +397,7 @@ async function openSession(sessionId: string): Promise<void> {
   state.lastCwd = snapshot.cwd;
   state.entries = snapshot.entries;
   state.approval = snapshot.pendingApproval;
+  state.question = undefined;
   els.modeSelect.value = snapshot.mode;
   els.modelSelect.value = snapshot.model;
   state.sessions = await api.invoke('session.list', {});
@@ -390,12 +405,14 @@ async function openSession(sessionId: string): Promise<void> {
   renderHeader();
   renderTranscript(true);
   renderApproval();
+  renderQuestion();
   renderBusy();
 }
 
 async function sendPrompt(): Promise<void> {
   const text = els.input.value.trim();
   if (!text) return;
+  clearQuestion();
   if (!state.current) await newSession();
   const session = state.current;
   if (!session) return;
@@ -463,6 +480,18 @@ function handleEvent(event: import('../shared/protocol').ServiceEvent): void {
         toolResult: event.payload.result,
         failed: event.payload.failed,
       });
+      const meta = event.payload.meta;
+      if (meta?.awaitingUser === true) {
+        const raw = meta.options;
+        setQuestion({
+          question:
+            typeof meta.question === 'string' && meta.question.trim()
+              ? meta.question
+              : event.payload.result,
+          options: Array.isArray(raw) ? raw.filter((o): o is string => typeof o === 'string') : [],
+        });
+      }
+
       break;
     }
 
@@ -759,6 +788,53 @@ function addSystemEntry(text: string): void {
   scrollToBottom();
 }
 
+function clearQuestion(): void {
+  if (!state.question) return;
+  state.question = undefined;
+  renderQuestion();
+}
+
+function setQuestion(question: PendingQuestion): void {
+  state.question = question;
+  renderQuestion();
+  els.input.focus();
+  setHint('The agent is waiting for an answer — click an option or type a reply.');
+}
+
+async function answerQuestion(answer: string): Promise<void> {
+  els.input.value = answer;
+  await sendPrompt();
+}
+
+function renderQuestion(): void {
+  clear(els.questionSlot);
+  const pending = state.question;
+  if (!pending) return;
+
+  const card = h(
+    'div',
+    { class: 'question' },
+    h('h3', null, h('span', { text: '?' }), h('span', { text: 'The agent needs an answer' })),
+    h('p', { class: 'summary', text: pending.question }),
+  );
+
+  if (pending.options.length) {
+    const actions = h('div', { class: 'question-actions' });
+    for (const option of pending.options) {
+      actions.append(
+        h('button', {
+          class: 'q-option',
+          text: option,
+          on: { click: () => void answerQuestion(option) },
+        }),
+      );
+    }
+    card.append(actions);
+  }
+
+  els.questionSlot.append(card);
+}
+
 function renderApproval(): void {
   clear(els.approvalSlot);
   const approval = state.approval;
@@ -815,12 +891,19 @@ function renderPanelBody(): void {
       renderPanelBody();
     },
     reloadIntegrations: async () => {
-      const [mcp, skills] = await Promise.all([
+      const [mcp, skills, plugins] = await Promise.all([
         api.invoke('mcp.reload', {}),
         api.invoke('skill.reload', {}),
+        api.invoke('plugin.reload', {}),
       ]);
       state.mcpServers = mcp.servers;
       state.skills = skills.skills;
+      state.plugins = plugins.plugins;
+      renderPanelBody();
+    },
+    togglePlugin: async (id: string, enabled: boolean) => {
+      const result = await api.invoke('plugin.setEnabled', { id, enabled });
+      state.plugins = result.plugins;
       renderPanelBody();
     },
   };
@@ -828,7 +911,7 @@ function renderPanelBody(): void {
   if (state.panel === 'permissions') renderPermissions(els.panelBody, state.policy, state.config, callbacks);
   else if (state.panel === 'subagents') renderSubagents(els.panelBody, state.subagents, state.agents, callbacks);
   else if (state.panel === 'integrations')
-    renderIntegrations(els.panelBody, state.mcpServers, state.skills, state.config, callbacks);
+    renderIntegrations(els.panelBody, state.mcpServers, state.skills, state.plugins, state.config, callbacks);
   else if (state.panel === 'settings') {
     if (state.config) renderSettings(els.panelBody, state.config, callbacks);
     else clear(els.panelBody);

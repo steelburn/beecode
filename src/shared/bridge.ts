@@ -62,6 +62,9 @@ export const RENDERER_METHODS: RpcMethod[] = [
   'skill.list',
   'skill.reload',
   'skill.read',
+  'plugin.list',
+  'plugin.reload',
+  'plugin.setEnabled',
 ];
 
 /**

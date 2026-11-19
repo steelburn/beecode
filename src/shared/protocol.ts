@@ -86,7 +86,7 @@ export interface ToolInfo {
   /** Mutating tools are gated by the approval policy. */
   mutating: boolean;
   /** Which subsystem owns the tool — used for grouping in the UI. */
-  group: 'desktop' | 'browser' | 'files' | 'shell' | 'agents' | 'control' | 'mcp' | 'skills';
+  group: 'desktop' | 'browser' | 'files' | 'shell' | 'agents' | 'control' | 'mcp' | 'skills' | 'plugins';
   /** JSON Schema (draft-07 subset) for the tool arguments. */
   inputSchema: Record<string, unknown>;
 }
@@ -226,7 +226,8 @@ export interface AuditEntry {
     | 'file-write'
     | 'launch'
     | 'subagent'
-    | 'browser';
+    | 'browser'
+    | 'plugin';
   app?: string;
   target?: string;
   outcome: 'allowed' | 'denied' | 'approved' | 'denied-by-user' | 'cancelled' | 'failed';
@@ -317,6 +318,7 @@ export interface BeeCodeConfig {
   /** External MCP servers whose tools are exposed to the agent. */
   mcpServers: Record<string, McpServerConfig>;
   skills: SkillsConfig;
+  plugins: PluginsConfig;
 }
 
 /* ------------------------------------------------------------ mcp & skills */
@@ -366,6 +368,43 @@ export interface SkillInfo {
   /** `user` = ~/.beecode/skills, `project` = the workspace or a configured dir. */
   source: 'user' | 'project';
   path: string;
+}
+
+/** What a plugin may reach outside its own state; declared in its manifest. */
+export type PluginPermission = 'files:read' | 'files:write' | 'pdf:view' | 'pdf:render';
+
+export interface PluginsConfig {
+  /** Master switch: off registers no plugin tools at all. */
+  enabled: boolean;
+  /** Load plugins from `dirs`. Off keeps only the bundled starters. */
+  allowExternal: boolean;
+  /** Plugin roots; relative paths resolve against the working directory. Empty = ~/.beecode/plugins. */
+  dirs: string[];
+  /** Plugin ids that are loaded but left inactive. */
+  disabled: string[];
+}
+
+export interface PluginToolInfo {
+  name: string;
+  description: string;
+  mutating: boolean;
+}
+
+export interface PluginInfo {
+  id: string;
+  name: string;
+  version: string;
+  description: string;
+  author?: string;
+  /** `builtin` ships with the build; `user` comes from a plugin directory. */
+  source: 'builtin' | 'user';
+  /** Directory a user plugin was loaded from. */
+  path?: string;
+  enabled: boolean;
+  permissions: PluginPermission[];
+  tools: PluginToolInfo[];
+  /** Set when discovery or activation failed. */
+  error?: string;
 }
 
 export interface SkillsConfig {
@@ -428,6 +467,9 @@ export interface DelegateArgs {
 
 /** Client → service request table. Keys are the JSON-RPC method names. */
 export interface RpcRequests {
+  'plugin.list': { params: Record<string, never>; result: { plugins: PluginInfo[] } };
+  'plugin.reload': { params: Record<string, never>; result: { plugins: PluginInfo[] } };
+  'plugin.setEnabled': { params: { id: string; enabled: boolean }; result: { plugins: PluginInfo[] } };
   'app.hello': { params: { clientVersion: string }; result: HelloResult };
   'service.health': { params: Record<string, never>; result: ServiceHealth };
   'service.shutdown': { params: Record<string, never>; result: { stopping: true } };
@@ -472,7 +514,7 @@ export type ServiceEvent =
   | { type: 'tool.call'; payload: { sessionId: string; call: ToolCallRecord } }
   | {
       type: 'tool.result';
-      payload: { sessionId: string; callId: string; name: string; result: string; failed: boolean };
+      payload: { sessionId: string; callId: string; name: string; result: string; failed: boolean; meta?: Record<string, unknown> };
     }
   | { type: 'approval.request'; payload: ApprovalRequest }
   | { type: 'approval.resolved'; payload: { sessionId: string; approvalId: string; decision: string } }

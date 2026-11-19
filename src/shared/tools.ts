@@ -38,7 +38,7 @@ export interface ToolDefinition {
   name: string;
   description: string;
   mutating: boolean;
-  group: 'desktop' | 'browser' | 'files' | 'shell' | 'agents' | 'control' | 'mcp' | 'skills';
+  group: 'desktop' | 'browser' | 'files' | 'shell' | 'agents' | 'control' | 'mcp' | 'skills' | 'plugins';
   inputSchema: Record<string, unknown>;
   handler: ToolHandler;
   /**
@@ -66,5 +66,6 @@ export function paths() {
     audit: join(home, 'audit.jsonl'),
     sessions: join(home, 'sessions'),
     logs: join(home, 'logs'),
+    plugins: join(home, 'plugins'),
   };
 }

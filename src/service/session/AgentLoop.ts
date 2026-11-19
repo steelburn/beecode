@@ -318,7 +318,7 @@ export class AgentLoop {
   private finishTool(
     session: SessionState,
     call: ToolCallRecord,
-    result: { content: string; failed?: boolean },
+    result: { content: string; failed?: boolean; meta?: Record<string, unknown> },
   ): { stopTurn: boolean } {
     const text = result.content.length > MAX_TOOL_RESULT_CHARS
       ? `${result.content.slice(0, MAX_TOOL_RESULT_CHARS)}…[truncated]`
@@ -338,7 +338,7 @@ export class AgentLoop {
       toolName: call.name,
       toolFailed: result.failed === true,
     });
-    this.deps.emit({ type: 'tool.result', payload: { sessionId: session.id, callId: call.id, name: call.name, result: text, failed: result.failed === true } });
+    this.deps.emit({ type: 'tool.result', payload: { sessionId: session.id, callId: call.id, name: call.name, result: text, failed: result.failed === true, meta: result.meta } });
     void entry;
     return { stopTurn: false };
   }

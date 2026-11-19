@@ -1,0 +1,10 @@
+{
+  "id": "md-stats",
+  "name": "Markdown stats",
+  "version": "1.0.0",
+  "description": "Counts lines, words and headings in a Markdown file and lists the top headings.",
+  "author": "beeCode",
+  "api": 1,
+  "main": "plugin.js",
+  "permissions": ["files:read"]
+}
