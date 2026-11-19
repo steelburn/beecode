@@ -1,5 +1,13 @@
-import { mkdir } from 'node:fs/promises';
-import { defaultConfig, defaultPolicy, normalizeConfig, normalizeMcpServers } from '../shared/defaults';
+import { mkdir, stat } from 'node:fs/promises';
+import { resolve } from 'node:path';
+import {
+  defaultConfig,
+  defaultPolicy,
+  normalizeConfig,
+  normalizeFeatures,
+  normalizeMcpServers,
+  normalizeWorkspace,
+} from '../shared/defaults';
 import { installSecrets } from './secrets';
 import type {
   BeeCodeConfig,
@@ -9,6 +17,7 @@ import type {
   ServiceEvent,
   ServiceHealth,
   AuditEntry,
+  WorkspaceState,
 } from '../shared/protocol';
 import type { HostCall } from '../shared/browser';
 import { paths } from '../shared/tools';
@@ -24,7 +33,9 @@ import { loadEnvPreset } from './llm/envPreset';
 import { PolicyEngine } from './policy';
 import { AgentLoop } from './session/AgentLoop';
 import { SessionManager } from './session/SessionManager';
-import { MemoryStore, TodoStore } from './stores';
+import { SessionStore } from './session/persistence';
+import { GoalStore, MemoryStore, TodoStore } from './stores';
+import { AGENT_PRESETS, normalizeCliAgents } from './subagents/adapters';
 import { SubagentRunner } from './subagents/runner';
 import { buildToolRegistry, type ToolDeps } from './tools/index';
 import type { ToolRegistry } from './tools/registry';
@@ -58,7 +69,10 @@ export class BeeCodeService {
   private subagents!: SubagentRunner;
   private sessions!: SessionManager;
   private todos = new TodoStore();
+  private goals = new GoalStore();
   private memory = new MemoryStore();
+  /** Disk-backed transcript history: one JSON document per session. */
+  private sessionStore!: SessionStore;
   private registry!: ToolRegistry;
   private skills!: SkillStore;
   private mcp!: McpManager;
@@ -88,15 +102,38 @@ export class BeeCodeService {
       this.emit({ type: 'log', payload: { level, message, at: new Date().toISOString() } });
     });
 
+    this.sessionStore = new SessionStore(this.log);
+    // The two stores are the single source of truth for the goal and the plan. A write from
+    // a tool, an RPC or a restore lands here, and the renderer panel and the persisted
+    // transcript both follow from the same notification — no polling, no second copy.
+    this.todos.onWrite((sessionId, todos) => {
+      // With `features.goalTodo` off there is no plan panel and no goal/todo tool, so a
+      // write is ignored outright instead of being emitted and persisted for a surface
+      // that is not there — re-enabling the feature must not resurrect a stale plan.
+      if (!this.deps.goalTodoEnabled) return;
+      this.emit({ type: 'session.todos', payload: { sessionId, todos } });
+      this.sessions?.persistNow(sessionId);
+    });
+    this.goals.onWrite((sessionId, goal) => {
+      if (!this.deps.goalTodoEnabled) return;
+      this.emit({ type: 'session.goal', payload: { sessionId, goal } });
+      this.sessions?.persistNow(sessionId);
+    });
+
     const loaded = await readJsonFile<Partial<BeeCodeConfig>>(p.config, {});
     this.config = this.mergeConfig(loaded);
     this.applyEnvPreset();
-    if (this.options.workspace) this.config.agent.workingDir = this.options.workspace;
+    // The host may pass an explicit directory (BEECODE_WORKSPACE, a test run). It becomes
+    // the workspace root, so the picker and the tools always agree on one directory.
+    if (this.options.workspace) {
+      this.config.workspace = { ...this.config.workspace, root: this.options.workspace };
+      this.config.agent.workingDir = this.options.workspace;
+    }
     await writeJsonFile(p.config, this.config);
 
     this.audit = new AuditLog(p.audit);
     await this.loadPolicyState();
-    this.policy.setWorkspaceRoots([this.config.agent.workingDir]);
+    this.policy.setWorkspaceRoots(this.workspaceRoots());
 
     // Browser activity is reported on the same host-activity stream as the desktop driver so
     // the UI has a single "what did the agent do to the machine" feed.
@@ -147,8 +184,10 @@ export class BeeCodeService {
       policy: this.policy,
       audit: this.audit,
       subagents: this.subagents,
+      goals: this.goals,
       todos: this.todos,
       memory: this.memory,
+      goalTodoEnabled: this.config.features.goalTodo,
       skills: this.skills,
       scanSkills: (cwd) => this.scanSkills(cwd),
       mcp: this.mcp,
@@ -174,7 +213,15 @@ export class BeeCodeService {
       emit: (event) => this.emit(event),
       log: this.log,
       defaultCwd: () => this.config.agent.workingDir,
+      goals: this.goals,
+      todos: this.todos,
+      store: this.sessionStore,
     });
+
+    // Rehydrate the newest transcripts so history and plans survive a restart. A missing,
+    // empty or corrupt store restores nothing and never fails the startup.
+    const restored = await this.sessions.restore();
+    if (restored) this.log.info('sessions restored', { restored });
 
     this.subagents.setInternalRunner((task, ctx) =>
       this.sessions.runNested(task, {
@@ -219,15 +266,28 @@ export class BeeCodeService {
 
   private mergeConfig(loaded: Partial<BeeCodeConfig>): BeeCodeConfig {
     const base = defaultConfig();
+    const workspace = normalizeWorkspace(loaded.workspace, base.workspace);
     return {
       ...base,
       ...loaded,
+      workspace,
+      features: normalizeFeatures(loaded.features, base.features),
       models: loaded.models?.length ? loaded.models : base.models,
       service: { ...base.service, ...(loaded.service ?? {}) },
-      agent: { ...base.agent, ...(loaded.agent ?? {}) },
+      agent: {
+        ...base.agent,
+        ...(loaded.agent ?? {}),
+        // Explicit agent.workingDir wins, then the workspace root, then nothing at all.
+        // Never process.cwd(): that is the installation directory in a packaged app.
+        workingDir: (loaded.agent?.workingDir ?? '').trim() || workspace.root || base.agent.workingDir,
+      },
       desktop: { ...base.desktop, ...(loaded.desktop ?? {}) },
       browser: { ...base.browser, ...(loaded.browser ?? {}) },
-      subagents: { ...base.subagents, ...(loaded.subagents ?? {}) },
+      subagents: {
+        ...base.subagents,
+        ...(loaded.subagents ?? {}),
+        cliAgents: normalizeCliAgents(loaded.subagents?.cliAgents ?? base.subagents.cliAgents),
+      },
       mcpServers: normalizeMcpServers({ ...base.mcpServers, ...(loaded.mcpServers ?? {}) }),
       skills: { ...base.skills, ...(loaded.skills ?? {}) },
     };
@@ -313,7 +373,9 @@ export class BeeCodeService {
         return { stopping: true };
 
       case 'session.list':
-        return this.sessions.list();
+        // Live sessions plus the persisted transcripts of a previous run, so the rail can
+        // offer a conversation to reopen. Cheap after the first call: the store caches its index.
+        return this.sessions.history();
 
       case 'session.create':
         return this.sessions.snapshot(
@@ -327,11 +389,71 @@ export class BeeCodeService {
         );
 
       case 'session.get':
-        return this.sessions.snapshot(this.requireString(args, 'sessionId'));
+        // A history entry that is not in memory is loaded from disk on demand.
+        return this.sessions.open(this.requireString(args, 'sessionId'));
 
       case 'session.delete':
         this.sessions.delete(this.requireString(args, 'sessionId'));
         return { deleted: true };
+
+      case 'workspace.state':
+        return this.workspaceState();
+
+      case 'workspace.set': {
+        const dir = resolve(this.requireString(args, 'path').trim());
+        const info = await stat(dir).catch(() => undefined);
+        if (!info?.isDirectory()) throw new Error(`not an existing folder: ${dir}`);
+        return this.setWorkspace(dir);
+      }
+
+      case 'workspace.forget':
+        return this.forgetWorkspace(resolve(this.requireString(args, 'path').trim()));
+
+      case 'goal.set': {
+        const sessionId = this.requireString(args, 'sessionId');
+        this.sessions.get(sessionId);
+        // The store notifies -> the service emits `session.goal` and persists the transcript.
+        this.goals.set(sessionId, typeof args.text === 'string' ? args.text : '');
+        return this.sessions.snapshot(sessionId);
+      }
+
+      case 'goal.clear': {
+        const sessionId = this.requireString(args, 'sessionId');
+        this.sessions.get(sessionId);
+        const had = Boolean(this.goals.read(sessionId));
+        this.goals.clear(sessionId);
+        if (!had) {
+          // No goal to remove: still persist and tell the UI, so both sides agree.
+          this.sessions.persistNow(sessionId);
+          this.emit({ type: 'session.goal', payload: { sessionId, goal: undefined } });
+        }
+        return this.sessions.snapshot(sessionId);
+      }
+
+      case 'todo.list':
+        return { todos: this.todos.read(this.requireString(args, 'sessionId')) };
+
+      case 'agents.detect':
+        return { agents: this.subagents.detect(args.probe !== false) };
+
+      case 'agents.save': {
+        // The UI cannot know a preset's flags (they are what makes `claude -p` a one-shot
+        // run instead of an interactive session), so an entry without args inherits them.
+        const entries = normalizeCliAgents(args.agents).map((entry) => {
+          const preset = AGENT_PRESETS.find((candidate) => candidate.id === entry.id);
+          if (entry.args.length) return entry;
+          const known = this.config.subagents.cliAgents.find((candidate) => candidate.id === entry.id);
+          if (!preset) {
+            return known?.args.length ? { ...entry, args: [...known.args] } : entry;
+          }
+          return { ...entry, args: [...preset.args], label: entry.label === entry.id ? preset.label : entry.label };
+        });
+        this.config.subagents = { ...this.config.subagents, cliAgents: entries };
+        await this.persistConfig();
+        this.subagents.reload();
+        this.log.info('subagent CLIs saved', { agents: entries.length });
+        return { agents: this.subagents.detect(true) };
+      }
 
       case 'session.prompt':
         return this.sessions.prompt(this.requireString(args, 'sessionId'), this.requireString(args, 'text'));
@@ -425,11 +547,16 @@ export class BeeCodeService {
         };
         const previousMcp = JSON.stringify(this.config.mcpServers ?? {});
         const previousPlugins = JSON.stringify(this.config.plugins ?? {});
+        const previousGoalTodo = this.config.features.goalTodo;
+        // The workspace is changed through `workspace.set` (it validates the folder) and
+        // has its own RPC; a config save must never silently drop the root.
+        sanitized.workspace = { ...this.config.workspace, ...(sanitized.workspace ?? {}) };
+        sanitized.features = { ...this.config.features, ...(sanitized.features ?? {}) };
         this.config = this.mergeConfig(normalizeConfig(sanitized, { strict: true }));
         // Drop secrets for presets the normalizer rejected or the user removed.
         this.secrets.prune(this.config.models.map((preset) => preset.id));
-        await mkdir(this.config.agent.workingDir, { recursive: true });
-        this.policy.setWorkspaceRoots([this.config.agent.workingDir]);
+        if (this.config.agent.workingDir) await mkdir(this.config.agent.workingDir, { recursive: true });
+        this.policy.setWorkspaceRoots(this.workspaceRoots());
         await writeJsonFile(paths().config, this.config);
         // An edited server list has to take effect now: the registry cannot grow tools
         // after it is built, so reconnect and rebuild before answering. A server that
@@ -440,6 +567,12 @@ export class BeeCodeService {
         }
         if (JSON.stringify(this.config.plugins ?? {}) !== previousPlugins) {
           await this.plugins.reload();
+          this.rebuildRegistries();
+        }
+        // Turning the goal/to-do surface off removes its tools from the schema: the
+        // registry is rebuilt so the model cannot plan into a UI that is not there.
+        if (previousGoalTodo !== this.config.features.goalTodo) {
+          this.deps.goalTodoEnabled = this.config.features.goalTodo;
           this.rebuildRegistries();
         }
         this.emit({ type: 'service.health', payload: this.health() });
@@ -486,6 +619,8 @@ export class BeeCodeService {
     for (const session of this.sessions.list()) {
       this.sessions.abort(session.id);
     }
+    // Flush the debounced transcript writes: a closed window must not lose the last turn.
+    await this.sessions.flush();
     await this.mcp.stop();
     await this.audit.flush();
     this.log.info('service stopping');
@@ -495,6 +630,75 @@ export class BeeCodeService {
   private rebuildRegistries(): void {
     this.registry = buildToolRegistry(this.deps, { allowDelegation: true });
     this.subagentRegistry = buildToolRegistry(this.deps, { allowDelegation: false, readOnly: true });
+  }
+
+  /* ------------------------------------------------------------- workspace */
+
+  /** Policy roots: the session working directory and the chosen workspace, deduped. */
+  private workspaceRoots(): string[] {
+    const roots = [this.config.agent.workingDir, this.config.workspace.root]
+      .map((dir) => dir.trim())
+      .filter(Boolean);
+    return [...new Set(roots)];
+  }
+
+  /**
+   * The workspace as the renderer sees it. `configured` is false until a folder exists on
+   * disk, which is what shows the setup step — the app never assumes the install directory.
+   */
+  private async workspaceState(): Promise<WorkspaceState> {
+    const { root, recent } = this.config.workspace;
+    let configured = false;
+    if (root) {
+      const info = await stat(root).catch(() => undefined);
+      configured = Boolean(info?.isDirectory());
+    }
+    return { root, recent: [...recent], configured };
+  }
+
+  private async setWorkspace(dir: string): Promise<WorkspaceState> {
+    const previous = this.config.workspace;
+    const recent = [previous.root, ...previous.recent]
+      .filter((candidate): candidate is string => Boolean(candidate) && candidate !== dir)
+      .filter((candidate, index, all) => all.indexOf(candidate) === index)
+      .slice(0, 8);
+    this.config.workspace = { ...previous, root: dir, recent };
+    // An explicit agent.workingDir is the user's choice and stays; an empty one (or one
+    // that was following the previous root) moves with the workspace.
+    if (!this.config.agent.workingDir || this.config.agent.workingDir === previous.root) {
+      this.config.agent.workingDir = dir;
+    }
+    await this.persistConfig();
+    this.policy.setWorkspaceRoots(this.workspaceRoots());
+    await this.scanSkills(dir);
+    this.emit({ type: 'service.health', payload: this.health() });
+    this.log.info('workspace set', { root: dir });
+    return this.workspaceState();
+  }
+
+  private async forgetWorkspace(dir: string): Promise<WorkspaceState> {
+    const previous = this.config.workspace;
+    const active = previous.root === dir;
+    this.config.workspace = {
+      ...previous,
+      root: active ? '' : previous.root,
+      recent: previous.recent.filter((candidate) => candidate !== dir),
+    };
+    if (active) {
+      // The tools lose their root with it. An explicit working directory stays, but it is
+      // never replaced by the installation directory: the renderer shows the setup step.
+      if (this.config.agent.workingDir === dir) this.config.agent.workingDir = '';
+      this.policy.setWorkspaceRoots(this.workspaceRoots());
+    }
+    await this.persistConfig();
+    this.emit({ type: 'service.health', payload: this.health() });
+    return this.workspaceState();
+  }
+
+  private async persistConfig(): Promise<void> {
+    const p = paths();
+    await mkdir(p.home, { recursive: true });
+    await writeJsonFile(p.config, this.config);
   }
 
   private skillsCwd(args: Record<string, unknown>): string {

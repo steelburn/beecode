@@ -35,6 +35,10 @@
       </aside>
 
       <main class="workspace">
+        <!-- First-run setup. It covers the column until a workspace folder exists: the
+             agent never roots itself in the directory the app was installed in. -->
+        <section class="workspace-gate hidden" id="workspace-gate" aria-label="Workspace setup"></section>
+
         <header class="topbar">
           <div class="topbar-title">
             <h1 id="session-title">New session</h1>
@@ -66,6 +70,9 @@
 
         <div class="question-slot" id="question-slot"></div>
         <div class="approval-slot" id="approval-slot"></div>
+
+        <!-- Goal + to-do plan, hidden while the feature is off or nothing is planned. -->
+        <div class="goal-slot" id="goal-slot"></div>
 
         <form class="composer" id="composer">
           <textarea

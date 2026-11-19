@@ -3,6 +3,7 @@ import type {
   AppRule,
   AuditEntry,
   BeeCodeConfig,
+  CliAgentEntry,
   DesktopAction,
   McpServerConfig,
   McpServerStatus,
@@ -14,18 +15,27 @@ import type {
   SubagentRunInfo,
 } from '../shared/protocol';
 import { DESKTOP_ACTIONS } from '../shared/protocol';
+import type { DirectoryPickerOptions } from '../shared/bridge';
 import { clear, h } from './dom';
 
 export interface PanelCallbacks {
   savePolicy(next: PolicyDocument): Promise<void>;
   saveConfig?(next: BeeCodeConfig): Promise<void>;
-  pickDirectory?(): Promise<string | undefined>;
+  pickDirectory?(options?: DirectoryPickerOptions): Promise<string | undefined>;
   cancelSubagent(runId: string): Promise<void>;
   refreshAudit(): Promise<void>;
   /** Re-read MCP servers and skills from the service after a reload. */
   reloadIntegrations?(): Promise<void>;
   /** Enable or disable a plugin; the service rebuilds the tool catalogue. */
   togglePlugin?(id: string, enabled: boolean): Promise<void>;
+  /** Probe the CLI catalogue (`agents.detect`). */
+  detectAgents?(): Promise<AgentInfo[]>;
+  /** Persist the CLI agent list (`agents.save`); returns the refreshed catalogue. */
+  saveAgents?(agents: CliAgentEntry[]): Promise<AgentInfo[]>;
+  /** Validate, persist and activate a workspace folder (`workspace.set`). */
+  setWorkspace?(path: string): Promise<void>;
+  /** Drop a folder from the recents, or clear the active root (`workspace.forget`). */
+  forgetWorkspace?(path: string): Promise<void>;
 }
 
 /* ---------------------------------------------------------------- permissions */
@@ -787,6 +797,113 @@ function toggle(label: string, checked: boolean, onChange: (checked: boolean) =>
   );
 }
 
+/* ---------------------------------------------------------- agent catalogue */
+
+/**
+ * External coding agents. The presets are always listed (a CLI found on PATH is offered
+ * even when it is not enabled yet); enabling one persists a `subagents.cliAgents` entry
+ * through `agents.save`, which probes again and returns the refreshed catalogue.
+ */
+function renderAgentsCard(
+  agents: AgentInfo[],
+  cb: PanelCallbacks,
+  setNote: (text: string) => void,
+): HTMLElement {
+  const catalogue = agents.filter((agent) => agent.kind === 'cli');
+  const configured = (agent: AgentInfo): CliAgentEntry => ({
+    id: agent.id,
+    label: agent.label,
+    command: agent.command ?? agent.id,
+    args: agent.args ?? [],
+    enabled: true,
+    ...(agent.custom ? { custom: true } : {}),
+  });
+
+  const save = async (next: CliAgentEntry[]): Promise<void> => {
+    setNote('saving agents…');
+    try {
+      await cb.saveAgents?.(next);
+      setNote('agents saved ✓');
+    } catch (error) {
+      setNote(`agents failed: ${(error as Error).message}`);
+    }
+  };
+
+  const toggled = (agent: AgentInfo, enabled: boolean): CliAgentEntry[] => {
+    const others = catalogue
+      .filter((other) => other.id !== agent.id && other.enabled)
+      .map((other) => configured(other));
+    return enabled ? [...others, configured(agent)] : others;
+  };
+
+  const rows = catalogue.map((agent) =>
+    h(
+      'div',
+      { class: 'agent-row' },
+      h('label', { class: 'agent-name' },
+        h('input', {
+          type: 'checkbox',
+          checked: agent.enabled === true,
+          on: { change: (event: Event) => void save(toggled(agent, (event.target as HTMLInputElement).checked)) },
+        }),
+        h('span', { text: agent.label }),
+        agent.custom ? h('span', { class: 'badge', text: 'custom' }) : null,
+      ),
+      h('span', { class: 'agent-detail' },
+        h('span', { class: `badge ${agent.onPath ? 'allowed' : 'denied'}`, text: agent.onPath ? 'on PATH' : 'not found' }),
+        h('span', { class: 'mono sub', text: agent.command ?? agent.id }),
+        agent.version ? h('span', { class: 'sub', text: agent.version }) : null,
+      ),
+    ),
+  );
+
+  const customInput = h('input', {
+    class: 'settings-input',
+    type: 'text',
+    placeholder: 'C:\\tools\\my-agent.cmd',
+  });
+  const addCustom = (): void => {
+    const command = customInput.value.trim();
+    if (!command) return;
+    const others = catalogue.filter((agent) => agent.enabled).map((agent) => configured(agent));
+    const label = command.split(/[\\/]/).pop() || command;
+    void save([...others, { id: label, label, command, args: [], enabled: true, custom: true }]);
+  };
+
+  return h(
+    'div',
+    { class: 'card' },
+    h('h4', { text: 'External agents (CLI)' }),
+    h('p', {
+      class: 'sub',
+      text: 'beeCode probes these commands on PATH and reads their version. An enabled agent can be delegated to by subagent_delegate; a missing binary is simply unavailable.',
+    }),
+    h('div', { class: 'settings-row' },
+      h('button', {
+        class: 'btn small',
+        type: 'button',
+        text: 'Detect agents',
+        on: {
+          click: async () => {
+            setNote('probing PATH…');
+            try {
+              await cb.detectAgents?.();
+              setNote('detection finished');
+            } catch (error) {
+              setNote(`detection failed: ${(error as Error).message}`);
+            }
+          },
+        },
+      }),
+    ),
+    ...rows,
+    h('div', { class: 'settings-row' },
+      customInput,
+      h('button', { class: 'btn small', type: 'button', text: 'Add command', on: { click: addCustom } }),
+    ),
+  );
+}
+
 /* ---------------------------------------------------------------- settings */
 
 const PROVIDER_IDS: ProviderId[] = ['openai', 'anthropic', 'azure-openai', 'ollama', 'openai-compatible'];
@@ -822,15 +939,27 @@ function uniqueModelId(models: ModelPreset[], seed: string): string {
  * only NAME the environment variable holding the key, because config.json is world
  * readable user state and must stay shareable.
  */
-export function renderSettings(host: HTMLElement, config: BeeCodeConfig, cb: PanelCallbacks): void {
+export function renderSettings(
+  host: HTMLElement,
+  config: BeeCodeConfig,
+  cb: PanelCallbacks,
+  agents: AgentInfo[] = [],
+): void {
   const draft: BeeCodeConfig = {
     ...config,
     agent: { ...config.agent },
+    workspace: { ...config.workspace, root: config.workspace?.root ?? '', recent: [...(config.workspace?.recent ?? [])] },
+    features: { ...config.features, goalTodo: config.features?.goalTodo ?? true },
+    subagents: { ...config.subagents, cliAgents: (config.subagents.cliAgents ?? []).map((agent) => ({ ...agent })) },
     models: config.models.map((model) => ({ ...model })),
   };
   let note: HTMLElement = h('span', { class: 'settings-note' });
 
   const setNote = (text: string): void => {
+    if (!note.isConnected) {
+      const live = host.querySelector<HTMLElement>('.settings-note');
+      if (live) note = live;
+    }
     note.textContent = text;
   };
 
@@ -1027,39 +1156,103 @@ export function renderSettings(host: HTMLElement, config: BeeCodeConfig, cb: Pan
       ),
     );
 
-    /* ----- working directory ----- */
+    /* ----- workspace ----- */
+    const workspace = draft.workspace;
+    const pickWorkspace = async (): Promise<void> => {
+      const picked = await cb.pickDirectory?.({
+        title: 'Choose a workspace folder',
+        defaultPath: workspace.root || workspace.recent[0],
+      });
+      if (!picked) return;
+      setNote('applying the workspace…');
+      try {
+        await cb.setWorkspace?.(picked);
+        setNote('workspace saved ✓');
+      } catch (error) {
+        setNote(`workspace failed: ${(error as Error).message}`);
+      }
+    };
+
     host.append(
       h(
         'div',
         { class: 'card' },
-        h('h4', { text: 'Working directory' }),
+        h('h4', { text: 'Workspace' }),
         h('p', {
           class: 'sub',
-          text: 'New sessions start here and the file tools cannot leave it. Existing sessions keep the directory they were created with.',
+          text: 'The folder the agent reads, writes and runs commands in. beeCode never falls back to its installation directory: with no workspace the file and shell tools are refused. Existing sessions keep the folder they were created with.',
         }),
         h(
           'div',
           { class: 'settings-row' },
-          settingsInput(draft.agent.workingDir, (next) => {
-            draft.agent.workingDir = next;
-            setNote('unsaved changes — press Save');
-          }, 'D:\\projects\\my-app'),
+          h('span', {
+            class: 'settings-path',
+            text: workspace.root || 'no workspace folder selected',
+            title: workspace.root,
+          }),
           h('button', {
             class: 'btn small',
             type: 'button',
-            text: 'Browse…',
-            on: {
-              click: async () => {
-                const picked = await cb.pickDirectory?.();
-                if (!picked) return;
-                draft.agent.workingDir = picked;
-                await save();
-              },
-            },
+            text: workspace.root ? 'Change…' : 'Choose…',
+            on: { click: () => void pickWorkspace() },
           }),
+          workspace.root
+            ? h('button', {
+                class: 'btn small danger',
+                type: 'button',
+                text: 'Forget',
+                on: {
+                  click: async () => {
+                    await cb.forgetWorkspace?.(workspace.root);
+                    setNote('workspace forgotten');
+                  },
+                },
+              })
+            : null,
         ),
+        workspace.recent.length
+          ? h(
+              'div',
+              { class: 'settings-recent' },
+              h('span', { class: 'sub', text: 'Recent' }),
+              ...workspace.recent.map((path) =>
+                h('button', {
+                  class: 'settings-recent-item',
+                  type: 'button',
+                  text: path,
+                  title: `Use ${path}`,
+                  on: {
+                    click: async () => {
+                      await cb.setWorkspace?.(path);
+                      setNote('workspace saved ✓');
+                    },
+                  },
+                }),
+              ),
+            )
+          : null,
       ),
     );
+
+    /* ----- feature switches ----- */
+    host.append(
+      h(
+        'div',
+        { class: 'card' },
+        h('h4', { text: 'Goal & to-do' }),
+        h('p', {
+          class: 'sub',
+          text: 'Adds the goal_write / todo_write tools and the plan panel above the composer. Turning it off removes the tools from the model schema, so the agent cannot plan into a panel that is hidden.',
+        }),
+        toggle('Show the goal and the plan', draft.features.goalTodo, (checked) => {
+          draft.features.goalTodo = checked;
+          setNote('unsaved changes — press Save');
+        }),
+      ),
+    );
+
+    /* ----- external CLI agents ----- */
+    host.append(renderAgentsCard(agents, cb, setNote));
   };
 
   paint();

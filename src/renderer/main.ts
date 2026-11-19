@@ -4,19 +4,24 @@ import type {
   ApprovalRequest,
   AuditEntry,
   BeeCodeConfig,
+  CliAgentEntry,
   PolicyDocument,
+  SessionGoal,
   SessionSnapshot,
   SessionSummary,
   PluginInfo,
   SkillInfo,
   McpServerStatus,
   SubagentRunInfo,
+  TodoItem,
   ToolInfo,
   TranscriptEntry,
+  WorkspaceState,
 } from '../shared/protocol';
 import { clear, formatJsonForDisplay, h, renderMarkdown } from './dom';
 import { mountBrowserDock } from './browserDock';
 import { renderActivity, renderIntegrations, renderPermissions, renderSettings, renderSubagents } from './panels';
+import { renderPlan, renderWorkspaceGate, type WorkspaceActions } from './plan';
 
 declare global {
   interface Window {
@@ -138,6 +143,9 @@ interface State {
   health?: ServiceStatusPayload['health'];
   sessions: SessionSummary[];
   current?: SessionSnapshot;
+  /** Goal + plan of the current session, mirrored from `session.goal` / `session.todos`. */
+  goal?: SessionGoal;
+  todos: TodoItem[];
   /** Last directory the user picked; new sessions start there. */
   lastCwd?: string;
   entries: TranscriptEntry[];
@@ -146,9 +154,13 @@ interface State {
   question?: PendingQuestion;
   policy?: PolicyDocument;
   config?: BeeCodeConfig;
+  /** Workspace folder state — `configured: false` shows the setup gate. */
+  workspace?: WorkspaceState;
   audit: AuditEntry[];
   subagents: SubagentRunInfo[];
   agents: AgentInfo[];
+  /** Probed CLI catalogue (Settings → external agents); includes presets that are not configured. */
+  detectedAgents: AgentInfo[];
   tools: ToolInfo[];
   mcpServers: McpServerStatus[];
   skills: SkillInfo[];
@@ -166,9 +178,11 @@ const state: State = {
   status: 'starting',
   sessions: [],
   entries: [],
+  todos: [],
   audit: [],
   subagents: [],
   agents: [],
+  detectedAgents: [],
   tools: [],
   mcpServers: [],
   skills: [],
@@ -184,6 +198,8 @@ const els = {
   browserDock: document.getElementById('browser-dock') as HTMLElement,
   approvalSlot: document.getElementById('approval-slot') as HTMLElement,
   questionSlot: document.getElementById('question-slot') as HTMLElement,
+  goalSlot: document.getElementById('goal-slot') as HTMLElement,
+  workspaceGate: document.getElementById('workspace-gate') as HTMLElement,
   title: document.getElementById('session-title') as HTMLElement,
   cwd: document.getElementById('session-cwd') as HTMLElement,
   modeSelect: document.getElementById('mode-select') as HTMLSelectElement,
@@ -244,7 +260,7 @@ async function loadAll(): Promise<void> {
   if (loadingAll) return;
   loadingAll = true;
   try {
-    const [sessions, config, policy, audit, subagents, agents, tools, mcp, skills, plugins] =
+    const [sessions, config, policy, audit, subagents, agents, tools, mcp, skills, plugins, workspace] =
       await Promise.all([
       api.invoke('session.list', {}),
       api.getConfig(),
@@ -256,28 +272,36 @@ async function loadAll(): Promise<void> {
       api.invoke('mcp.list', {}),
       api.invoke('skill.list', {}),
       api.invoke('plugin.list', {}),
+      api.invoke('workspace.state', {}),
     ]);
     state.config = config;
     state.policy = policy;
     state.audit = audit;
     state.subagents = subagents;
     state.agents = agents;
+    state.detectedAgents = agents;
     state.tools = tools;
     state.mcpServers = mcp.servers;
     state.skills = skills.skills;
     state.plugins = plugins.plugins;
+    state.workspace = workspace;
     state.sessions = sessions;
     state.ready = true;
 
     populateModels();
+    renderSessions();
+    paintWorkspaceGate();
+    renderPanelBody();
+    if (!workspace.configured) {
+      // No workspace folder: the gate is the whole column and no session is started.
+      renderGoalPanel();
+      return;
+    }
     if (sessions.length && !state.current) {
       await openSession(sessions[0]!.id);
     } else if (!sessions.length) {
       await newSession();
-      return;
     }
-    renderSessions();
-    renderPanelBody();
   } catch (err) {
     setHint(`failed to load: ${(err as Error).message}`);
   } finally {
@@ -355,8 +379,13 @@ function bindUi(): void {
 /* ---------------------------------------------------------------- actions */
 
 async function newSession(): Promise<void> {
-  // A new session inherits the directory the user last worked in.
-  const cwd = state.current?.cwd ?? state.lastCwd;
+  // Nothing to start until there is a folder to work in: the gate is the only action.
+  if (!state.workspace?.configured) {
+    paintWorkspaceGate();
+    return;
+  }
+  // A new session starts in the workspace; a per-session directory change stays opt-in.
+  const cwd = state.workspace.root;
   const snapshot = await api.invoke('session.create', { cwd });
   state.sessions = await api.invoke('session.list', {});
   await openSession(snapshot.id);
@@ -398,6 +427,18 @@ async function openSession(sessionId: string): Promise<void> {
   state.entries = snapshot.entries;
   state.approval = snapshot.pendingApproval;
   state.question = undefined;
+  // A restored session comes back with its plan; `restored` only tells the UI it came
+  // from disk, the goal and items are the same ones the agent wrote.
+  state.goal = snapshot.goal;
+  state.todos = snapshot.todos ?? [];
+  void api
+    .invoke('todo.list', { sessionId })
+    .then(({ todos }) => {
+      if (state.current?.id !== sessionId) return;
+      state.todos = todos;
+      renderGoalPanel();
+    })
+    .catch(() => undefined);
   els.modeSelect.value = snapshot.mode;
   els.modelSelect.value = snapshot.model;
   state.sessions = await api.invoke('session.list', {});
@@ -406,12 +447,18 @@ async function openSession(sessionId: string): Promise<void> {
   renderTranscript(true);
   renderApproval();
   renderQuestion();
+  renderGoalPanel();
   renderBusy();
 }
 
 async function sendPrompt(): Promise<void> {
   const text = els.input.value.trim();
   if (!text) return;
+  if (!state.workspace?.configured) {
+    setHint('Choose a workspace folder first — beeCode will not work in an unset directory.');
+    paintWorkspaceGate();
+    return;
+  }
   clearQuestion();
   if (!state.current) await newSession();
   const session = state.current;
@@ -426,7 +473,7 @@ async function sendPrompt(): Promise<void> {
   } catch (err) {
     setHint(`could not send: ${(err as Error).message}`);
   } finally {
-    els.input.disabled = false;
+    els.input.disabled = !state.workspace?.configured;
     els.input.focus();
   }
 }
@@ -522,6 +569,20 @@ function handleEvent(event: import('../shared/protocol').ServiceEvent): void {
       break;
     }
 
+    case 'session.goal':
+      if (event.payload.sessionId !== state.current?.id) return;
+      state.goal = event.payload.goal;
+      if (state.current) state.current.goal = event.payload.goal;
+      renderGoalPanel();
+      break;
+
+    case 'session.todos':
+      if (event.payload.sessionId !== state.current?.id) return;
+      state.todos = event.payload.todos;
+      if (state.current) state.current.todos = event.payload.todos;
+      renderGoalPanel();
+      break;
+
     case 'desktop.activity':
       state.audit.unshift(event.payload);
       state.audit = state.audit.slice(0, 120);
@@ -554,7 +615,7 @@ function renderStatus(): void {
 function renderHeader(): void {
   const session = state.current;
   els.title.textContent = session?.title ?? 'New session';
-  els.cwd.textContent = session?.cwd ?? state.info?.workspace ?? '';
+  els.cwd.textContent = session?.cwd || state.workspace?.root || 'no workspace folder';
   els.cwd.title = session
     ? `Working directory: ${session.cwd} — click to change it for this session`
     : 'No session yet — click to choose the working directory for the next session';
@@ -586,7 +647,12 @@ function renderSessions(): void {
         title: session.cwd,
       },
       h('div', { class: 's-title', text: session.parentSessionId ? `↳ ${session.title}` : session.title }),
-      h('div', { class: 's-meta', text: session.status === 'idle' ? '' : session.status }),
+      // The goal is the most useful subtitle a persisted session can carry.
+      h('div', {
+        class: 's-meta',
+        text: session.goal?.text || (session.status === 'idle' ? '' : session.status),
+        title: session.goal?.text ?? '',
+      }),
       h('button', {
         class: 's-del',
         text: '✕',
@@ -618,8 +684,10 @@ async function deleteSession(sessionId: string): Promise<void> {
 function renderBusy(): void {
   const status = state.current?.status;
   const busy = status === 'thinking' || status === 'running-tool' || status === 'awaiting-approval';
+  const unconfigured = !state.workspace?.configured;
   els.stop.classList.toggle('hidden', !busy);
-  els.send.disabled = busy || Boolean(state.approval);
+  els.send.disabled = busy || Boolean(state.approval) || unconfigured;
+  els.input.disabled = unconfigured;
   els.input.placeholder = busy
     ? status === 'awaiting-approval'
       ? 'Waiting for your approval…'
@@ -880,6 +948,9 @@ function renderPanelBody(): void {
       // the resulting statuses back instead of reconnecting a second time here.
       const mcp = await api.invoke('mcp.list', {});
       state.mcpServers = mcp.servers;
+      // The goal/to-do switch changes the panel immediately; the service rebuilt the
+      // tool catalogue in the same save.
+      renderGoalPanel();
       renderPanelBody();
     },
     pickDirectory: async () => api.pickDirectory(),
@@ -906,6 +977,30 @@ function renderPanelBody(): void {
       state.plugins = result.plugins;
       renderPanelBody();
     },
+    detectAgents: async () => {
+      const result = await api.invoke('agents.detect', {});
+      state.detectedAgents = result.agents;
+      state.agents = result.agents;
+      renderPanelBody();
+      return result.agents;
+    },
+    saveAgents: async (next: CliAgentEntry[]) => {
+      const result = await api.invoke('agents.save', { agents: next });
+      state.detectedAgents = result.agents;
+      state.agents = result.agents;
+      state.config = await api.getConfig();
+      renderPanelBody();
+      return result.agents;
+    },
+    setWorkspace: async (path: string) => {
+      await applyWorkspace(path);
+    },
+    forgetWorkspace: async (path: string) => {
+      state.workspace = await api.invoke('workspace.forget', { path });
+      state.config = await api.getConfig();
+      paintWorkspaceGate();
+      renderPanelBody();
+    },
   };
 
   if (state.panel === 'permissions') renderPermissions(els.panelBody, state.policy, state.config, callbacks);
@@ -913,10 +1008,97 @@ function renderPanelBody(): void {
   else if (state.panel === 'integrations')
     renderIntegrations(els.panelBody, state.mcpServers, state.skills, state.plugins, state.config, callbacks);
   else if (state.panel === 'settings') {
-    if (state.config) renderSettings(els.panelBody, state.config, callbacks);
+    if (state.config) renderSettings(els.panelBody, state.config, callbacks, state.detectedAgents);
     else clear(els.panelBody);
   }
   else renderActivity(els.panelBody, state.audit, callbacks);
+}
+
+/* -------------------------------------------------------------------- plan */
+
+/** Mirrors the goal/to-do stores of the current session into the panel above the composer. */
+function renderGoalPanel(): void {
+  renderPlan(
+    els.goalSlot,
+    {
+      enabled: state.config?.features?.goalTodo !== false,
+      goal: state.goal,
+      todos: state.todos,
+    },
+    {
+      setGoal: async (text: string) => {
+        if (!state.current) return;
+        // The `session.goal` event repaints the panel; nothing is assumed locally.
+        await api.invoke('goal.set', { sessionId: state.current.id, text });
+      },
+      clearGoal: async () => {
+        if (!state.current) return;
+        await api.invoke('goal.clear', { sessionId: state.current.id });
+      },
+    },
+  );
+}
+
+const workspaceActions: WorkspaceActions = {
+  choose: async () => {
+    const picked = await api.pickDirectory({
+      title: 'Choose a workspace folder',
+      defaultPath: state.workspace?.root || state.workspace?.recent[0],
+    });
+    if (picked) await applyWorkspace(picked);
+  },
+  useRecent: (path) => applyWorkspace(path),
+  forget: async (path) => {
+    state.workspace = await api.invoke('workspace.forget', { path });
+    state.config = await api.getConfig();
+    paintWorkspaceGate();
+    renderPanelBody();
+  },
+};
+
+function paintWorkspaceGate(): void {
+  renderWorkspaceGate(els.workspaceGate, state.workspace, workspaceActions);
+  // The gate covers the chat column visually, but a hidden composer is still reachable
+  // with Tab — `inert` is what keeps focus and the screen-reader cursor out of the
+  // surfaces the service would refuse anyway. Settings stays live so the workspace and
+  // the agent catalogue can still be configured.
+  const gated = !state.workspace?.configured;
+  for (const node of [els.transcript, els.goalSlot, els.approvalSlot, els.questionSlot, els.composer]) {
+    node.toggleAttribute('inert', gated);
+    if (gated) node.setAttribute('aria-hidden', 'true');
+    else node.removeAttribute('aria-hidden');
+  }
+  // The composer's disabled state follows the gate, including on the first paint (the
+  // early-return path in loadAll never reached renderBusy before).
+  renderBusy();
+}
+
+/**
+ * Switch the workspace folder (validated and persisted by the service). Sessions keep the
+ * directory they were created in, so a conversation rooted somewhere else is not silently
+ * re-pointed: the user gets a fresh session inside the new folder instead.
+ */
+async function applyWorkspace(path: string): Promise<void> {
+  try {
+    state.workspace = await api.invoke('workspace.set', { path });
+    state.config = await api.getConfig();
+    if (state.current?.cwd !== state.workspace.root) {
+      state.current = undefined;
+      state.entries = [];
+      state.goal = undefined;
+      state.todos = [];
+      state.approval = undefined;
+      state.question = undefined;
+      await newSession();
+    }
+    paintWorkspaceGate();
+    renderHeader();
+    renderGoalPanel();
+    renderPanelBody();
+    setHint(`Workspace: ${state.workspace.root}`);
+  } catch (error) {
+    setHint(`Could not use that folder: ${(error as Error).message}`);
+  }
 }
 
 function scrollToBottom(): void {

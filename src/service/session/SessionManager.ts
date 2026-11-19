@@ -9,8 +9,10 @@ import type {
   SessionSummary,
 } from '../../shared/protocol';
 import type { Logger } from '../logger';
+import type { GoalStore, TodoStore } from '../stores';
 import { AgentLoop, snapshotSession, summarizeSession } from './AgentLoop';
 import type { SessionState } from './AgentLoop';
+import type { PersistedSession, SessionStore } from './persistence';
 
 export interface SessionManagerDeps {
   loop: AgentLoop;
@@ -18,6 +20,11 @@ export interface SessionManagerDeps {
   emit: (event: ServiceEvent) => void;
   log: Logger;
   defaultCwd: () => string;
+  /** Goal + to-do stores: snapshots and the panel read from them. */
+  goals: GoalStore;
+  todos: TodoStore;
+  /** Disk-backed history. Omitted in tests, which keep sessions in memory only. */
+  store?: SessionStore;
 }
 
 interface PendingApproval {
@@ -30,8 +37,10 @@ const MAX_SESSIONS = 50;
 /**
  * Owns session state, the prompt queue and the approval handshake.
  *
- * Sessions are intentionally in-memory with a bounded history: the transcript is a UI
- * concern, while durable artefacts (audit log, memory notes, todos) live on disk.
+ * Live sessions are kept in memory (bounded), while every completed turn is mirrored
+ * to `~/.beecode/sessions/<id>.json` so the history survives a restart. Restored
+ * sessions come back read-only-until-used: they hold the transcript and the LLM
+ * conversation, so continuing one resumes with full context.
  */
 export class SessionManager {
   private sessions = new Map<string, SessionState>();
@@ -39,6 +48,101 @@ export class SessionManager {
   private queue = new Map<string, Promise<void>>();
 
   constructor(private readonly deps: SessionManagerDeps) {}
+
+  /** Snapshot enriched with the goal/to-do state owned by the stores. */
+  private snap(session: SessionState): SessionSnapshot {
+    return {
+      ...snapshotSession(session),
+      goal: this.deps.goals.read(session.id),
+      todos: this.deps.todos.read(session.id),
+    };
+  }
+
+  /**
+   * Mirror a session to disk. Debounced: a streaming turn would otherwise write on
+   * nearly every token. Subagent (nested) sessions are deliberately not persisted —
+   * only the parent turn that spawned them is interesting history.
+   */
+  private persist(session: SessionState, immediate = false): void {
+    const store = this.deps.store;
+    if (!store || session.depth > 0) return;
+    const record: PersistedSession = {
+      ...this.snap(session),
+      schemaVersion: 1,
+      messages: session.messages,
+      workspace: session.cwd,
+    };
+    if (immediate) void store.save(record);
+    else store.saveSoon(record);
+  }
+
+  /** Rebuild in-memory state from a persisted record. */
+  private stateFrom(record: PersistedSession): SessionState {
+    return {
+      id: record.id,
+      title: record.title,
+      cwd: record.cwd || this.deps.defaultCwd(),
+      mode: record.mode,
+      model: record.model,
+      status: 'idle',
+      createdAt: record.createdAt,
+      updatedAt: record.updatedAt,
+      entries: Array.isArray(record.entries) ? record.entries : [],
+      messages: Array.isArray(record.messages) ? record.messages : [],
+      usage: record.usage ?? { inputTokens: 0, outputTokens: 0 },
+      parentSessionId: record.parentSessionId,
+      depth: 0,
+      autoApprovedTools: new Set(),
+      busy: false,
+      restored: true,
+    };
+  }
+
+  /**
+   * Rehydrate the newest transcripts from disk on startup. Their goal and to-do
+   * state is restored into the stores so reopening a session shows the same plan.
+   */
+  async restore(limit = 30): Promise<number> {
+    const store = this.deps.store;
+    if (!store) return 0;
+    const records = await store.list();
+    let restored = 0;
+    for (const record of records.slice(0, limit)) {
+      if (this.sessions.has(record.id) || record.parentSessionId) continue;
+      this.sessions.set(record.id, this.stateFrom(record));
+      this.deps.goals.restore(record.id, record.goal);
+      this.deps.todos.restore(record.id, record.todos);
+      restored += 1;
+    }
+    return restored;
+  }
+
+  /** Flush queued writes (shutdown path). */
+  async flush(): Promise<void> {
+    await this.deps.store?.flush();
+  }
+
+  /**
+   * Open one transcript, loading it from disk when it is not in memory — a history entry
+   * the user clicked after the startup restore window. Unknown ids still throw.
+   */
+  async open(id: string): Promise<SessionSnapshot> {
+    if (!this.sessions.has(id)) {
+      const record = await this.deps.store?.load(id);
+      if (record && !record.parentSessionId) {
+        this.sessions.set(record.id, this.stateFrom(record));
+        this.deps.goals.restore(record.id, record.goal);
+        this.deps.todos.restore(record.id, record.todos);
+      }
+    }
+    return this.snapshot(id);
+  }
+
+  /** Write one session now: the goal/to-do stores changed it under the session. */
+  persistNow(id: string): void {
+    const session = this.sessions.get(id);
+    if (session) this.persist(session, true);
+  }
 
   /* ------------------------------------------------------------------ CRUD */
 
@@ -64,7 +168,8 @@ export class SessionManager {
     };
     this.sessions.set(session.id, session);
     this.evictOldSessions();
-    this.deps.emit({ type: 'session.snapshot', payload: snapshotSession(session) });
+    this.deps.emit({ type: 'session.snapshot', payload: this.snap(session) });
+    this.persist(session, true);
     return session;
   }
 
@@ -81,7 +186,20 @@ export class SessionManager {
   list(): SessionSummary[] {
     return [...this.sessions.values()]
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
-      .map(summarizeSession);
+      .map((session) => ({ ...summarizeSession(session), goal: this.deps.goals.read(session.id) }));
+  }
+
+  /**
+   * Live sessions plus everything found on disk, newest first. Persisted entries
+   * missing from memory are the sessions of a previous run.
+   */
+  async history(workspace?: string): Promise<SessionSummary[]> {
+    const live = this.list();
+    const store = this.deps.store;
+    if (!store) return live;
+    const seen = new Set(live.map((session) => session.id));
+    const persisted = (await store.summaries(workspace)).filter((session) => !seen.has(session.id));
+    return [...live, ...persisted];
   }
 
   delete(id: string): void {
@@ -89,10 +207,13 @@ export class SessionManager {
     if (session?.abort) session.abort.abort();
     this.sessions.delete(id);
     this.queue.delete(id);
+    this.deps.goals.clear(id);
+    this.deps.todos.clear(id);
+    void this.deps.store?.delete(id);
   }
 
   snapshot(id: string): SessionSnapshot {
-    return snapshotSession(this.get(id));
+    return this.snap(this.get(id));
   }
 
   setMode(id: string, mode: AgentMode): SessionSummary {
@@ -100,6 +221,7 @@ export class SessionManager {
     session.mode = mode;
     session.updatedAt = new Date().toISOString();
     this.deps.emit({ type: 'session.status', payload: { sessionId: id, status: session.status } });
+    this.persist(session);
     return summarizeSession(session);
   }
 
@@ -112,7 +234,8 @@ export class SessionManager {
     if (session.cwd === abs) return summarizeSession(session);
     session.cwd = abs;
     session.updatedAt = new Date().toISOString();
-    this.deps.emit({ type: 'session.snapshot', payload: snapshotSession(session) });
+    this.deps.emit({ type: 'session.snapshot', payload: this.snap(session) });
+    this.persist(session, true);
     return summarizeSession(session);
   }
 
@@ -120,6 +243,7 @@ export class SessionManager {
     const session = this.get(id);
     session.model = model;
     session.updatedAt = new Date().toISOString();
+    this.persist(session);
     return summarizeSession(session);
   }
 
@@ -145,6 +269,8 @@ export class SessionManager {
       })
       .finally(() => {
         if (this.queue.get(id) === next) this.queue.delete(id);
+        this.persist(session);
+        this.deps.emit({ type: 'session.snapshot', payload: this.snap(session) });
       });
     this.queue.set(id, next);
     return { accepted: true };

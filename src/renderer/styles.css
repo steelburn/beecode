@@ -102,7 +102,10 @@ html, body {
 .session-item .s-title {
   flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px;
 }
-.session-item .s-meta { font-size: 10px; color: var(--text-faint); font-family: var(--mono); }
+.session-item .s-meta {
+  font-size: 10px; color: var(--text-faint); font-family: var(--mono);
+  max-width: 104px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .session-item .s-del { opacity: 0; color: var(--text-faint); border: 0; background: none; cursor: pointer; }
 .session-item:hover .s-del { opacity: 1; }
 .session-item .s-del:hover { color: var(--red); }
@@ -121,7 +124,70 @@ html, body {
 
 /* ------------------------------------------------------------- workspace */
 
-.workspace { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.workspace { display: flex; flex-direction: column; min-width: 0; min-height: 0; position: relative; }
+
+/* First-run setup: covers the chat column until a workspace folder exists. The composer
+   behind it is disabled as well — the service refuses workspace-less file and shell work,
+   so the UI must not pretend a session can start. */
+.workspace-gate {
+  position: absolute; inset: 0; z-index: 6; background: var(--bg);
+  display: flex; align-items: center; justify-content: center; padding: 28px;
+}
+.gate { max-width: 560px; display: flex; flex-direction: column; gap: 12px; }
+.gate h2 { margin: 0; font-size: 19px; }
+.gate p { margin: 0; color: var(--text-dim); line-height: 1.6; font-size: 13px; }
+.gate .gate-warn {
+  color: #ffb3ba; border: 1px solid #5a2a30; background: #2a161a;
+  border-radius: 8px; padding: 8px 10px; font-family: var(--mono); font-size: 12px;
+}
+.gate-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.gate-recent { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+.gate-recent-item {
+  text-align: left; font-family: var(--mono); font-size: 12px; color: var(--text-dim);
+  background: var(--bg-raised); border: 1px solid var(--line); border-radius: 7px;
+  padding: 6px 10px; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.gate-recent-item:hover { color: var(--text); border-color: var(--amber-dim); }
+
+/* ---------------------------------------------------- goal / to-do plan */
+
+.goal-slot:empty { display: none; }
+.plan {
+  margin: 0 18px 10px; padding: 10px 12px; border-radius: var(--radius);
+  border: 1px solid var(--line); background: var(--bg-raised);
+  display: flex; flex-direction: column; gap: 8px;
+}
+.plan-goal, .plan-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.plan-label {
+  font-size: 10px; letter-spacing: .08em; color: var(--text-faint);
+  font-family: var(--mono); flex: none;
+}
+.plan-goal-text {
+  flex: 1; min-width: 0; font-size: 13px; color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.plan-input {
+  flex: 1; min-width: 0; padding: 5px 8px; border-radius: 7px; font-family: inherit;
+  background: var(--bg-inset); color: var(--text); border: 1px solid var(--amber-dim); font-size: 13px;
+}
+.plan-input:focus { outline: none; border-color: var(--amber); }
+.plan-btn {
+  border: 1px solid transparent; background: transparent; color: var(--text-faint);
+  font-size: 11px; cursor: pointer; border-radius: 6px; padding: 2px 6px; flex: none;
+}
+.plan-btn:hover { color: var(--amber); background: #1d1808; }
+.plan-count { font-family: var(--mono); font-size: 11px; color: var(--text-faint); flex: none; }
+.plan-bar { flex: 1; height: 4px; border-radius: 999px; background: var(--bg-inset); overflow: hidden; }
+.plan-bar-fill { display: block; height: 100%; background: var(--green); transition: width .2s ease; }
+.plan-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; max-height: 132px; overflow-y: auto; }
+.plan-item { display: flex; align-items: baseline; gap: 8px; font-size: 12.5px; color: var(--text-dim); }
+.plan-item .plan-mark { font-family: var(--mono); font-size: 11px; flex: none; color: var(--text-faint); }
+.plan-item .plan-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.plan-item.in_progress { color: var(--amber); }
+.plan-item.in_progress .plan-mark { color: var(--amber); }
+.plan-item.completed { color: var(--text-faint); }
+.plan-item.completed .plan-text { text-decoration: line-through; }
+.plan-item.completed .plan-mark { color: var(--green); }
 
 .topbar {
   display: flex; align-items: center; justify-content: space-between; gap: 16px;
@@ -365,6 +431,30 @@ html, body {
   font-size: 12px;
 }
 .settings-input:focus { outline: 1px solid var(--accent, #4c9aff); }
+.settings-path {
+  flex: 1; min-width: 0; font-family: var(--mono); font-size: 11.5px; color: var(--text-dim);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.settings-recent { display: flex; flex-direction: column; gap: 4px; margin-top: 10px; }
+.settings-recent .sub { margin: 0; }
+.settings-recent-item {
+  text-align: left; font-family: var(--mono); font-size: 11px; color: var(--text-faint);
+  background: var(--bg-inset); border: 1px solid var(--line-soft); border-radius: 6px;
+  padding: 4px 8px; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.settings-recent-item:hover { color: var(--text); border-color: var(--amber-dim); }
+
+/* ------------------------------------------------- external CLI agents */
+
+.agent-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 6px 0; border-bottom: 1px solid var(--line-soft);
+}
+.agent-name { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--text); }
+.agent-name input { accent-color: var(--amber); }
+.agent-detail { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.agent-detail .mono { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-detail .badge { margin-right: 0; }
 .btn.small.danger { color: #ff9a9a; }
 
 /* --------------------------------------------------------------- markdown */

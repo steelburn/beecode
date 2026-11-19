@@ -1,59 +1,109 @@
 import type { ToolDefinition } from '../../shared/tools';
-import type { MemoryStore, TodoStore, TodoStatus } from '../stores';
+import type { GoalStore, MemoryStore, TodoStore, TodoStatus } from '../stores';
 import { errorResult, jsonResult, str } from './registry';
 
 interface ControlToolDeps {
+  goals: GoalStore;
   todos: TodoStore;
   memory: MemoryStore;
+  /**
+   * Whether the goal/to-do surface is on. When the user disables the feature the
+   * tools disappear from the schema entirely, so the model cannot plan into a UI
+   * that is not there.
+   */
+  goalTodoEnabled: boolean;
 }
 
 export function controlTools(deps: ControlToolDeps): ToolDefinition[] {
-  const { todos, memory } = deps;
+  const { goals, todos, memory } = deps;
 
-  return [
-    {
-      name: 'todo_write',
-      description:
-        'Replace the task list for this session. Use it for multi-step desktop work so progress is visible to the user: exactly one item in_progress at a time.',
-      mutating: false,
-      group: 'control',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          items: {
-            type: 'array',
-            items: {
-              type: 'object',
-              properties: {
-                content: { type: 'string' },
-                status: { type: 'string', enum: ['pending', 'in_progress', 'completed'] },
+  const planningTools: ToolDefinition[] = deps.goalTodoEnabled
+    ? [
+        {
+          name: 'todo_write',
+          description:
+            'Replace the task list for this session. Use it for multi-step desktop work so progress is visible to the user: exactly one item in_progress at a time. Omit an item you have finished dropping from the list.',
+          mutating: false,
+          group: 'control',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              items: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  properties: {
+                    content: { type: 'string', description: 'Imperative one-line step.' },
+                    status: { type: 'string', enum: ['pending', 'in_progress', 'completed'] },
+                    activeForm: {
+                      type: 'string',
+                      description: 'Present-participle label shown while the item is in progress.',
+                    },
+                  },
+                  required: ['content'],
+                },
               },
-              required: ['content'],
             },
+            required: ['items'],
+            additionalProperties: false,
+          },
+          async handler(args, ctx) {
+            const raw = Array.isArray(args.items) ? (args.items as Array<Record<string, unknown>>) : [];
+            const items = todos.write(
+              ctx.sessionId,
+              raw.map((i) => ({
+                content: String(i.content ?? ''),
+                status: (i.status as TodoStatus) ?? 'pending',
+                activeForm: typeof i.activeForm === 'string' ? i.activeForm : undefined,
+              })),
+            );
+            return jsonResult({ items });
           },
         },
-        required: ['items'],
-        additionalProperties: false,
-      },
-      async handler(args, ctx) {
-        const raw = Array.isArray(args.items) ? (args.items as Array<Record<string, unknown>>) : [];
-        const items = todos.write(
-          ctx.sessionId,
-          raw.map((i) => ({ content: String(i.content ?? ''), status: (i.status as TodoStatus) ?? 'pending' })),
-        );
-        return jsonResult({ items });
-      },
-    },
-    {
-      name: 'todo_read',
-      description: 'Read the current task list for this session.',
-      mutating: false,
-      group: 'control',
-      inputSchema: { type: 'object', properties: {}, additionalProperties: false },
-      async handler(_args, ctx) {
-        return jsonResult({ items: todos.read(ctx.sessionId) });
-      },
-    },
+        {
+          name: 'todo_read',
+          description: 'Read the current task list for this session.',
+          mutating: false,
+          group: 'control',
+          inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+          async handler(_args, ctx) {
+            return jsonResult({ items: todos.read(ctx.sessionId) });
+          },
+        },
+        {
+          name: 'goal_write',
+          description:
+            'Set (or with an empty text, clear) the objective of this session — one short outcome line. Keep it stable: rewrite it only when the objective itself changes, not to restate progress.',
+          mutating: false,
+          group: 'control',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              text: { type: 'string', description: 'The objective, e.g. "Ship the 0.2.0 installer".' },
+            },
+            required: ['text'],
+            additionalProperties: false,
+          },
+          async handler(args, ctx) {
+            const goal = goals.set(ctx.sessionId, str(args, 'text') ?? '');
+            return jsonResult({ goal: goal ?? null });
+          },
+        },
+        {
+          name: 'goal_read',
+          description: 'Read the objective of this session, if one is set.',
+          mutating: false,
+          group: 'control',
+          inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+          async handler(_args, ctx) {
+            return jsonResult({ goal: goals.read(ctx.sessionId) ?? null });
+          },
+        },
+      ]
+    : [];
+
+  return [
+    ...planningTools,
     {
       name: 'memory_write',
       description:

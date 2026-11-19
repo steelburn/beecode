@@ -2,6 +2,13 @@ import type { LlmToolSchema } from '../llm/types';
 import type { ToolContext, ToolDefinition, ToolResult } from '../../shared/tools';
 import type { ToolInfo } from '../../shared/protocol';
 
+/**
+ * Tool groups that cannot work without a filesystem root. Without a workspace they are
+ * refused in-band: resolving a relative path against the process directory would make
+ * the installation folder the agent's workspace, which the product never does.
+ */
+const WORKSPACE_GROUPS = new Set(['files', 'shell']);
+
 /** Ordered tool catalogue with a name index. */
 export class ToolRegistry {
   private tools = new Map<string, ToolDefinition>();
@@ -55,6 +62,17 @@ export class ToolRegistry {
     const tool = this.tools.get(name);
     if (!tool) {
       return { content: JSON.stringify({ error: `unknown tool "${name}"`, available: this.names() }), failed: true };
+    }
+    if (!ctx.cwd && WORKSPACE_GROUPS.has(tool.group)) {
+      return {
+        content: JSON.stringify({
+          error:
+            'no workspace folder is selected — ask the user to choose one in beeCode before using file or shell tools',
+          tool: name,
+          needsWorkspace: true,
+        }),
+        failed: true,
+      };
     }
     try {
       return await tool.handler(args, ctx);

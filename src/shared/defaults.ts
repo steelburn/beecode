@@ -1,11 +1,13 @@
 import type {
   BeeCodeConfig,
   BrowserConfig,
+  FeaturesConfig,
   McpServerConfig,
   ModelPreset,
   PluginsConfig,
   PolicyDocument,
   SkillsConfig,
+  WorkspaceConfig,
 } from './protocol';
 import { POLICY_DOCUMENT_VERSION } from './protocol';
 
@@ -59,6 +61,11 @@ export const MODEL_PRESETS: ModelPreset[] = [
 export function defaultConfig(): BeeCodeConfig {
   return {
     version: 1,
+    // The workspace root is deliberately EMPTY: beeCode must never silently adopt
+    // the directory the app happens to be installed in. Until the user picks a
+    // folder the renderer shows the workspace setup step.
+    workspace: { root: '', recent: [], restoreSession: true },
+    features: { goalTodo: true },
     models: MODEL_PRESETS,
     defaultModelId: 'claude-sonnet',
     service: { httpPort: 4870, autoStart: true },
@@ -69,7 +76,7 @@ export function defaultConfig(): BeeCodeConfig {
       defaultMode: 'ask',
       maxSteps: 24,
       autoApproveTools: [],
-      workingDir: process.cwd(),
+      workingDir: '',
     },
     desktop: { enabled: true, driver: 'windows', allowInput: true },
     browser: {
@@ -203,6 +210,52 @@ export function defaultPolicy(): PolicyDocument {
  * a duplicate preset id or a dangling defaultModelId would leave the agent loop with
  * no usable model, so the service repairs what it can and refuses the rest.
  */
+/**
+ * Repair the workspace block. A root that no longer exists is kept (the drive may
+ * simply be unmounted) — the service reports the problem instead of silently
+ * relocating the user's files.
+ */
+export function normalizeWorkspace(
+  input: Partial<WorkspaceConfig> | undefined,
+  fallback: WorkspaceConfig,
+): WorkspaceConfig {
+  const source = input ?? {};
+  const clean = (value: unknown): string => {
+    if (typeof value !== 'string') return '';
+    const trimmed = value.trim();
+    // Keep a drive root ("C:\") intact, strip trailing separators elsewhere.
+    return /^[A-Za-z]:[\\/]?$/.test(trimmed) ? trimmed : trimmed.replace(/[\\/]+$/, '');
+  };
+
+  const root = clean(source.root) || fallback.root;
+  const recent: string[] = [];
+  const candidates = Array.isArray(source.recent) ? source.recent : fallback.recent;
+  for (const candidate of candidates) {
+    const dir = clean(candidate);
+    if (!dir || dir === root || recent.includes(dir)) continue;
+    recent.push(dir);
+    if (recent.length >= 8) break;
+  }
+  return {
+    root,
+    recent,
+    restoreSession:
+      typeof source.restoreSession === 'boolean'
+        ? source.restoreSession
+        : fallback.restoreSession ?? true,
+  };
+}
+
+/** Feature switches default to ON: an unknown payload must not silently drop a tool. */
+export function normalizeFeatures(
+  input: Partial<FeaturesConfig> | undefined,
+  fallback: FeaturesConfig,
+): FeaturesConfig {
+  return {
+    goalTodo: typeof input?.goalTodo === 'boolean' ? input.goalTodo : fallback.goalTodo,
+  };
+}
+
 export function normalizeConfig(
   input: BeeCodeConfig,
   options: { strict?: boolean } = {},
@@ -233,8 +286,11 @@ export function normalizeConfig(
   if (!models.length) throw new Error('at least one model preset is required');
 
   const fallback = defaultConfig();
+  const workspace = normalizeWorkspace(input.workspace, fallback.workspace);
   return {
     ...input,
+    workspace,
+    features: normalizeFeatures(input.features, fallback.features),
     models,
     defaultModelId: models.some((model) => model.id === input.defaultModelId)
       ? input.defaultModelId
@@ -245,7 +301,10 @@ export function normalizeConfig(
     agent: {
       ...fallback.agent,
       ...input.agent,
-      workingDir: (input.agent?.workingDir ?? '').trim() || fallback.agent.workingDir,
+      // Explicit agent.workingDir wins, then the user's workspace root. Never
+      // process.cwd(): that is the installation directory in a packaged app.
+      workingDir:
+        (input.agent?.workingDir ?? '').trim() || workspace.root || fallback.agent.workingDir,
     },
   };
 }

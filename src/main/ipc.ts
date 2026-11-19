@@ -85,7 +85,7 @@ export function registerIpc(deps: IpcDeps): void {
     const win = deps.getWindow();
     const dialogOptions = {
       title: options?.title ?? 'Choose a working directory',
-      defaultPath: options?.defaultPath ?? deps.workspace,
+      defaultPath: options?.defaultPath || deps.workspace || undefined,
       properties: ['openDirectory', 'createDirectory'] as Array<'openDirectory' | 'createDirectory'>,
     };
     const result = win ? await dialog.showOpenDialog(win, dialogOptions) : await dialog.showOpenDialog(dialogOptions);

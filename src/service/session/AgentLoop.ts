@@ -36,6 +36,8 @@ export interface SessionState {
   pendingApproval?: ApprovalRequest;
   abort?: AbortController;
   busy: boolean;
+  /** True when this session was rehydrated from disk rather than created this run. */
+  restored?: boolean;
 }
 
 export interface AgentLoopDeps {
@@ -261,7 +263,9 @@ export class AgentLoop {
       sessionId: session.id,
       cwd: session.cwd,
       mode: session.mode,
-      workspaceRoots: [session.cwd],
+      // An empty cwd stays empty: the registry refuses workspace-less file/shell calls
+      // instead of letting them resolve against the process directory.
+      workspaceRoots: session.cwd ? [session.cwd] : [],
       signal: session.abort?.signal ?? new AbortController().signal,
       parentSessionId: session.parentSessionId,
       depth: session.depth,
@@ -382,5 +386,6 @@ export function snapshotSession(session: SessionState): SessionSnapshot {
     entries: session.entries.map((e) => ({ ...e })),
     pendingApproval: session.pendingApproval ? { ...session.pendingApproval } : undefined,
     usage: { ...session.usage },
+    restored: session.restored === true ? true : undefined,
   };
 }
