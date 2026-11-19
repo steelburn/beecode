@@ -31,6 +31,7 @@ import { BrowserController } from './browser/controller';
 import { DesktopController } from './desktop/controller';
 import { McpManager } from './mcp/manager';
 import { SkillStore } from './skills/store';
+import { installSkills } from './skills/install';
 import { createLogger, readJsonFile, writeJsonFile, type Logger } from './logger';
 import { loadEnvPreset } from './llm/envPreset';
 import { PolicyEngine } from './policy';
@@ -500,6 +501,17 @@ export class BeeCodeService {
 
       case 'skill.reload':
         return { skills: await this.skills.load(this.skillScanOptions(this.skillsCwd(args))) };
+
+      case 'skill.install': {
+        const cwd = this.skillsCwd(args);
+        const result = await installSkills({
+          fileName: typeof args.fileName === 'string' ? args.fileName : undefined,
+          text: typeof args.text === 'string' ? args.text : undefined,
+          base64: typeof args.base64 === 'string' ? args.base64 : undefined,
+        });
+        // Re-read the roots so the returned list already contains the new skills.
+        return { skills: await this.skills.load(this.skillScanOptions(cwd)), installed: result.installed };
+      }
 
       case 'skill.read': {
         const cwd = this.skillsCwd(args);

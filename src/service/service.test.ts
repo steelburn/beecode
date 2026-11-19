@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile, mkdir } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import type { FsFile, FsListing, McpListResult, SkillListResult, SkillReadResult } from '../shared/protocol';
+import type { FsFile, FsListing, McpListResult, SkillInstallResult, SkillListResult, SkillReadResult } from '../shared/protocol';
 
 /** A real stdio MCP server with one read-only and one mutating tool. */
 const FAKE_MCP_SERVER = `
@@ -31,6 +31,50 @@ rl.on('line', (line) => {
   }
 });
 `;
+
+/**
+ * A minimal stored (uncompressed) ZIP archive.
+ *
+ * The installer reads the central directory and inflates method 8 entries; tests build
+ * archives with method 0 so the CRC a real writer would compute never matters.
+ */
+function zipOf(files: Record<string, string>): Buffer {
+  const locals: Buffer[] = [];
+  const centrals: Buffer[] = [];
+  let offset = 0;
+  for (const [name, content] of Object.entries(files)) {
+    const data = Buffer.from(content, 'utf8');
+    const nameBytes = Buffer.from(name, 'utf8');
+    const local = Buffer.alloc(30 + nameBytes.length);
+    local.writeUInt32LE(0x04034b50, 0);
+    local.writeUInt16LE(20, 4);
+    local.writeUInt16LE(0, 8);
+    local.writeUInt32LE(data.length, 18);
+    local.writeUInt32LE(data.length, 22);
+    local.writeUInt16LE(nameBytes.length, 26);
+    nameBytes.copy(local, 30);
+    const central = Buffer.alloc(46 + nameBytes.length);
+    central.writeUInt32LE(0x02014b50, 0);
+    central.writeUInt16LE(20, 4);
+    central.writeUInt16LE(20, 6);
+    central.writeUInt32LE(data.length, 20);
+    central.writeUInt32LE(data.length, 24);
+    central.writeUInt16LE(nameBytes.length, 28);
+    central.writeUInt32LE(offset, 42);
+    nameBytes.copy(central, 46);
+    locals.push(local, data);
+    centrals.push(central);
+    offset += local.length + data.length;
+  }
+  const directory = Buffer.concat(centrals);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(centrals.length, 8);
+  end.writeUInt16LE(centrals.length, 10);
+  end.writeUInt32LE(directory.length, 12);
+  end.writeUInt32LE(offset, 16);
+  return Buffer.concat([...locals, directory, end]);
+}
 
 /**
  * End-to-end service test: boots the real background service against a throw-away
@@ -128,6 +172,38 @@ test('background service answers JSON-RPC over loopback HTTP', async () => {
     const detail = (await rpc('skill.read', { name: 'release', cwd: workspace })).result as SkillReadResult;
     assert.match(detail.content, /^# Release/);
     assert.match(detail.content, /Tag, build, publish\./);
+
+    // Skills drag-and-drop: a dropped SKILL.md installs as a user skill, and a ZIP installs
+    // every folder inside it that carries a SKILL.md — scripts included.
+    const fromFile = (
+      await rpc('skill.install', {
+        fileName: 'deploy.md',
+        text: '---\nname: deploy\ndescription: Ship it\n---\n\n# Deploy\n\nTag, build, publish.\n',
+      })
+    ).result as SkillInstallResult;
+    assert.deepEqual(fromFile.installed, ['deploy']);
+    assert.ok(
+      fromFile.skills.some((skill) => skill.name === 'deploy' && skill.source === 'user'),
+      'the installed skill is listed without a reload',
+    );
+
+    const archive = zipOf({
+      'pack/SKILL.md': '---\nname: pack\ndescription: Bundle it\n---\n\n# Pack\n',
+      'pack/scripts/run.sh': '#!/bin/sh\necho pack\n',
+      'README.md': 'not a skill',
+    });
+    const fromZip = (
+      await rpc('skill.install', { fileName: 'pack.zip', base64: archive.toString('base64') })
+    ).result as SkillInstallResult;
+    assert.deepEqual(fromZip.installed, ['pack']);
+    assert.equal(
+      await readFile(join(home, 'skills', 'pack', 'scripts', 'run.sh'), 'utf8'),
+      '#!/bin/sh\necho pack\n',
+      'the files next to the SKILL.md are installed with it',
+    );
+
+    const notAZip = await rpc('skill.install', { fileName: 'broken.zip', base64: 'bm90IGEgemlw' });
+    assert.ok(notAZip.error, 'a corrupt archive is refused instead of half installed');
 
     // Workspace explorer: the renderer gets the tree from the service, so the listing has to
     // describe folders and files and every path has to stay inside the roots.

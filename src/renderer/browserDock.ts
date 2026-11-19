@@ -216,7 +216,9 @@ export function mountBrowserDock(host: HTMLElement, api: BrowserPanelApi): Brows
     host.classList.toggle('minimized', mode === 'minimized');
     host.classList.toggle('maximized', mode === 'maximized');
     if (mode === 'minimized') host.style.height = '';
-    else if (mode === 'maximized') host.style.height = `${Math.max(MIN_HEIGHT, maximizedHeight())}px`;
+    // Never claim more than the column can spare: a floor of MIN_HEIGHT pushed the
+    // composer out of view on a short window instead of shrinking the dock.
+    else if (mode === 'maximized') host.style.height = `${Math.max(0, maximizedHeight())}px`;
     else host.style.height = normalHeight > 0 ? `${normalHeight}px` : '';
 
     const minimized = mode === 'minimized';

@@ -553,6 +553,24 @@ export interface SkillReadResult {
   content: string;
 }
 
+/**
+ * A skill dropped onto the Integrations panel: either the text of a `SKILL.md` or the
+ * base64 of a ZIP that carries one or more skill folders.
+ */
+export interface SkillInstallInput {
+  fileName?: string;
+  /** Markdown body of a dropped `SKILL.md`. */
+  text?: string;
+  /** Base64 of a dropped `.zip` archive. */
+  base64?: string;
+}
+
+export interface SkillInstallResult {
+  skills: SkillInfo[];
+  /** Folder names written under `<home>/skills`. */
+  installed: string[];
+}
+
 /* ---------------------------------------------------------------- RPC types */
 
 export interface ServiceHealth {
@@ -613,6 +631,7 @@ export interface RpcRequests {
   'skill.list': { params: { cwd?: string }; result: SkillListResult };
   'skill.reload': { params: { cwd?: string }; result: SkillListResult };
   'skill.read': { params: { name: string; cwd?: string }; result: SkillReadResult };
+  'skill.install': { params: SkillInstallInput; result: SkillInstallResult };
   'session.list': { params: Record<string, never>; result: SessionSummary[] };
   'session.create': {
     params: { title?: string; cwd?: string; mode?: AgentMode; model?: string; parentSessionId?: string };

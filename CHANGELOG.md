@@ -5,6 +5,17 @@ All notable changes to beeCode will be documented in this file.
 ## [Unreleased]
 
 ### Added
+
+- **Install a skill by dropping it on the Skills card.** Adding a skill meant creating
+  `~/.beecode/skills/<name>/SKILL.md` by hand and restarting. The Skills card is now a drop
+  target: drop a `SKILL.md` (written to `~/.beecode/skills/<name>/SKILL.md`) or a `.zip` —
+  every folder in the archive that carries a `SKILL.md` is installed with the scripts and
+  references beside it — or pick a file with **Choose file…**. The service does the writing
+  and answers with the re-scanned list, so the card updates without a restart. Unpacking is
+  dependency-free (the ZIP central directory plus `node:zlib`), and entries that would escape
+  the skills folder, archives over 5 MB and corrupt files are refused with a message instead
+  of a half-installed skill (`src/service/skills/zip.ts`, `src/service/skills/install.ts`,
+  `src/renderer/panels.ts`).
 - **One-click step-limit bump.** Running out of steps was a dead end: the note told you to
   raise `agent.maxSteps` "in settings" and stopped there. It now carries the fix — a **Raise
   step limit to N** button (24 → 48, capped at 400) that saves the higher limit through the
@@ -53,6 +64,32 @@ All notable changes to beeCode will be documented in this file.
   longer pushes the transcript off-screen (`src/renderer/plan.ts`).
 
 ### Fixed
+
+- **A new session forgot the mode you were using.** "New session" and an app restart always
+  came back as the configured `agent.defaultMode` — usually `ask` — so a long `autonomous`
+  stretch started over in the wrong mode every time; the mode only ever travelled on an
+  explicit `session.setMode`. The renderer now remembers the last mode (validated against
+  `ask|plan|act|autonomous`) and sends it with `session.create`, and every rendered session
+  teaches it again, so reopening an old session counts too (`src/renderer/main.ts`).
+- **The prompt could be pushed out of view by the internal browser.** Maximising the dock
+  forced its minimum height, and dock and transcript are flex siblings, so the composer ended
+  up behind the native `WebContentsView` overlay with no way to scroll to it. The dock now
+  yields to the column (`flex: 0 1 auto`, `max-height: calc(100% - 176px)`, smaller minimum)
+  and the column clips instead of spilling, so the prompt line always keeps its space
+  (`src/renderer/styles.css`, `src/renderer/browserDock.ts`). The Electron smoke now measures
+  the composer against the dock in every dock state — present, inside the window and never
+  overlapping it — so this cannot come back quietly (`src/main/main.ts`, `scripts/smoke.mjs`).
+- **The external-agent enable toggle did nothing.** The Settings card was filled from
+  `agents.list` — the registered agent *types*, which carry no CLI entries — so there was
+  nothing to tick before **Detect agents** was pressed, and a tick made after a detect looked
+  like it had reverted. The card now comes from the cached `agents.detect` catalogue (no spawn
+  on load) and is refreshed when the Settings tab is opened again (`src/renderer/main.ts`).
+- **The Workspace Files view went stale.** A failed `fs.list` kept the previous listing in
+  state, so the panel painted a directory that was no longer there and the error could never
+  be left; a successful listing invalidated nothing either, so re-opening the tab showed the
+  old tree. A failure now resets the state to the error itself, and the tab re-reads its
+  directory — the remembered one, not always the root — when it is opened
+  (`src/renderer/main.ts`).
 - **A truncated installer shipped as a working build.** The 0.1.0 installer had been cut
   off mid-write (67 MB instead of 111 MB), so running it died with "NSIS Error" and
   installed nothing, while every existing check still passed because each one only looked

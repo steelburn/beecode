@@ -409,6 +409,27 @@ async function runSmokeCheck(serviceReady: boolean): Promise<void> {
             maximized: el.classList.contains('maximized'),
             hidden: el.classList.contains('hidden'),
             tabs: el.querySelectorAll('.browser-tab').length,
+            // The prompt must survive a maximised dock: it keeps its height and ends above
+            // the dock, so the native page view can never cover it.
+            composer: (() => {
+              const form = document.querySelector('.composer');
+              if (!form) return { present: false };
+              const r = form.getBoundingClientRect();
+              return {
+                present: true,
+                top: Math.round(r.top),
+                bottom: Math.round(r.bottom),
+                height: Math.round(r.height),
+                viewport: Math.round(window.innerHeight),
+                // The dock sits *above* the prompt, so overlap — not order — is the thing
+                // to catch: a native page view over the composer is what hid it.
+                visible:
+                  Math.round(r.top) >= 0 && Math.round(r.bottom) <= Math.round(window.innerHeight) + 1,
+                overlapsDock:
+                  r.bottom > el.getBoundingClientRect().top + 1 &&
+                  r.top < el.getBoundingClientRect().bottom - 1,
+              };
+            })(),
             ...extra,
           });
 

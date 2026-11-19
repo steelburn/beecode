@@ -77,16 +77,39 @@ const integrationsOk =
 const builtinBadges = (integrations.badges ?? []).filter((badge) => badge === 'builtin').length;
 const pluginsOk = builtinBadges >= 3;
 
+// The prompt must survive a maximised dock: the composer keeps its full height inside the
+// window and the dock never covers it (the dock is what the page view is painted into).
+const composerOf = (phase) => report.browser?.controls?.[phase]?.composer ?? {};
+const composerVisibleOk = (composer) =>
+  composer.present === true &&
+  (composer.height ?? 0) > 0 &&
+  composer.visible === true &&
+  composer.overlapsDock === false;
+const composerOk =
+  composerVisibleOk(composerOf('before')) &&
+  composerVisibleOk(composerOf('maximized')) &&
+  composerVisibleOk(composerOf('unmaximized'));
+
 const ok =
   report.serviceReady === true &&
   report.dom?.bridge === true &&
   report.dom?.errors?.length === 0 &&
   markdownOk &&
   integrationsOk &&
-  pluginsOk;
+  pluginsOk &&
+  composerOk;
 if (!markdownOk) console.error(`[smoke] markdown/chart render check failed: ${JSON.stringify(rendered)}`);
 if (!integrationsOk) console.error(`[smoke] integrations panel check failed: ${JSON.stringify(integrations)}`);
 if (!pluginsOk) console.error(`[smoke] plugins card check failed: ${JSON.stringify(integrations)}`);
+if (!composerOk) {
+  console.error(
+    `[smoke] composer visibility check failed: ${JSON.stringify({
+      before: composerOf('before'),
+      maximized: composerOf('maximized'),
+      unmaximized: composerOf('unmaximized'),
+    })}`,
+  );
+}
 if (!ok) {
   console.error('[smoke] FAILED: see the report above');
   process.exit(1);

@@ -12,6 +12,7 @@ import type {
   SessionSummary,
   PluginInfo,
   SkillInfo,
+  SkillInstallInput,
   McpServerStatus,
   SubagentRunInfo,
   TodoItem,
@@ -294,7 +295,11 @@ async function loadAll(): Promise<void> {
     state.audit = audit;
     state.subagents = subagents;
     state.agents = agents;
-    state.detectedAgents = agents;
+    // The Settings agent card toggles *external CLI* agents, so it needs the probe
+    // catalogue. This used to hold `agents.list` (the registered agent types), which has no
+    // cli entries at all — the card therefore rendered nothing to enable or disable until
+    // the user found the Detect button. Cheap by default: the probe runs when Settings opens.
+    state.detectedAgents = (await api.invoke('agents.detect', { probe: false })).agents;
     state.tools = tools;
     state.mcpServers = mcp.servers;
     state.skills = skills.skills;
@@ -364,6 +369,7 @@ function bindUi(): void {
   els.modeSelect.addEventListener('change', async () => {
     if (!state.current) return;
     const mode = els.modeSelect.value as SessionSnapshot['mode'];
+    rememberMode(mode);
     await api.invoke('session.setMode', { sessionId: state.current.id, mode });
     state.current.mode = mode;
   });
@@ -381,6 +387,11 @@ function bindUi(): void {
       state.panel = (tab.dataset.panel as PanelTab) ?? 'permissions';
       for (const other of document.querySelectorAll('.tab')) other.classList.toggle('active', other === tab);
       renderPanelBody();
+      // Re-opening a tab re-reads what it shows: the Files listing and the CLI catalogue
+      // are snapshots, so a second click was the only way to ask for a fresh one and it
+      // did nothing before this.
+      if (state.panel === 'explorer') void openExplorer(state.explorer.path);
+      else if (state.panel === 'settings') void refreshAgentCatalogue();
     });
   }
 
@@ -402,7 +413,7 @@ async function newSession(): Promise<void> {
   }
   // A new session starts in the workspace; a per-session directory change stays opt-in.
   const cwd = state.workspace.root;
-  const snapshot = await api.invoke('session.create', { cwd });
+  const snapshot = await api.invoke('session.create', { cwd, mode: rememberedMode() });
   state.sessions = await api.invoke('session.list', {});
   await openSession(snapshot.id);
   els.input.focus();
@@ -670,7 +681,11 @@ function renderHeader(): void {
   els.cwd.title = session
     ? `Working directory: ${session.cwd} — click to change it for this session`
     : 'No session yet — click to choose the working directory for the next session';
-  if (session?.mode) els.modeSelect.value = session.mode;
+  if (session?.mode) {
+    // Whatever mode this session is in is the one the next session should start in.
+    rememberMode(session.mode);
+    els.modeSelect.value = session.mode;
+  } else els.modeSelect.value = rememberedMode();
   if (session?.model) els.modelSelect.value = session.model;
 }
 
@@ -1100,6 +1115,13 @@ function renderPanelBody(): void {
       state.plugins = result.plugins;
       renderPanelBody();
     },
+    installSkill: async (input: SkillInstallInput) => {
+      const result = await api.invoke('skill.install', input);
+      state.skills = result.skills;
+      // Rebuilding the panel is how the new card list appears; the note lives in the card.
+      renderPanelBody();
+      return result.installed;
+    },
     detectAgents: async () => {
       const result = await api.invoke('agents.detect', {});
       state.detectedAgents = result.agents;
@@ -1158,9 +1180,10 @@ function renderPanelBody(): void {
     }
   }
   else if (state.panel === 'explorer') {
-    // First visit reads the workspace root; the listing is cached until a switch or reload.
+    // First visit reads the workspace root; after that the listing is re-read when the tab
+    // is opened again (see the tab handler) or when the user navigates.
     if (state.explorer.listing || state.explorer.error) renderExplorer(els.panelBody, state.explorer, explorerCallbacks);
-    else void openExplorer();
+    else void openExplorer(state.explorer.path);
   } else renderActivity(els.panelBody, state.audit, callbacks);
 }
 
@@ -1261,7 +1284,9 @@ async function openExplorer(path?: string): Promise<void> {
     const listing = await api.invoke('fs.list', path ? { path } : {});
     state.explorer = { path: listing.path, listing };
   } catch (error) {
-    state.explorer = { ...state.explorer, error: (error as Error).message };
+    // Drop the listing: keeping it showed a folder that no longer matched the path, and
+    // the panel had no way back out of the error state.
+    state.explorer = { path: state.explorer.path, error: (error as Error).message };
   }
   if (state.panel === 'explorer') renderPanelBody();
 }
@@ -1358,4 +1383,43 @@ function scrollToBottom(): void {
 
 function setHint(text: string): void {
   els.hint.textContent = text;
+}
+
+/* -------------------------------------------------------------- preferences */
+
+const MODE_KEY = 'beecode:last-mode';
+const MODES: readonly SessionSnapshot['mode'][] = ['ask', 'plan', 'act', 'autonomous'];
+
+/**
+ * The permission mode the user last chose.
+ *
+ * The service falls back to `config.agent.defaultMode` on `session.create`, so a new
+ * session used to snap back to the default — clicking "New session" or restarting the app
+ * silently dropped "act". The renderer remembers the last mode instead and sends it along.
+ */
+function rememberedMode(): SessionSnapshot['mode'] {
+  const stored = localStorage.getItem(MODE_KEY);
+  return MODES.includes(stored as SessionSnapshot['mode'])
+    ? (stored as SessionSnapshot['mode'])
+    : 'ask';
+}
+
+/** Remember a mode as the one the next session starts in. */
+function rememberMode(mode: SessionSnapshot['mode'] | undefined): void {
+  if (mode && MODES.includes(mode)) localStorage.setItem(MODE_KEY, mode);
+}
+
+let catalogueProbedAt = 0;
+
+/** Re-detect the external CLI agents; the Settings card shows that list. */
+async function refreshAgentCatalogue(): Promise<void> {
+  if (Date.now() - catalogueProbedAt < 15_000) return;
+  catalogueProbedAt = Date.now();
+  try {
+    const result = await api.invoke('agents.detect', { probe: true });
+    state.detectedAgents = result.agents;
+    if (state.panel === 'settings') renderPanelBody();
+  } catch (error) {
+    setHint(`Could not probe the external agents: ${(error as Error).message}`);
+  }
 }

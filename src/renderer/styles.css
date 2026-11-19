@@ -124,7 +124,12 @@ html, body {
 
 /* ------------------------------------------------------------- workspace */
 
-.workspace { display: flex; flex-direction: column; min-width: 0; min-height: 0; position: relative; }
+.workspace {
+  display: flex; flex-direction: column; min-width: 0; min-height: 0; position: relative;
+  /* Nothing in the column may spill: the composer is the last child and it has to stay
+     reachable however tall the browser dock gets. */
+  overflow: hidden;
+}
 
 /* First-run setup: covers the chat column until a workspace folder exists. The composer
    behind it is disabled as well — the service refuses workspace-less file and shell work,
@@ -521,8 +526,12 @@ html, body {
 /* The page is a WebContentsView painted on top of this rectangle by the main process:
    the renderer reserves the space and draws only the chrome around it. */
 .browser-dock {
-  display: flex; flex-direction: column; flex: 0 0 auto;
-  height: clamp(220px, 42vh, 620px); min-height: 180px;
+  display: flex; flex-direction: column;
+  /* Flexible, not fixed: the dock gives way instead of pushing the composer out of the
+     column (that is what hid the prompt behind the page view on a short window). */
+  flex: 0 1 auto;
+  height: clamp(220px, 42vh, 620px); min-height: 120px;
+  max-height: calc(100% - 176px);
   border-top: 1px solid var(--line); background: var(--bg-inset);
 }
 .browser-splitter { flex: 0 0 auto; height: 6px; cursor: row-resize; }
@@ -802,3 +811,21 @@ body.dragging-browser-dock { cursor: row-resize; user-select: none; }
   font-size: 11px;
   opacity: 0.6;
 }
+
+
+/* ---------------------------------------------------------------- skills drop */
+.skill-drop.over {
+  border-color: var(--amber);
+  background: rgba(214, 158, 46, 0.08);
+}
+.skill-drop-zone {
+  display: flex; flex-direction: column; gap: 6px; align-items: flex-start;
+  margin-top: 10px; padding: 12px;
+  border: 1px dashed var(--line); border-radius: 8px;
+}
+.skill-drop-hint { color: var(--fg-dim); font-size: 12px; }
+.skill-drop-file { display: none; }
+.skill-drop-note:empty { display: none; }
+.skill-row { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
+.skill-row h4 { margin: 0 0 2px; }
+.skill-row p { margin: 0; }

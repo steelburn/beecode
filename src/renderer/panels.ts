@@ -14,6 +14,7 @@ import type {
   ProviderId,
   PluginInfo,
   SkillInfo,
+  SkillInstallInput,
   SubagentRunInfo,
 } from '../shared/protocol';
 import { DESKTOP_ACTIONS } from '../shared/protocol';
@@ -34,6 +35,8 @@ export interface PanelCallbacks {
   detectAgents?(): Promise<AgentInfo[]>;
   /** Persist the CLI agent list (`agents.save`); returns the refreshed catalogue. */
   saveAgents?(agents: CliAgentEntry[]): Promise<AgentInfo[]>;
+  /** Install a dropped skill (SKILL.md text or a base64 ZIP); returns the new folder names. */
+  installSkill?(input: SkillInstallInput): Promise<string[]>;
   /** Validate, persist and activate a workspace folder (`workspace.set`). */
   setWorkspace?(path: string): Promise<void>;
   /** Drop a folder from the recents, or clear the active root (`workspace.forget`). */
@@ -624,30 +627,98 @@ export function renderIntegrations(
 
   host.append(renderPluginsCard(plugins, cb));
 
-  host.append(
+  host.append(renderSkillsCard(skills, cb));
+}
+
+/**
+ * The skills card: what is installed plus the drop target that installs more.
+ *
+ * A dropped `SKILL.md` is written to `~/.beecode/skills/<name>/SKILL.md`; a dropped ZIP
+ * installs every folder in it that carries a `SKILL.md`, scripts and references included.
+ * The service owns the writing and answers with the re-scanned list, so the card never has
+ * to guess which roots were read.
+ */
+function renderSkillsCard(skills: SkillInfo[], cb: PanelCallbacks): HTMLElement {
+  const card = h('div', { class: 'card skill-drop', style: 'margin-top:18px' });
+  const note = h('p', { class: 'sub skill-drop-note' });
+  const picker = h('input', { class: 'skill-drop-file', type: 'file' }) as HTMLInputElement;
+  picker.multiple = true;
+  picker.accept = '.md,.markdown,.zip';
+
+  const install = async (files: FileList | File[]): Promise<void> => {
+    const list = Array.from(files);
+    if (!list.length) return;
+    const installed: string[] = [];
+    for (const file of list) {
+      try {
+        const input: SkillInstallInput = /\.zip$/i.test(file.name)
+          ? { fileName: file.name, base64: await base64Of(file) }
+          : { fileName: file.name, text: await file.text() };
+        installed.push(...((await cb.installSkill?.(input)) ?? []));
+      } catch (error) {
+        note.textContent = `Could not install ${file.name}: ${(error as Error).message}`;
+        return;
+      }
+    }
+    note.textContent = installed.length
+      ? `Installed ${installed.join(', ')} ✓`
+      : 'Nothing installable in that drop.';
+  };
+
+  picker.addEventListener('change', () => {
+    if (picker.files) void install(picker.files);
+    picker.value = '';
+  });
+  card.addEventListener('dragover', (event) => {
+    event.preventDefault();
+    card.classList.add('over');
+  });
+  card.addEventListener('dragleave', () => card.classList.remove('over'));
+  card.addEventListener('drop', (event) => {
+    event.preventDefault();
+    card.classList.remove('over');
+    if (event.dataTransfer?.files) void install(event.dataTransfer.files);
+  });
+
+  card.append(
+    h('h4', { text: 'Skills' }),
+    h('p', {
+      class: 'sub',
+      text: 'SKILL.md playbooks from ~/.beecode/skills, the workspace and any configured skills.dirs. Only names and descriptions sit in the prompt; the body loads when a task matches.',
+    }),
     h(
       'div',
-      { class: 'card', style: 'margin-top:18px' },
-      h('h4', { text: 'Skills' }),
-      h('p', {
-        class: 'sub',
-        text: 'SKILL.md playbooks from ~/.beecode/skills, the workspace and any configured skills.dirs. Only names and descriptions sit in the prompt; the body loads when a task matches.',
-      }),
+      { class: 'skill-drop-zone' },
+      h('div', { class: 'skill-drop-hint', text: 'Drop a SKILL.md or a skill .zip here to install it' }),
+      h('button', { class: 'btn ghost small', type: 'button', text: 'Choose file…', on: { click: () => picker.click() } }),
+      picker,
+      note,
     ),
   );
-  if (!skills.length) {
-    host.append(h('div', { class: 'empty', text: 'No skills found.' }));
-  }
+
+  if (!skills.length) card.append(h('div', { class: 'empty', text: 'No skills found.' }));
   for (const skill of skills) {
-    host.append(
+    card.append(
       h(
         'div',
-        { class: 'card' },
+        { class: 'skill-row' },
         h('h4', {}, skill.name, ' ', h('span', { class: 'badge', text: skill.source })),
         h('p', { class: 'sub', text: skill.description }),
       ),
     );
   }
+  return card;
+}
+
+/** Base64 of a dropped file, chunked so a large archive cannot blow the argument limit. */
+async function base64Of(file: File): Promise<string> {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  let binary = '';
+  const step = 0x8000;
+  for (let offset = 0; offset < bytes.length; offset += step) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + step));
+  }
+  return btoa(binary);
 }
 
 /* ----------------------------------------------------------------- subagents */
