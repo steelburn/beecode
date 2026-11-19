@@ -94,6 +94,12 @@ rather than around it:
 - **The cursor is visible state.** The shadow-DOM pointer moves to the target *before*
   input fires (plus a target ring and click ripple), so the user can follow the agent.
   It lives in the page's isolated world and never touches page globals.
+- **The dock is a panel, not an OS window.** Minimize collapses it to the title bar and
+  the renderer reports a zero rectangle, which is the only signal the host needs to
+  detach the view (`syncView` refuses zero-area bounds — do not "optimise" that into an
+  early return, or the page keeps floating above the chat). Maximize measures the
+  workspace column minus the siblings below the dock. Close goes through `close-all`,
+  which tears the tabs down; plain `close` only hides them for later.
 
 The service never imports the host: it sends `browser/exec` over the same stdio pipe in
 the reverse direction (`HostCall`) and the main process answers it.

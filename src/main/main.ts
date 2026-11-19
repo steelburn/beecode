@@ -351,7 +351,52 @@ async function runSmokeCheck(serviceReady: boolean): Promise<void> {
         cursor: state.cursor,
         dock,
       };
-      await browserHost.exec({ action: 'close' });
+
+      // Window controls: minimize must collapse the dock (and report no area, so the page
+      // view detaches), maximize must grow it into the column, close must remove the tabs.
+      const controls = (await win.webContents.executeJavaScript(
+        `(async () => {
+          const el = document.getElementById('browser-dock');
+          if (!el) return { dock: false };
+          const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+          const pick = (label) => Array.from(el.querySelectorAll('.browser-window-btn'))
+            .find((b) => (b.getAttribute('aria-label') || '').startsWith(label));
+          const box = (sel) => {
+            const node = sel ? el.querySelector(sel) : el;
+            const r = node ? node.getBoundingClientRect() : null;
+            return r ? Math.round(r.height) : -1;
+          };
+          const state = (extra) => ({
+            height: box(null),
+            surface: box('.browser-surface'),
+            minimized: el.classList.contains('minimized'),
+            maximized: el.classList.contains('maximized'),
+            hidden: el.classList.contains('hidden'),
+            tabs: el.querySelectorAll('.browser-tab').length,
+            ...extra,
+          });
+
+          const before = state({ buttons: el.querySelectorAll('.browser-window-btn').length });
+          pick('Minimize')?.click();
+          await wait(350);
+          const minimized = state();
+          pick('Restore')?.click();
+          await wait(350);
+          const restored = state();
+          pick('Maximize')?.click();
+          await wait(350);
+          const maximized = state();
+          pick('Restore')?.click();
+          await wait(350);
+          const unmaximized = state();
+          pick('Close')?.click();
+          await wait(500);
+          const closed = state();
+          return { before, minimized, restored, maximized, unmaximized, closed };
+        })()`,
+      )) as Record<string, unknown>;
+
+      browser = { ...browser, controls, afterControls: { visible: browserHost.state().visible, tabs: browserHost.state().tabs.length } };
     }
   } catch (err) {
     browser = { error: (err as Error).message };

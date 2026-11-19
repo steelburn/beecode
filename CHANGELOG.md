@@ -14,7 +14,8 @@ All notable changes to beeCode will be documented in this file.
   `src/service/tools/browser.ts`, `src/renderer/browserDock.ts`). Ten `browser_*` tools:
   open, snapshot, click, type, key, scroll, wait, tabs, screenshot, close. The dock
   reserves the rectangle and reports it on layout changes, so the attached view follows
-  the window.
+  the window, and its title bar carries minimize / maximize / close — collapsing reports
+  a zero rectangle, which is how the view knows to detach.
 - **MCP servers.** `mcpServers` in `config.json` connects external Model Context Protocol
   servers over stdio or streamable HTTP (`initialize` → `tools/list` → `tools/call`) and
   projects their tools into the catalogue as `mcp__<server>__<tool>`

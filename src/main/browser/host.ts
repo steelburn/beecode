@@ -162,6 +162,9 @@ export class BrowserHost {
       case 'close':
         this.hide();
         return;
+      case 'close-all':
+        this.closeAll();
+        return;
       case 'activate-tab':
         this.activate(command.tabId);
         this.emit();
@@ -601,6 +604,16 @@ export class BrowserHost {
     tab.lastUsed = Date.now();
     this.syncView();
     tab.view.webContents.focus();
+  }
+
+  /**
+   * Close every tab — the renderer's window-control `✕`. Hiding alone would leave the
+   * sandboxed views alive with nothing on screen to reach them.
+   */
+  private closeAll(): void {
+    for (const id of [...this.tabs.keys()]) this.closeTab(id);
+    this.hide();
+    this.emit();
   }
 
   private closeTab(tabId: string): void {

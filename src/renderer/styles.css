@@ -433,3 +433,13 @@ body.dragging-browser-dock { cursor: row-resize; user-select: none; }
 }
 .browser-bar .btn.active { border-color: var(--blue); color: var(--blue); }
 .browser-surface { flex: 1 1 auto; min-height: 0; background: var(--bg-inset); }
+
+/* Window controls. This is a panel, not an OS window: minimizing collapses it to the title
+   bar (the page view detaches, because the reserved rectangle reports no area) and
+   maximizing fills the column above the composer. */
+.browser-window-btn { min-width: 26px; padding: 0 6px; line-height: 1; }
+.browser-window-btn.active { color: var(--text); background: var(--bg-raised); }
+.browser-dock.minimized { height: auto; min-height: 0; }
+.browser-dock.minimized .browser-surface,
+.browser-dock.minimized .browser-splitter { display: none; }
+.browser-dock.maximized .browser-splitter { display: none; }

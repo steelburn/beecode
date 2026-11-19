@@ -6,14 +6,14 @@ import { clear, h } from './dom';
  *
  * The page itself is *not* rendered here. It lives in a `WebContentsView` owned by the
  * main process and painted on top of this window, inside its own sandboxed session. So
- * this module only does three things:
+ * this module only does a few things:
  *
  *   - reserve a rectangle for the page and report it on every layout change
  *     (`browser.setBounds`), so main can position the view on top of exactly that box;
  *   - draw the chrome *around* that rectangle — tab strip, address display, AI-cursor
  *     switch, close — with plain DOM in the renderer's own process;
  *   - forward what the user clicks as panel commands (`activate-tab`, `close-tab`,
- *     `toggle-cursor`, `focus`), which main applies to the host.
+ *     `toggle-cursor`, `focus`, `close-all`), which main applies to the host.
  *
  * Because the chrome is a sibling of the reserved rectangle and never inside it, no page
  * script can style, cover or measure the chat UI.
@@ -26,6 +26,9 @@ export interface BrowserDock {
 
 const MIN_HEIGHT = 180;
 const CHROME_RESERVE = 220;
+
+/** Collapsed to the title bar, filling the workspace column, or the size the user dragged. */
+type DockMode = 'normal' | 'minimized' | 'maximized';
 
 export function mountBrowserDock(host: HTMLElement, api: BrowserPanelApi): BrowserDock {
   const tabsEl = h('div', { class: 'browser-tabs', role: 'tablist' });
@@ -46,17 +49,32 @@ export function mountBrowserDock(host: HTMLElement, api: BrowserPanelApi): Brows
   });
   const closeBtn = h('button', {
     type: 'button',
-    class: 'btn ghost small',
+    class: 'btn ghost small browser-window-btn',
     text: '\u2715',
     title: 'Close the internal browser',
   });
+  closeBtn.setAttribute('aria-label', 'Close the internal browser');
+  const minBtn = h('button', {
+    type: 'button',
+    class: 'btn ghost small browser-window-btn',
+    text: '\u2212',
+    title: 'Minimize the internal browser',
+  });
+  minBtn.setAttribute('aria-label', 'Minimize the internal browser');
+  const maxBtn = h('button', {
+    type: 'button',
+    class: 'btn ghost small browser-window-btn',
+    text: '\u2922',
+    title: 'Maximize the internal browser',
+  });
+  maxBtn.setAttribute('aria-label', 'Maximize the internal browser');
   const splitter = h('div', { class: 'browser-splitter', title: 'Drag to resize the internal browser' });
   const surface = h('div', { class: 'browser-surface' });
   const bar = h(
     'div',
     { class: 'browser-bar' },
     tabsEl,
-    h('div', { class: 'browser-actions' }, urlEl, cursorBtn, closeBtn),
+    h('div', { class: 'browser-actions' }, urlEl, cursorBtn, minBtn, maxBtn, closeBtn),
   );
 
   clear(host);
@@ -65,13 +83,22 @@ export function mountBrowserDock(host: HTMLElement, api: BrowserPanelApi): Brows
   let current: BrowserState | null = null;
   let shown = false;
   let frame = 0;
+  let mode: DockMode = 'normal';
+  /** Height to restore when leaving minimize/maximize (0 = whatever the CSS says). */
+  let normalHeight = 0;
+  let lastActionAt: string | undefined;
 
   /** Report the reserved rectangle to main; only meaningful while the dock is on screen. */
   const sendBounds = (): void => {
     frame = 0;
     if (!shown) return;
     const rect = surface.getBoundingClientRect();
-    if (rect.width < 1 || rect.height < 1) return;
+    if (rect.width < 1 || rect.height < 1) {
+      // Minimized: the surface has no area, so tell main to detach the view. Returning
+      // without reporting would leave the page painted on top of the chat.
+      api.setBounds({ x: 0, y: 0, width: 0, height: 0 });
+      return;
+    }
     api.setBounds({
       x: Math.round(rect.left),
       y: Math.round(rect.top),
@@ -117,10 +144,25 @@ export function mountBrowserDock(host: HTMLElement, api: BrowserPanelApi): Brows
     if (visible !== shown) {
       shown = visible;
       host.classList.toggle('hidden', !visible);
+      // A panel that comes back starts at its normal size — and it must not stay collapsed
+      // while hidden, or the surface would have no box to measure when it returns.
+      if (mode !== 'normal') applyMode('normal');
       // The view can only be positioned once the dock has a layout box, hence the frame.
       if (visible) scheduleBounds();
     }
-    if (!visible) return;
+    // An agent action always gets a visible page: a minimized panel would hide the very
+    // cursor the user is meant to watch, which defeats the point of driving it in-app.
+    const actionAt = next.lastAction?.at;
+    if (mode === 'minimized' && actionAt && actionAt !== lastActionAt) applyMode('normal');
+    lastActionAt = actionAt;
+
+    if (!visible) {
+      // The panel is gone: drop the stale tab strip, so a re-opened dock cannot show tabs
+      // the host no longer has.
+      clear(tabsEl);
+      urlEl.value = '';
+      return;
+    }
     renderTabs(next);
     const active = next.tabs.find((tab) => tab.id === next.activeTabId && tab.active) ?? next.tabs.find((tab) => tab.active);
     urlEl.value = active?.url ?? '';
@@ -130,14 +172,69 @@ export function mountBrowserDock(host: HTMLElement, api: BrowserPanelApi): Brows
     cursorBtn.setAttribute('aria-pressed', String(cursorOn));
   };
 
+  /**
+   * How tall "maximized" is: the workspace column minus the siblings the dock must not cover
+   * (the approval slot and the composer). The transcript above it is `flex: 1`, so it gives
+   * up exactly that space.
+   */
+  const maximizedHeight = (): number => {
+    const parent = host.parentElement;
+    if (!parent) return window.innerHeight - CHROME_RESERVE;
+    const siblings = Array.from(parent.children);
+    const below = siblings.slice(siblings.indexOf(host) + 1);
+    const gap = Number.parseFloat(getComputedStyle(parent).rowGap) || 0;
+    const used =
+      below.reduce((sum, el) => sum + el.getBoundingClientRect().height, 0) + gap * below.length;
+    return parent.clientHeight - used;
+  };
+
+  /**
+   * Minimized = the title bar only (the surface collapses, so main detaches the page view);
+   * maximized = fill the column; normal = whatever the splitter last left behind.
+   */
+  const applyMode = (next: DockMode): void => {
+    if (mode === 'normal' && next !== 'normal') {
+      const height = Math.round(host.getBoundingClientRect().height);
+      if (height > 0) normalHeight = height;
+    }
+    mode = next;
+    host.classList.toggle('minimized', mode === 'minimized');
+    host.classList.toggle('maximized', mode === 'maximized');
+    if (mode === 'minimized') host.style.height = '';
+    else if (mode === 'maximized') host.style.height = `${Math.max(MIN_HEIGHT, maximizedHeight())}px`;
+    else host.style.height = normalHeight > 0 ? `${normalHeight}px` : '';
+
+    const minimized = mode === 'minimized';
+    minBtn.classList.toggle('active', minimized);
+    minBtn.title = minimized ? 'Restore the internal browser' : 'Minimize the internal browser';
+    minBtn.setAttribute('aria-label', minBtn.title);
+
+    const maximized = mode === 'maximized';
+    maxBtn.textContent = maximized ? '\u2921' : '\u2922';
+    maxBtn.classList.toggle('active', maximized);
+    maxBtn.title = maximized ? 'Restore the internal browser' : 'Maximize the internal browser';
+    maxBtn.setAttribute('aria-label', maxBtn.title);
+
+    scheduleBounds();
+  };
+
   cursorBtn.addEventListener('click', () => {
     api.command({ kind: 'toggle-cursor', enabled: !current?.cursor?.enabled });
   });
-  closeBtn.addEventListener('click', () => api.command({ kind: 'close' }));
+  minBtn.addEventListener('click', () => applyMode(mode === 'minimized' ? 'normal' : 'minimized'));
+  maxBtn.addEventListener('click', () => applyMode(mode === 'maximized' ? 'normal' : 'maximized'));
+  closeBtn.addEventListener('click', () => {
+    applyMode('normal');
+    api.command({ kind: 'close-all' });
+  });
 
   const observer = new ResizeObserver(() => scheduleBounds());
   observer.observe(surface);
-  const onWindowResize = (): void => scheduleBounds();
+  const onWindowResize = (): void => {
+    // A maximized dock has to grow with the column it fills.
+    if (mode === 'maximized') host.style.height = `${Math.max(MIN_HEIGHT, maximizedHeight())}px`;
+    scheduleBounds();
+  };
   window.addEventListener('resize', onWindowResize);
 
   // Dragging the splitter changes the dock's own height; the ResizeObserver above then
@@ -149,7 +246,10 @@ export function mountBrowserDock(host: HTMLElement, api: BrowserPanelApi): Brows
     const available = host.parentElement?.getBoundingClientRect().height ?? 0;
     const next = dragHeight + (dragFrom - event.clientY);
     const max = available > 0 ? Math.max(MIN_HEIGHT, available - CHROME_RESERVE) : next;
-    host.style.height = `${Math.round(Math.min(Math.max(next, MIN_HEIGHT), max))}px`;
+    const height = Math.round(Math.min(Math.max(next, MIN_HEIGHT), max));
+    host.style.height = `${height}px`;
+    // Remember it, so minimize/restore comes back to the size the user chose.
+    normalHeight = height;
   };
   const onPointerUp = (): void => {
     dragHeight = 0;
@@ -158,6 +258,8 @@ export function mountBrowserDock(host: HTMLElement, api: BrowserPanelApi): Brows
     window.removeEventListener('pointerup', onPointerUp);
   };
   splitter.addEventListener('pointerdown', (event) => {
+    // Dragging the splitter is a resize, so it leaves maximize first.
+    if (mode === 'maximized') applyMode('normal');
     dragFrom = event.clientY;
     dragHeight = host.getBoundingClientRect().height;
     document.body.classList.add('dragging-browser-dock');

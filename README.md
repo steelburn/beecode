@@ -215,6 +215,11 @@ reaches your OS, your files or another app.
   observe or fake what the agent clicked.
 - The AI cursor is drawn in the page’s isolated world: it glides to the target, rings
   it and ripples on click, so you can follow along.
+- Minimize, maximize and close live in the dock’s title bar. Minimizing collapses it to
+  the tab strip and reports no rectangle, so the page view detaches instead of floating
+  over the chat; maximizing fills the column above the composer; closing tears the tabs
+  down rather than only hiding them. If the agent acts while the panel is minimized, it
+  restores itself — a hidden page would hide the cursor you are meant to watch.
 - Every call is audited under the `browser` action, and `browser_open` and friends are
   gated like any other capability.
 

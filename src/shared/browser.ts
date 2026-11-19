@@ -196,6 +196,7 @@ export interface BrowserBounds {
 export type BrowserPanelCommand =
   | { kind: 'focus' }
   | { kind: 'close' }
+  | { kind: 'close-all' }
   | { kind: 'activate-tab'; tabId: string }
   | { kind: 'close-tab'; tabId: string }
   | { kind: 'toggle-cursor'; enabled: boolean }
