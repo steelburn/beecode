@@ -112,7 +112,10 @@ let seq = 0;
 async function rpc(method, params = {}) {
   const res = await fetch(`http://127.0.0.1:${port}/rpc`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+    // connection: close — while an agent run has a tool child alive the service resets a
+    // reused keep-alive socket, which surfaces as ECONNRESET on the very next call. That is
+    // a harness-only artifact (the app does not use this HTTP transport), so do not pool here.
+    headers: { 'content-type': 'application/json', connection: 'close', authorization: `Bearer ${token}` },
     body: JSON.stringify({ jsonrpc: '2.0', id: ++seq, method, params }),
   });
   const body = await res.json();
