@@ -53,6 +53,15 @@ All notable changes to beeCode will be documented in this file.
   longer pushes the transcript off-screen (`src/renderer/plan.ts`).
 
 ### Fixed
+- **A truncated installer shipped as a working build.** The 0.1.0 installer had been cut
+  off mid-write (67 MB instead of 111 MB), so running it died with "NSIS Error" and
+  installed nothing, while every existing check still passed because each one only looked
+  at `release/win-unpacked`. `npm run verify:installer` now runs the NSIS installer
+  silently, compares the installed `app.asar` against `release/win-unpacked`, and boots the
+  INSTALLED `beeCode.exe` in `--smoke` mode (scratch `--user-data-dir`, GUI-hostile
+  environment variables such as `ELECTRON_RUN_AS_NODE` stripped, which turns Electron into
+  plain Node and makes the exe exit instantly). An installer that cannot execute now fails
+  the check instead of shipping (`scripts/verify-installer.mjs`).
 - **Plugin tools were never offered to the model.** The plugin host built its tool
   catalogue but nothing handed it to the agent, so `pdf_generate`, `pdf_open` and
   `excel_export` were loaded and green in their own tests yet absent from the tool list —

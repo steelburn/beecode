@@ -5,11 +5,14 @@
 //   - the Windows driver actually runs from the packaged bundle (read-only window listing),
 //   - the Settings panel (endpoint, model, working directory) is inside the archive,
 //   - the packaged bundles are byte-identical to dist/ (no stale build),
-//   - the LLM answers through the packaged service.
+//   - the LLM answers through the packaged service,
+//   - the NSIS installer actually installs, and the INSTALLED exe boots its window
+//     (a build cut short mid-write leaves an installer that dies with "NSIS Error").
 // Run `npm run dist` first; this checks what electron-builder produced.
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:net';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -174,6 +177,87 @@ try {
     rmSync(workDir, { recursive: true, force: true, maxRetries: 3 });
   } catch {
     console.warn(`could not remove ${workDir} (still locked) — delete it manually`);
+  }
+}
+
+/** Run a command to completion, collecting output; kills it on timeout. */
+function run(cmd, args, timeoutMs = 120000, options = {}) {
+  return new Promise((resolve) => {
+    const child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'], ...options });
+    const stdout = [];
+    const stderr = [];
+    child.stdout?.on('data', (d) => stdout.push(String(d)));
+    child.stderr?.on('data', (d) => stderr.push(String(d)));
+    const timer = setTimeout(() => child.kill('SIGKILL'), timeoutMs);
+    child.on('error', (e) => {
+      clearTimeout(timer);
+      resolve({ code: -1, stdout, stderr: [...stderr, String(e)] });
+    });
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      resolve({ code, stdout, stderr });
+    });
+  });
+}
+
+// --- Installed-artifact stage -----------------------------------------------------
+// "It installed but the app does not execute" is the failure this script exists to
+// catch, and only running the installer proves it: an interrupted build writes a
+// truncated NSIS payload whose bootstrap dies with "NSIS Error" and installs nothing,
+// while every check on release/win-unpacked still passes. So install for real and boot
+// the installed exe with --smoke (scratch user-data, GUI quirks stripped from env).
+if (process.platform === 'win32') {
+  const setup = readdirSync('release').find((f) => /^beeCode Setup .*\.exe$/.test(f));
+  check('installer artifact present', Boolean(setup), setup ?? 'release/beeCode Setup *.exe');
+  if (setup) {
+    const setupPath = join('release', setup);
+    const sizeMb = (statSync(setupPath).size / 1024 / 1024).toFixed(1);
+    const installed = join(process.env.LOCALAPPDATA ?? '', 'Programs', 'beeCode');
+    const install = await run(setupPath, ['/S'], 420000);
+    const installedExe = join(installed, 'beeCode.exe');
+    check(
+      'installer runs and installs the app',
+      install.code === 0 && existsSync(installedExe),
+      `exit=${install.code}, installer ${sizeMb} MB` + (install.code === 0 ? '' : ' (is beeCode still running?)'),
+    );
+    const sha = (p) => createHash('sha256').update(readFileSync(p)).digest('hex');
+    const installedAsar = join(installed, 'resources', 'app.asar');
+    check(
+      'installed payload matches release/win-unpacked',
+      existsSync(installedAsar) && sha(installedAsar) === sha(ASAR),
+    );
+    if (existsSync(installedExe)) {
+      const userData = mkdtempSync(join(tmpdir(), 'beecode-installed-'));
+      const env = { ...process.env };
+      for (const key of [
+        'ELECTRON_RUN_AS_NODE',
+        'VSCODE_NODE_COMPILE_CACHE_ROOT',
+        'VSCODE_NODE_COMPILE_CACHE_KIND',
+        'ELECTRON_NO_ATTACH_CONSOLE',
+      ]) {
+        delete env[key];
+      }
+      // --smoke writes its report relative to the cwd, so run it inside the scratch dir.
+      const boot = await run(
+        installedExe,
+        ['--smoke', `--user-data-dir=${userData}`],
+        240000,
+        { cwd: userData, env },
+      );
+      let report = null;
+      try {
+        report = JSON.parse(readFileSync(join(userData, 'dist-test', 'smoke-report.json'), 'utf8'));
+      } catch {
+        report = null;
+      }
+      check(
+        'installed app executes and loads its window',
+        Boolean(report?.serviceReady && report?.windowLoaded),
+        report ? `serviceReady=${report.serviceReady} loaded=${report.windowLoaded}` : `no smoke report (exit=${boot.code})`,
+      );
+      if (!report && boot.stderr.length) console.log('stderr:', boot.stderr.join('').slice(-600));
+      rmSync(userData, { recursive: true, force: true });
+    }
   }
 }
 
