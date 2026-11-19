@@ -177,3 +177,44 @@ export function sanitizeHtml(html: string): string {
   }
   return out;
 }
+
+/**
+ * Base typography for the isolated HTML preview. A rendered HTML file is mounted in its
+ * own shadow root (see `htmlPreviewMarkup`), so the application's `.explorer-rendered`
+ * rules cannot reach inside it and the essentials are restated here. Custom properties
+ * inherit across the shadow boundary, so the preview still follows the app theme.
+ */
+const HTML_PREVIEW_CSS = [
+  ':host{display:block;font:inherit;font-size:12px;line-height:1.55;color:var(--text);overflow-wrap:anywhere;}',
+  ':host>.html-preview>:first-child{margin-top:0;}',
+  'h1,h2,h3,h4,h5,h6{margin:14px 0 6px;line-height:1.3;font-weight:650;}',
+  'h1{font-size:16px;}',
+  'h2{font-size:14px;}',
+  'h3{font-size:13px;}',
+  'h4,h5,h6{font-size:12px;}',
+  'p{margin:6px 0;}',
+  'ul,ol{margin:6px 0;padding-left:20px;}',
+  'li{margin:2px 0;}',
+  'a{color:#7ad0ff;text-decoration:none;}',
+  'a:hover{text-decoration:underline;}',
+  'code{padding:1px 4px;border-radius:4px;background:rgba(255,255,255,0.08);font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;}',
+  'pre{margin:8px 0;padding:8px 10px;overflow:auto;border:1px solid var(--line);border-radius:8px;background:rgba(0,0,0,0.25);}',
+  'pre code{padding:0;background:none;}',
+  'blockquote{margin:8px 0;padding:2px 0 2px 10px;border-left:2px solid var(--line);color:var(--text-dim);}',
+  'hr{border:0;border-top:1px solid var(--line);margin:12px 0;}',
+  'table{margin:8px 0;border-collapse:collapse;font-size:11.5px;}',
+  'th,td{padding:4px 8px;border:1px solid var(--line);}',
+  'img{max-width:100%;height:auto;}',
+].join('');
+
+/**
+ * The rendered view of an HTML file: the sanitized markup (see `sanitizeHtml`) behind a
+ * wrapper that carries the base styles. The caller mounts the result in a shadow root,
+ * which is what stops a file stylesheet — `body { ... }`, `* { ... }`, `:root { ... }` —
+ * from restyling the whole application, and keeps the application out of the file. Rules
+ * that target `html`, `body` or `:root` no longer match at all, because the sanitizer
+ * drops those elements; the preview therefore follows the app theme, not the page's.
+ */
+export function htmlPreviewMarkup(html: string): string {
+  return `<style>${HTML_PREVIEW_CSS}</style><div class="html-preview">${sanitizeHtml(html)}</div>`;
+}

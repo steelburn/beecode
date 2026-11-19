@@ -11,8 +11,10 @@ All notable changes to beeCode will be documented in this file.
   **Rendered / Source** switch: Markdown goes through the transcript renderer (headings,
   lists, tables), HTML through a sanitiser that drops scripting blocks, `on*` handlers,
   `javascript:` URLs and `expression()` styles while keeping inline CSS, tables, images and
-  links — so a report looks like a report without the app trusting it. Plain text keeps its
-  source view and gets no switch (`src/renderer/preview.ts`, `src/renderer/explorer.ts`).
+  links — so a report looks like a report without the app trusting it. The rendered file is
+  mounted in its own shadow root with layout containment, so a stylesheet inside it cannot
+  restyle the app chrome and a `position: fixed` page cannot paint over it. Plain text keeps
+  its source view and gets no switch (`src/renderer/preview.ts`, `src/renderer/explorer.ts`).
 - **Workspace terminal.** A new **Terminal** panel tab runs shell commands from the app,
   confined to the workspace: the working directory can never leave the root (`cd ..` at the
   root is refused, so is an absolute path outside it, and switching workspace re-confines

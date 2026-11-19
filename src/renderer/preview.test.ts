@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { canSwitchView, defaultView, fileKind, sanitizeHtml } from './preview';
+import { canSwitchView, defaultView, fileKind, htmlPreviewMarkup, sanitizeHtml } from './preview';
 
 test('fileKind classifies markdown, html and everything else', () => {
   assert.equal(fileKind('README.md'), 'markdown');
@@ -63,4 +63,14 @@ test('sanitizeHtml removes the document wrapper, meta refresh and base href', ()
 
 test('sanitizeHtml keeps a lone angle bracket as text', () => {
   assert.match(sanitizeHtml('a < b'), /a &lt; b/);
+});
+
+test('htmlPreviewMarkup keeps the file markup and its styles inside the preview', () => {
+  const markup = htmlPreviewMarkup(
+    '<style>body{visibility:hidden}</style><h1>t</h1><script>alert(1)</script>',
+  );
+  assert.match(markup, /^<style>:host\{display:block/);
+  assert.ok(markup.includes('<style>body{visibility:hidden}</style>'));
+  assert.ok(markup.includes('<div class="html-preview">'));
+  assert.ok(!markup.includes('<script'));
 });

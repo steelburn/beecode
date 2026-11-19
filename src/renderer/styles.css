@@ -778,6 +778,15 @@ body.dragging-browser-dock { cursor: row-resize; user-select: none; }
 }
 .explorer-rendered img { max-width: 100%; height: auto; }
 
+/*
+ * Rendered HTML file. It lives in its own shadow root, so its stylesheets cannot leak out
+ * and the app's cannot leak in; containment does the other half — it makes the host a
+ * containing block for `position: fixed` descendants and clips what they paint.
+ */
+.explorer-rendered.html {
+  contain: layout paint; overflow-x: auto;
+}
+
 /* -------------------------------------------------- session running / unread */
 .session-item.busy .s-title {
   color: #7ad0ff;

@@ -408,8 +408,13 @@ async function runSmokeCheck(serviceReady: boolean): Promise<void> {
                 .find((n) => /\.html?$/i.test(n)) || null;
           }
           if (out.html && pick(out.html)) {
-            out.htmlRendered = await waitFor(() => Boolean(document.querySelector('.explorer-rendered.html')), 20000);
-            out.htmlScriptStripped = !document.querySelector('.explorer-rendered.html script');
+            // The rendered file lives in a shadow root, so the assertions look inside it;
+            // the file stylesheet staying out of this document is the isolation check.
+            const htmlHost = () => document.querySelector(".explorer-rendered.html");
+            const htmlShadow = () => { const host = htmlHost(); return host ? host.shadowRoot : null; };
+            out.htmlRendered = await waitFor(() => { const root = htmlShadow(); return Boolean(root && root.querySelector('.html-preview')); }, 20000);
+            out.htmlScriptStripped = Boolean(htmlShadow()) && !htmlShadow().querySelector("script");
+            out.htmlStylesIsolated = !document.querySelector('.explorer-rendered.html style');
           }
           return out;
         })().catch((err) => ({ error: String(err) })),

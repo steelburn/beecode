@@ -4,7 +4,7 @@ import {
   canSwitchView,
   defaultView,
   fileKind,
-  sanitizeHtml,
+  htmlPreviewMarkup,
   type FileView,
 } from './preview';
 
@@ -117,9 +117,21 @@ export function renderExplorer(host: HTMLElement, state: ExplorerState, cb: Expl
 }
 
 /*
+ * A rendered HTML file is mounted in its own shadow root: the file's own stylesheets stay
+ * inside the preview instead of restyling the whole app, and the app's rules cannot
+ * reshape the file. `.explorer-rendered.html` adds layout containment on top, so a page
+ * written with `position: fixed` cannot paint over the app chrome either.
+ */
+function renderHtmlPreview(text: string): HTMLElement {
+  const host = h('div', { class: 'explorer-rendered html' });
+  host.attachShadow({ mode: 'open' }).innerHTML = htmlPreviewMarkup(text);
+  return host;
+}
+
+/*
  * Markdown and HTML open rendered and can be flipped to the raw source; every other file
- * only ever has a source view, so no switch is offered. HTML goes through `sanitizeHtml`
- * first — see preview.ts for exactly what that removes.
+ * only ever has a source view, so no switch is offered. HTML is sanitized and then
+ * mounted isolated — see `renderHtmlPreview`; markdown is escaped, so it stays inline.
  */
 function renderPreview(file: FsFile, state: ExplorerState, cb: ExplorerCallbacks): HTMLElement {
   const kind = fileKind(file.name);
@@ -131,10 +143,9 @@ function renderPreview(file: FsFile, state: ExplorerState, cb: ExplorerCallbacks
     body.append(
       view === 'source' || kind === 'text'
         ? h('pre', { class: 'explorer-code', text: file.text })
-        : h('div', {
-            class: `explorer-rendered${kind === 'html' ? ' html' : ''}`,
-            html: kind === 'html' ? sanitizeHtml(file.text) : renderMarkdown(file.text),
-          }),
+        : kind === 'html'
+          ? renderHtmlPreview(file.text)
+          : h('div', { class: 'explorer-rendered', html: renderMarkdown(file.text) }),
     );
   }
   return h(

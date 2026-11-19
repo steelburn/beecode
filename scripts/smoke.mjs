@@ -103,12 +103,21 @@ const silentOk =
 // Files panel view modes (Markdown/HTML rendered vs source) and the workspace terminal
 // must work through the real UI, not just exist as code.
 const preview = report.dom?.preview ?? {};
+// A rendered HTML file must live in its own shadow root: its markup and its stylesheet
+// belong inside that root, never in the app document. Only gated when the workspace has an
+// HTML file at all, since the list is whatever the working directory contains.
+const htmlPreviewOk =
+  !preview.html ||
+  (preview.htmlRendered === true &&
+    preview.htmlScriptStripped === true &&
+    preview.htmlStylesIsolated === true);
 const previewOk =
   preview.tab === true &&
   preview.listing === true &&
   preview.markdownRendered === true &&
   preview.toggle === true &&
-  preview.markdownSource === true;
+  preview.markdownSource === true &&
+  htmlPreviewOk;
 
 const terminal = report.dom?.terminal ?? {};
 const terminalOk =
