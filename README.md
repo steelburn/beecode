@@ -41,6 +41,9 @@ pipe and main answers. Policy and audit stay in the service; the sandboxed
 
 ## Quick start
 
+Requires Node.js >= 22.12 (pinned in `.nvmrc`): Electron 42's install chain refuses older
+runtimes.
+
 ```bash
 npm install          # Electron is the only binary dependency
 npm run build

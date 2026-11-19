@@ -2,7 +2,7 @@
 
 All notable changes to beeCode will be documented in this file.
 
-## [0.1.0]
+## [0.1.0] - 2026-11-19
 
 ### Added
 - **Plugins.** A third extension point beside MCP servers and skills: an in-process
@@ -141,6 +141,10 @@ All notable changes to beeCode will be documented in this file.
   model is told the real truncation limit.
 
 ### Changed
+- **Electron 42.11.16, and Node >= 22.12 with it.** Dependabot bumped Electron from
+  40.10.2 to 42.11.16; its install chain (`@electron/get` 5, `@electron-internal/extract-zip`,
+  `undici`) requires Node >= 22.12, so `engines` now declares `>=22.12` and a `.nvmrc` pins
+  22.12.0. A clean `npm install` on Node 20 fails.
 - **Policy scoping follows the session, not the process.** `PolicyEngine.evaluateFile` takes
   `extraRoots` per call rather than consulting a single global root, and the file and shell tools
   pass the session's own `workspaceRoots`. A session pointed outside the configured workspace
