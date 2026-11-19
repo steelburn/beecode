@@ -1,3 +1,4 @@
+import type { BrowserPanelApi } from './browser';
 import type {
   BeeCodeConfig,
   PolicyDocument,
@@ -81,4 +82,9 @@ export interface BeeCodeBridge {
   openExternal(url: string): Promise<void>;
   onEvent(listener: (event: ServiceEvent) => void): () => void;
   onServiceStatus(listener: (status: ServiceStatusPayload) => void): () => void;
+  /**
+   * The internal browser panel. The page itself is a sandboxed view owned by the main
+   * process, so the renderer only reserves space for it and mirrors its state.
+   */
+  browser: BrowserPanelApi;
 }

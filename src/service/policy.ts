@@ -1,7 +1,8 @@
 import { readFile } from 'node:fs/promises';
 import { basename, isAbsolute, relative, resolve, sep } from 'node:path';
+import { BROWSER_ACTIONS, type BrowserAction } from '../shared/browser';
 import { defaultPolicy } from '../shared/defaults';
-import type { AppRule, DesktopAction, PolicyDocument } from '../shared/protocol';
+import type { AppRule, BrowserPolicy, DesktopAction, PolicyDocument } from '../shared/protocol';
 import { POLICY_DOCUMENT_VERSION } from '../shared/protocol';
 import { writeJsonFile } from './logger';
 
@@ -44,7 +45,10 @@ export function migratePolicy(parsed: PolicyDocument): PolicyDocument {
     if (!missing.length) return rule;
     return { ...rule, actions: [...rule.actions, ...missing] };
   });
-  return { ...parsed, version: POLICY_DOCUMENT_VERSION, allowedApps };
+  // A policy written before the internal browser existed has no `browser` block: fill
+  // it from the defaults rather than leaving every `browser_*` call to crash on undefined.
+  const browser = { ...defaultPolicy().browser, ...(parsed.browser ?? {}) };
+  return { ...parsed, version: POLICY_DOCUMENT_VERSION, allowedApps, browser };
 }
 
 /**
@@ -194,12 +198,85 @@ export class PolicyEngine {
     return { allowed: true, reason: 'path is allowed by policy', requiresApproval: write };
   }
 
+  /**
+   * The browser section as the rest of the service sees it — needed by tool previews, which
+   * must decide whether to raise an approval card before a page (and its URL) exists.
+   */
+  browserPolicy(): BrowserPolicy {
+    return this.policy.browser ?? defaultPolicy().browser;
+  }
+
+  /**
+   * Evaluate a navigation or an interaction in the internal (sandboxed) browser.
+   *
+   * The sandbox is why this is a policy check and not a hard approval gate: the view has no
+   * Node, no shell, no downloads and an in-memory session, so the blast radius of a click is
+   * the request itself. Deny rules still win, `allowedHosts` narrows reach when `allowAnyHost`
+   * is off, and `allowInput: false` degrades the browser to a read-only viewer.
+   */
+  evaluateBrowser(url: string, action: BrowserAction = 'navigate'): PolicyDecision {
+    const cfg = this.policy.browser ?? defaultPolicy().browser;
+    if (!cfg.enabled) return DENY('the internal browser is disabled by policy');
+    if (!BROWSER_ACTIONS.includes(action)) return DENY(`unknown browser action "${action}"`);
+
+    const interactive = action === 'click' || action === 'type' || action === 'key';
+    if (interactive && !cfg.allowInput) {
+      return DENY(`browser_${action} is disabled by policy (browser.allowInput is false)`);
+    }
+
+    const target = (url ?? '').trim();
+    // A fresh tab has no host: nothing to reach, nothing to deny.
+    if (target === '' || target === 'about:blank') {
+      return { allowed: true, reason: 'empty tab is always permitted', requiresApproval: false };
+    }
+
+    let parsed: URL;
+    try {
+      parsed = new URL(target);
+    } catch {
+      return DENY(`"${target}" is not an absolute URL`);
+    }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return DENY(`scheme "${parsed.protocol}" is not permitted in the internal browser`);
+    }
+
+    const host = parsed.hostname.toLowerCase();
+    const denied = cfg.deniedHosts.find((pattern) => hostMatches(pattern, host));
+    if (denied) return DENY(`${host} matches denied host "${denied}"`);
+    if (!cfg.allowAnyHost && !cfg.allowedHosts.some((pattern) => hostMatches(pattern, host))) {
+      return DENY(`${host} is not in the browser allow-list`);
+    }
+
+    return {
+      allowed: true,
+      reason: `${action} permitted on ${host}`,
+      requiresApproval: cfg.requireApproval,
+    };
+  }
+
   /** Apps the agent may know about, for the system prompt. */
   describeAllowedApps(): string {
     return this.policy.allowedApps
       .map((a) => `- ${a.id} (${a.name}) actions: ${a.actions.join(', ')}${a.autoApprove ? ' [auto-approved]' : ''}`)
       .join('\n');
   }
+}
+
+/**
+ * Host matching for the browser policy: exact, or `*.example.com` for a domain and its
+ * subdomains. Matching is suffix-aware but label-aware — `evil-github.com` never matches
+ * `github.com`, and a bare pattern does not silently cover subdomains.
+ */
+export function hostMatches(pattern: string, host: string): boolean {
+  const p = (pattern ?? '').trim().toLowerCase().replace(/^\.+/, '');
+  const h = (host ?? '').trim().toLowerCase();
+  if (!p || !h) return false;
+  if (p === '*') return true;
+  if (p.startsWith('*.')) {
+    const base = p.slice(2);
+    return h === base || h.endsWith(`.${base}`);
+  }
+  return h === p;
 }
 
 export function isInside(root: string, candidate: string): boolean {

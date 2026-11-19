@@ -86,7 +86,7 @@ export interface ToolInfo {
   /** Mutating tools are gated by the approval policy. */
   mutating: boolean;
   /** Which subsystem owns the tool — used for grouping in the UI. */
-  group: 'desktop' | 'files' | 'shell' | 'agents' | 'control' | 'mcp' | 'skills';
+  group: 'desktop' | 'browser' | 'files' | 'shell' | 'agents' | 'control' | 'mcp' | 'skills';
   /** JSON Schema (draft-07 subset) for the tool arguments. */
   inputSchema: Record<string, unknown>;
 }
@@ -150,7 +150,7 @@ export const DESKTOP_ACTIONS: DesktopAction[] = [
  * Bumped whenever the action set changes, so a policy file written by an older beeCode can be
  * migrated instead of silently denying the new actions for apps the user already allowed.
  */
-export const POLICY_DOCUMENT_VERSION = 2;
+export const POLICY_DOCUMENT_VERSION = 3;
 
 export interface AppRule {
   /** Stable id used by tools (`desktop_*` take an `app` id). */
@@ -167,6 +167,27 @@ export interface AppRule {
   allowedPaths?: string[];
   /** When true these actions skip the interactive approval prompt (still audited). */
   autoApprove?: boolean;
+}
+
+/**
+ * Rules for the internal (sandboxed) browser.
+ *
+ * Deny beats allow; `allowedHosts` only applies when `allowAnyHost` is false, and
+ * `about:blank` is always reachable so the agent can open an empty tab to start from.
+ */
+export interface BrowserPolicy {
+  /** Master switch — when false every `browser_*` tool refuses to run. */
+  enabled: boolean;
+  /** When true any http(s) host is reachable (still audited). */
+  allowAnyHost: boolean;
+  /** Host suffixes the agent may visit, e.g. `['github.com', '*.microsoft.com']`. */
+  allowedHosts: string[];
+  /** Host suffixes that are never reachable, even under a wildcard allow. */
+  deniedHosts: string[];
+  /** Permit typing into pages and clicking elements (i.e. submitting forms). */
+  allowInput: boolean;
+  /** Ask the user before every interacting action, not just the first page load. */
+  requireApproval: boolean;
 }
 
 export interface PolicyDocument {
@@ -189,6 +210,7 @@ export interface PolicyDocument {
     allowedRoots: string[];
     writable: boolean;
   };
+  browser: BrowserPolicy;
   updatedAt?: string;
 }
 
@@ -197,7 +219,14 @@ export interface AuditEntry {
   at: string;
   sessionId?: string;
   tool?: string;
-  action: DesktopAction | 'shell' | 'file-read' | 'file-write' | 'launch' | 'subagent';
+  action:
+    | DesktopAction
+    | 'shell'
+    | 'file-read'
+    | 'file-write'
+    | 'launch'
+    | 'subagent'
+    | 'browser';
   app?: string;
   target?: string;
   outcome: 'allowed' | 'denied' | 'approved' | 'denied-by-user' | 'cancelled' | 'failed';
@@ -253,6 +282,21 @@ export interface DesktopConfig {
   allowInput: boolean;
 }
 
+export interface BrowserConfig {
+  /** Opt out of the internal browser entirely (`browser_*` tools then report it disabled). */
+  enabled: boolean;
+  /** Hard cap on open tabs; opening one more closes the least recently used tab. */
+  maxTabs: number;
+  /** Page opened by `browser_open` when no url is given. */
+  homeUrl: string;
+  /** Keep cookies and storage between runs. Off by default: an ephemeral session. */
+  persistSession: boolean;
+  /** Draw the AI cursor overlay while the agent drives a page. */
+  showCursor: boolean;
+  /** Let pages run scripts. Off turns the browser into a text-only viewer. */
+  allowScripts: boolean;
+}
+
 export interface SubagentConfig {
   enabled: boolean;
   /** Cap on concurrent subagent runs. */
@@ -268,6 +312,7 @@ export interface BeeCodeConfig {
   service: ServiceConfig;
   agent: AgentConfig;
   desktop: DesktopConfig;
+  browser: BrowserConfig;
   subagents: SubagentConfig;
   /** External MCP servers whose tools are exposed to the agent. */
   mcpServers: Record<string, McpServerConfig>;

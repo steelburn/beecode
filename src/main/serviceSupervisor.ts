@@ -26,6 +26,7 @@ interface Pending {
  */
 export class ServiceSupervisor extends EventEmitter {
   private child?: ChildProcessWithoutNullStreams;
+  private hostHandler?: (method: string, params: unknown) => Promise<unknown>;
   private pending = new Map<number, Pending>();
   private nextId = 1;
   private buffer = '';
@@ -104,6 +105,14 @@ export class ServiceSupervisor extends EventEmitter {
     return ok;
   }
 
+  /**
+   * Install the handler for service-initiated host requests (the internal browser). The
+   * main process owns the view, so these calls travel backwards over the same pipe.
+   */
+  setHostHandler(handler: (method: string, params: unknown) => Promise<unknown>): void {
+    this.hostHandler = handler;
+  }
+
   private async restart(): Promise<void> {
     if (this.stopping) return;
     if (this.restarts >= 5) {
@@ -117,6 +126,35 @@ export class ServiceSupervisor extends EventEmitter {
     await new Promise((r) => setTimeout(r, delay));
     if (this.stopping) return;
     await this.start();
+  }
+
+  /**
+   * Answer a service-initiated host request. Errors travel back as a JSON-RPC error so the
+   * tool that asked gets a message it can show the model instead of a hang.
+   */
+  private async answerHostRequest(method: string, id: number, params: unknown): Promise<void> {
+    const reply = (payload: Record<string, unknown>): void => {
+      const child = this.child;
+      if (!child?.stdin.writable) return;
+      try {
+        child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, ...payload })}\n`);
+      } catch (error) {
+        this.options.log('warn', `failed to answer host request ${method}: ${String(error)}`);
+      }
+    };
+
+    const handler = this.hostHandler;
+    if (!handler) {
+      reply({ error: { code: -32601, message: `no host handler is registered for "${method}"` } });
+      return;
+    }
+    try {
+      reply({ result: await handler(method, params) });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.options.log('warn', `host request ${method} failed: ${message}`);
+      reply({ error: { code: -32000, message } });
+    }
   }
 
   private flushReady(ok: boolean): void {
@@ -142,6 +180,14 @@ export class ServiceSupervisor extends EventEmitter {
       msg = JSON.parse(line) as Record<string, unknown>;
     } catch {
       this.options.log('info', `service: ${line}`);
+      return;
+    }
+
+    // A request *from* the service (it has both a method and an id): the agent's tools run
+    // in the service, but the browser view lives here, so the service calls back into the
+    // host. Same pipe, opposite direction — see `HostRequests` in `shared/browser.ts`.
+    if (typeof msg.method === 'string' && msg.method !== 'event' && typeof msg.id === 'number') {
+      void this.answerHostRequest(msg.method, msg.id, msg.params);
       return;
     }
 

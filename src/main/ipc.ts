@@ -1,4 +1,5 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
+import type { BrowserPanelCommand } from '../shared/browser';
 import { RENDERER_METHODS, type AppInfo, type ServiceStatusPayload } from '../shared/bridge';
 import type { BeeCodeConfig, PolicyDocument, RpcMethod, RpcRequests } from '../shared/protocol';
 import { beeCodeHome } from '../shared/tools';
@@ -9,6 +10,10 @@ export interface IpcDeps {
   getWindow: () => BrowserWindow | null;
   workspace: string;
   restartService: () => Promise<{ ok: boolean }>;
+  /** Panel geometry and chrome commands for the internal browser view. */
+  browserCommand: (command: BrowserPanelCommand) => void;
+  /** Called with the new config after a successful save, so the host can re-read the sandbox settings. */
+  configChanged?: (config: BeeCodeConfig) => void;
 }
 
 const allowed = new Set<string>(RENDERER_METHODS);
@@ -45,6 +50,13 @@ export function registerIpc(deps: IpcDeps): void {
 
   ipcMain.handle('beecode:restart-service', () => deps.restartService());
 
+  // Fire-and-forget: the renderer reports where the browser surface sits and which tab the
+  // user picked. State flows back on 'beecode:browser-state'.
+  ipcMain.on('beecode:browser-command', (_event, command: BrowserPanelCommand) => {
+    if (!command || typeof command.kind !== 'string') return;
+    deps.browserCommand(command);
+  });
+
   ipcMain.handle(
     'beecode:invoke',
     async (_event, payload: { method: RpcMethod; params: RpcRequests[RpcMethod]['params'] }) => {
@@ -63,9 +75,11 @@ export function registerIpc(deps: IpcDeps): void {
 
   ipcMain.handle('beecode:config-get', () => deps.supervisor.request('config.get', {}));
 
-  ipcMain.handle('beecode:config-set', (_event, config: BeeCodeConfig) =>
-    deps.supervisor.request('config.set', { config }),
-  );
+  ipcMain.handle('beecode:config-set', async (_event, config: BeeCodeConfig) => {
+    const result = await deps.supervisor.request('config.set', { config });
+    deps.configChanged?.(config);
+    return result;
+  });
 
   ipcMain.handle('beecode:pick-directory', async (_event, options?: { title?: string; defaultPath?: string }) => {
     const win = deps.getWindow();

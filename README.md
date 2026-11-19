@@ -11,22 +11,33 @@ agents. What is new is the host: instead of a VS Code extension it is an Electro
 app wrapped around a **background agent service** and a **permissioned desktop-control
 layer**.
 
+```mermaid
+flowchart LR
+  subgraph renderer["Electron renderer — sandboxed"]
+    chat["chat · approvals · panels"]
+    dock["browser dock<br/>(chrome only)"]
+  end
+  preload["preload<br/>typed RPC proxy"]
+  main["main process<br/>window · tray · WebContentsView · desktop driver"]
+  service["background service<br/>SessionManager → AgentLoop → tools"]
+  llm["LLM API"]
+  driver["Windows driver<br/>UI Automation + CDP"]
+
+  chat --> preload
+  dock --> preload
+  preload <-->|"contextBridge IPC"| main
+  main <-->|"JSON-RPC over stdio"| service
+  service --> llm
+  service -.->|"browser/exec — reverse RPC"| main
+  main --> driver
 ```
-┌──────────────────────────────┐        ┌──────────────────────────────────────────┐
-│  Electron renderer (sandbox) │        │  Background service (child process)      │
-│  chat · approvals · panels   │        │                                          │
-│         │ contextBridge      │        │  SessionManager → AgentLoop → LLM        │
-│  preload │ (typed RPC proxy)  │        │         │                                │
-│         ▼                    │  stdio │         ▼                                │
-│  main process  ──────────────┼───────►│  ToolRegistry                            │
-│  window · tray · supervisor  │ JSON-  │   ├── desktop_*  → DesktopController     │
-└──────────────────────────────┘  RPC   │   │                └── PolicyEngine ▶ OS │
-                                       │   ├── fs_* / shell_run                   │
-                                       │   └── subagent_* → SubagentRunner        │
-                                       │            ├── internal nested session   │
-                                       │            └── external CLI agents       │
-                                       └──────────────────────────────────────────┘
-```
+
+![beeCode driving the internal browser, the AI cursor resting on the primary action](docs/images/app-window.png)
+
+The arrow is not one-way. The internal browser’s page lives in the main process, so
+when the agent drives it the service sends `browser/exec` *back* over the same stdio
+pipe and main answers. Policy and audit stay in the service; the sandboxed
+`WebContentsView` and the AI cursor stay on the host side.
 
 ## Quick start
 
@@ -107,6 +118,7 @@ A loopback Base URL (Ollama, LM Studio) may still run keyless.
 | Drive a UI | `desktop_invoke`, `desktop_set_value`, `desktop_type`, `desktop_hotkey` |
 | Work with files | `fs_list`, `fs_read`, `fs_write`, `fs_search` |
 | Run allow-listed commands | `shell_run` |
+| Browse the web (sandboxed, AI cursor) | `browser_open`, `browser_snapshot`, `browser_click`, `browser_type`, `browser_key`, `browser_scroll`, `browser_wait`, `browser_tabs`, `browser_screenshot`, `browser_close` |
 | Delegate | `subagent_delegate`, `agents_list`, `subagent_list`, `subagent_cancel` |
 | Remember | `todo_write` / `todo_read`, `memory_write` / `memory_read`, `ask_user` |
 
@@ -115,6 +127,31 @@ for the policy, and [docs/windows-driver.md](docs/windows-driver.md) for how the
 executes an action on Windows.
 
 ## The permission model (deny by default)
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant A as Agent loop (service)
+  participant P as Policy · policy.json
+  participant U as Approval card (renderer)
+  participant H as Host (main process)
+  participant L as Audit log
+
+  A->>P: desktop_click (notepad, "Save")
+  alt app or action not permitted
+    P-->>A: error — the action is not allowed
+  else permitted but not auto-approved
+    P-->>A: needs approval
+    A->>U: approval card
+    U-->>A: approved
+    A->>H: perform the action
+    H-->>A: result
+  else auto-approved
+    A->>H: perform the action
+    H-->>A: result
+  end
+  A->>L: append (action, args, outcome)
+```
 
 The agent can only touch applications listed in the policy, and only the actions ticked
 for each one. This is enforced in the service — **not** in the prompt — so a clever prompt
@@ -138,6 +175,72 @@ cannot widen it:
   `~/.beecode/audit.jsonl` and mirrored in the **Activity** panel.
 
 Edit the policy in the app (Permissions panel) or at `~/.beecode/policy.json`.
+
+## The internal browser
+
+![The browser surface alone: the AI cursor ring, its target label and the page it drove](docs/images/ai-cursor.png)
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant M as Model
+  participant T as browser_* tool
+  participant C as BrowserController (service)
+  participant P as BrowserPolicy
+  participant H as BrowserHost (main)
+  participant V as sandboxed WebContentsView
+  participant Cur as AI cursor (isolated world)
+
+  M->>T: browser_click (tabId, ref)
+  T->>C: run the action
+  C->>P: evaluateBrowser(tab.url, "click")
+  P-->>C: allow
+  C->>H: browser/exec (reverse JSON-RPC)
+  H->>Cur: move the cursor to the target first
+  H->>V: CDP Input.dispatchMouseEvent
+  V-->>H: page reacted
+  H-->>C: snapshot after the action
+  C-->>M: condensed text + element list
+```
+
+The agent can browse the web in a window it drives itself, with a cursor you can watch
+work. It is deliberately a *separate* surface from the desktop driver: nothing here
+reaches your OS, your files or another app.
+
+- The page is a sandboxed `WebContentsView` (`sandbox: true`, no Node,
+  `contextIsolation`) in a dedicated, in-memory session. Every permission request,
+  download, popup and non-web scheme is refused by the host before the page sees it.
+- Input is dispatched through the DevTools protocol (`Input.dispatchMouseEvent` /
+  `insertText` / `dispatchKeyEvent`), not scripted into the page, so a site cannot
+  observe or fake what the agent clicked.
+- The AI cursor is drawn in the page’s isolated world: it glides to the target, rings
+  it and ripples on click, so you can follow along.
+- Every call is audited under the `browser` action, and `browser_open` and friends are
+  gated like any other capability.
+
+It ships enabled and permissive because the sandbox — not a host list — is the boundary.
+Tighten it in the policy document (`policy.json`):
+
+```json
+{
+  "browser": {
+    "enabled": true,          // false: every browser_* tool refuses
+    "allowAnyHost": false,    // false: only allowedHosts are reachable
+    "allowedHosts": ["github.com", "*.mozilla.org"],
+    "deniedHosts": ["*.bank.example"],   // beats a wildcard
+    "allowInput": false,      // read-only browsing
+    "requireApproval": true   // ask before each navigation
+  }
+}
+```
+
+`file:`, `javascript:` and `data:` URLs are refused regardless of the lists, and
+`about:blank` is always allowed so the agent can start from an empty tab. Host matching
+is label-aware: `*.github.com` covers the apex and its subdomains, but not
+`evil-github.com`.
+
+Tab count, home page and session persistence live in `config.json` under `browser`
+(`maxTabs`, `homeUrl`, `persistSession`, `showCursor`, `allowScripts`).
 
 ## Modes
 
@@ -200,6 +303,7 @@ src/
 | `npm run smoke` | boots the real app in `--smoke` mode and asserts the UI reached the service |
 | `npm run check` | typecheck + test + build + smoke |
 | `npm run dist` | NSIS installer in `release/` via electron-builder |
+| `npm run docs:screenshots` | boots the app, drives the internal browser and regenerates `docs/images/*.png` |
 | `npm run verify:driver` | drives the real Windows driver against Calculator — UI Automation, coordinate clicks, resize |
 | `npm run verify:llm` | round-trips the `.env.llm` endpoint through the agent loop |
 | `npm run verify:installer` | boots the service out of the packaged `app.asar` and checks the shipped tools, driver and Settings panel |

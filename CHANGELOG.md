@@ -5,6 +5,16 @@ All notable changes to beeCode will be documented in this file.
 ## [0.1.0]
 
 ### Added
+- **Internal browser.** The agent can browse the web in a window it drives itself, with a
+  visible AI cursor it moves to each target before acting. Each tab is a sandboxed
+  `WebContentsView` in a dedicated in-memory session — permission requests, downloads,
+  popups and non-web schemes are refused at the host — while policy and audit stay in the
+  service and input is dispatched over CDP rather than scripted into the page
+  (`src/main/browser/*`, `src/service/browser/controller.ts`,
+  `src/service/tools/browser.ts`, `src/renderer/browserDock.ts`). Ten `browser_*` tools:
+  open, snapshot, click, type, key, scroll, wait, tabs, screenshot, close. The dock
+  reserves the rectangle and reports it on layout changes, so the attached view follows
+  the window.
 - **MCP servers.** `mcpServers` in `config.json` connects external Model Context Protocol
   servers over stdio or streamable HTTP (`initialize` → `tools/list` → `tools/call`) and
   projects their tools into the catalogue as `mcp__<server>__<tool>`
@@ -137,3 +147,11 @@ with no failures.
   (UIPI, DPI virtualisation, no automated coverage of the real driver). `architecture.md`
   linked the driver page and had its `-EncodedCommand` claim corrected, and
   `desktop-permissions.md` + `README.md` now point at it.
+
+- **README diagrams and screenshots.** The architecture, permission and internal-browser flows
+  are mermaid diagrams instead of ASCII art, and `docs/images/` holds two screenshots taken from
+  a real run (`npm run docs:screenshots` → `scripts/capture.mjs` → the capture mode in
+  `src/main/docsCapture.ts`). The capture refuses to write a blank image: it records pixel
+  statistics per file, proves the AI cursor changes the page pixels, and checks that the browser
+  surface really landed inside the dock rectangle (`regionMatch`), all in
+  `docs/images/capture-report.json`.

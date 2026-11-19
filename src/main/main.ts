@@ -2,7 +2,11 @@ import { app, BrowserWindow, globalShortcut, Menu, nativeImage, net, protocol, s
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join, relative, resolve, isAbsolute } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import type { BrowserExecParams, BrowserState } from '../shared/browser';
+import { defaultConfig } from '../shared/defaults';
+import type { BrowserConfig } from '../shared/protocol';
 import { beeCodeHome } from '../shared/tools';
+import { BrowserHost } from './browser/host';
 import { pipeServiceEvents, registerIpc } from './ipc';
 import { ServiceSupervisor } from './serviceSupervisor';
 
@@ -21,6 +25,9 @@ let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let quitting = false;
 let supervisor: ServiceSupervisor;
+let browserHost: BrowserHost | null = null;
+/** Mirrors config.browser so the host can read it synchronously when it opens a tab. */
+let browserConfig: BrowserConfig = defaultConfig().browser;
 
 app.setName('beeCode');
 
@@ -53,13 +60,27 @@ async function bootstrap(): Promise<void> {
     },
   });
 
+  // The host is created before the IPC handlers so the renderer can drive the panel as
+  // soon as it mounts, and it answers the service's host requests (the agent's browser tools).
+  browserHost = createBrowserHost();
+  supervisor.setHostHandler(async (method, params) => {
+    if (!browserHost) throw new Error('the internal browser is not available');
+    if (method === 'browser/exec') return browserHost.exec(params as BrowserExecParams);
+    throw new Error(`unsupported host request: ${method}`);
+  });
+
   registerIpc({
     supervisor,
     getWindow: () => mainWindow,
     workspace,
+    browserCommand: (command) => browserHost?.command(command),
+    configChanged: () => {
+      void refreshBrowserConfig();
+    },
     restartService: async () => {
       await supervisor.stop();
       const ok = await supervisor.start();
+      if (ok) await refreshBrowserConfig();
       return { ok };
     },
   });
@@ -67,6 +88,7 @@ async function bootstrap(): Promise<void> {
     supervisor,
     getWindow: () => mainWindow,
     workspace,
+    browserCommand: (command) => browserHost?.command(command),
     restartService: async () => ({ ok: false }),
   });
 
@@ -76,10 +98,27 @@ async function bootstrap(): Promise<void> {
   // The background service starts independently of the window — closing the UI keeps
   // the agent runtime alive so long-running tasks and subagents are not interrupted.
   const ok = await supervisor.start();
+  if (ok) await refreshBrowserConfig();
   if (!ok) console.error('[main] agent service failed to start — see ~/.beecode/logs/service.log');
 
   if (process.argv.includes('--smoke')) {
     await runSmokeCheck(ok);
+    return;
+  }
+
+  // `--capture-docs[=<dir>]` regenerates the README screenshots (src/main/docsCapture.ts).
+  const captureArg = process.argv.find((arg) => arg.startsWith('--capture-docs'));
+  if (captureArg) {
+    const outDir = captureArg.includes('=')
+      ? resolve(captureArg.slice(captureArg.indexOf('=') + 1))
+      : resolve(process.cwd(), 'docs', 'images');
+    const { runDocsCapture } = await import('./docsCapture');
+    const report =
+      mainWindow && browserHost
+        ? await runDocsCapture({ window: mainWindow, browser: browserHost, outDir })
+        : { ok: false, images: [], hovered: false, errors: ['no window or browser host'] };
+    console.log(`[docs] ${JSON.stringify(report, null, 2)}`);
+    app.exit(report.ok ? 0 : 1);
     return;
   }
 
@@ -139,6 +178,34 @@ function createWindow(): void {
   });
 
   void mainWindow.loadURL('app://beecode/index.html');
+}
+
+/** Push browser panel state (open tabs, active tab, cursor) to the renderer. */
+function sendBrowserState(state: BrowserState): void {
+  const win = mainWindow;
+  if (win && !win.isDestroyed()) win.webContents.send('beecode:browser-state', state);
+}
+
+/**
+ * The internal browser is a main-process object: the service asks for actions over the
+ * host channel and this is what answers them.
+ */
+function createBrowserHost(): BrowserHost {
+  return new BrowserHost({
+    getWindow: () => mainWindow,
+    config: () => browserConfig,
+    onState: sendBrowserState,
+    log: (level, message) => console.log(`[${level}]`, message),
+  });
+}
+
+async function refreshBrowserConfig(): Promise<void> {
+  try {
+    const config = await supervisor.request('config.get', {});
+    if (config?.browser) browserConfig = { ...browserConfig, ...config.browser };
+  } catch {
+    /* the defaults keep the browser usable while the service is starting */
+  }
 }
 
 function createTray(): void {
@@ -251,6 +318,45 @@ async function runSmokeCheck(serviceReady: boolean): Promise<void> {
     dom = { error: (err as Error).message };
   }
 
+  // Internal browser: the dock must reserve a rectangle before the host can paint a page
+  // into it, so this drives the real chain — host exec -> state push -> dock layout ->
+  // setBounds -> attached view — instead of checking the pieces separately.
+  let browser: Record<string, unknown> = { skipped: true };
+  try {
+    if (browserHost && win) {
+      const opened = await browserHost.exec({ action: 'open', url: 'about:blank' });
+      await new Promise((r) => setTimeout(r, 1200));
+      const state = browserHost.state();
+      const dock = (await win.webContents.executeJavaScript(
+        `(() => {
+          const el = document.getElementById('browser-dock');
+          if (!el) return { dock: false };
+          const surface = el.querySelector('.browser-surface');
+          const rect = surface ? surface.getBoundingClientRect() : null;
+          return {
+            dock: true,
+            hidden: el.classList.contains('hidden'),
+            tabs: el.querySelectorAll('.browser-tab').length,
+            url: el.querySelector('.browser-url')?.value ?? '',
+            cursorToggle: Boolean(el.querySelector('.browser-bar .btn.active')),
+            surface: rect ? { width: Math.round(rect.width), height: Math.round(rect.height) } : null,
+          };
+        })()`,
+      )) as Record<string, unknown>;
+      browser = {
+        opened: opened.ok,
+        error: opened.error,
+        visible: state.visible,
+        tabs: state.tabs.length,
+        cursor: state.cursor,
+        dock,
+      };
+      await browserHost.exec({ action: 'close' });
+    }
+  } catch (err) {
+    browser = { error: (err as Error).message };
+  }
+
   const health = supervisor.status === 'ready' ? await supervisor.request('service.health', {}) : undefined;
   const result = {
     smoke: true,
@@ -259,6 +365,7 @@ async function runSmokeCheck(serviceReady: boolean): Promise<void> {
     tools: health?.tools,
     driver: health?.desktopDriver,
     windowLoaded: loaded,
+    browser,
     dom,
   };
   // A GUI-subsystem process on Windows may have no console attached, in which case
@@ -270,6 +377,7 @@ async function runSmokeCheck(serviceReady: boolean): Promise<void> {
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
 
   quitting = true;
+  browserHost?.dispose();
   await supervisor.stop();
   app.exit(serviceReady && loaded && dom.bridge === true ? 0 : 1);
 }
@@ -290,6 +398,7 @@ app.on('before-quit', (event) => {
   event.preventDefault();
   void (async () => {
     globalShortcut.unregisterAll();
+    browserHost?.dispose();
     await supervisor?.stop();
     tray?.destroy();
     app.exit(0);

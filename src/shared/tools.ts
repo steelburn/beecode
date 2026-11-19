@@ -38,7 +38,7 @@ export interface ToolDefinition {
   name: string;
   description: string;
   mutating: boolean;
-  group: 'desktop' | 'files' | 'shell' | 'agents' | 'control' | 'mcp' | 'skills';
+  group: 'desktop' | 'browser' | 'files' | 'shell' | 'agents' | 'control' | 'mcp' | 'skills';
   inputSchema: Record<string, unknown>;
   handler: ToolHandler;
   /**

@@ -23,6 +23,7 @@
     "package": "electron-builder --dir",
     "dist": "electron-builder",
     "smoke": "node scripts/smoke.mjs",
+    "docs:screenshots": "node scripts/capture.mjs",
     "verify:driver": "node scripts/verify-driver.mjs",
     "verify:llm": "node scripts/verify-llm.mjs",
     "verify:installer": "node scripts/verify-installer.mjs"

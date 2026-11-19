@@ -60,6 +60,10 @@
 
         <section class="transcript" id="transcript" aria-live="polite"></section>
 
+        <!-- Reserves the rectangle the main process paints the sandboxed page view into.
+             The chrome inside is plain renderer DOM; the page never renders here. -->
+        <section class="browser-dock hidden" id="browser-dock" aria-label="Internal browser"></section>
+
         <div class="approval-slot" id="approval-slot"></div>
 
         <form class="composer" id="composer">

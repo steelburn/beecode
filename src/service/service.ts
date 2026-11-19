@@ -1,5 +1,5 @@
 import { mkdir } from 'node:fs/promises';
-import { defaultConfig, normalizeConfig, normalizeMcpServers } from '../shared/defaults';
+import { defaultConfig, defaultPolicy, normalizeConfig, normalizeMcpServers } from '../shared/defaults';
 import { installSecrets } from './secrets';
 import type {
   BeeCodeConfig,
@@ -10,8 +10,10 @@ import type {
   ServiceHealth,
   AuditEntry,
 } from '../shared/protocol';
+import type { HostCall } from '../shared/browser';
 import { paths } from '../shared/tools';
 import { AuditLog } from './audit';
+import { BrowserController } from './browser/controller';
 import { DesktopController } from './desktop/controller';
 import { McpManager } from './mcp/manager';
 import { SkillStore } from './skills/store';
@@ -48,6 +50,9 @@ export class BeeCodeService {
   private audit!: AuditLog;
   private policy!: PolicyEngine;
   private desktop!: DesktopController;
+  private browser!: BrowserController;
+  /** Bound by the transport: the desktop app can host a browser, HTTP cannot. */
+  private hostCall?: HostCall;
   private subagents!: SubagentRunner;
   private sessions!: SessionManager;
   private todos = new TodoStore();
@@ -90,6 +95,16 @@ export class BeeCodeService {
     await this.loadPolicyState();
     this.policy.setWorkspaceRoots([this.config.agent.workingDir]);
 
+    // Browser activity is reported on the same host-activity stream as the desktop driver so
+    // the UI has a single "what did the agent do to the machine" feed.
+    this.browser = new BrowserController({
+      policy: this.policy,
+      audit: this.audit,
+      config: () => this.config.browser,
+      host: () => this.hostCall,
+      onActivity: (entry) => this.emit({ type: 'desktop.activity', payload: entry }),
+    });
+
     this.desktop = new DesktopController(this.policy, this.audit, {
       allowInput: this.config.desktop.allowInput,
       driver: this.config.desktop.enabled ? this.config.desktop.driver : 'mock',
@@ -112,6 +127,7 @@ export class BeeCodeService {
 
     this.deps = {
       controller: this.desktop,
+      browser: this.browser,
       policy: this.policy,
       audit: this.audit,
       subagents: this.subagents,
@@ -161,6 +177,14 @@ export class BeeCodeService {
   }
 
   /**
+   * Bind the transport's channel to the desktop host (stdio). Without it the `browser_*`
+   * tools report the internal browser as unavailable instead of failing obscurely.
+   */
+  bindHostCall(call: HostCall): void {
+    this.hostCall = call;
+  }
+
+  /**
    * Folds a `.env.llm` endpoint into the config as a first-class preset. The file is an
    * explicit opt-in, so a valid one takes over as the default model — otherwise the user
    * would have to click through the picker before their key had any effect.
@@ -186,6 +210,7 @@ export class BeeCodeService {
       service: { ...base.service, ...(loaded.service ?? {}) },
       agent: { ...base.agent, ...(loaded.agent ?? {}) },
       desktop: { ...base.desktop, ...(loaded.desktop ?? {}) },
+      browser: { ...base.browser, ...(loaded.browser ?? {}) },
       subagents: { ...base.subagents, ...(loaded.subagents ?? {}) },
       mcpServers: normalizeMcpServers({ ...base.mcpServers, ...(loaded.mcpServers ?? {}) }),
       skills: { ...base.skills, ...(loaded.skills ?? {}) },
@@ -194,8 +219,9 @@ export class BeeCodeService {
 
   private async loadPolicyState(): Promise<void> {
     const p = paths();
-    const emptyPolicy = { version: 1, defaultDecision: 'deny', allowedApps: [], deniedExe: [], shell: { enabled: false, allowedCommands: [], blocked: [] }, filesystem: { workspaceOnly: true, allowedRoots: [], writable: false } } as PolicyDocument;
-    this.policy = new PolicyEngine(emptyPolicy, [this.config.agent.workingDir]);
+    // Start from the shipped defaults (deny-by-default, browser section included) and let
+    // `PolicyEngine.load` widen them from the user's file — never the other way round.
+    this.policy = new PolicyEngine(defaultPolicy(), [this.config.agent.workingDir]);
     await this.policy.load(p.policy);
   }
 

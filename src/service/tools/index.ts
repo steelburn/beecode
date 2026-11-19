@@ -6,7 +6,9 @@ import type { PolicyEngine } from '../policy';
 import type { SkillStore } from '../skills/store';
 import type { MemoryStore, TodoStore } from '../stores';
 import type { SubagentRunner } from '../subagents/runner';
+import type { BrowserController } from '../browser/controller';
 import { agentTools } from './agents';
+import { browserTools } from './browser';
 import { controlTools } from './control';
 import { desktopTools } from './desktop';
 import { fileTools } from './files';
@@ -16,6 +18,7 @@ import { skillTools } from './skills';
 
 export interface ToolDeps {
   controller: DesktopController;
+  browser: BrowserController;
   policy: PolicyEngine;
   audit: AuditLog;
   subagents: SubagentRunner;
@@ -34,6 +37,8 @@ export const SUBAGENT_TOOL_ALLOWLIST = new Set([
   'desktop_list_windows',
   'desktop_ui_tree',
   'desktop_screenshot',
+  'browser_snapshot',
+  'browser_tabs',
   'fs_list',
   'fs_read',
   'fs_search',
@@ -46,6 +51,7 @@ export const SUBAGENT_TOOL_ALLOWLIST = new Set([
 export function buildToolRegistry(deps: ToolDeps, options: { allowDelegation: boolean; readOnly?: boolean }): ToolRegistry {
   const registry = new ToolRegistry().register(
     ...desktopTools({ controller: deps.controller, policy: deps.policy }),
+    ...browserTools({ controller: deps.browser, policy: deps.policy }),
     ...fileTools({ policy: deps.policy, audit: deps.audit }),
     ...shellTools({ policy: deps.policy, audit: deps.audit }),
     ...controlTools({ todos: deps.todos, memory: deps.memory }),

@@ -14,6 +14,7 @@ import type {
   TranscriptEntry,
 } from '../shared/protocol';
 import { clear, formatJsonForDisplay, h, renderMarkdown } from './dom';
+import { mountBrowserDock } from './browserDock';
 import { renderActivity, renderIntegrations, renderPermissions, renderSettings, renderSubagents } from './panels';
 
 declare global {
@@ -21,6 +22,8 @@ declare global {
     beeCode: BeeCodeBridge;
     /** Smoke-check hook (see scripts/smoke.mjs): counts what a sample message rendered. */
     __renderMessageSample?: () => Record<string, number>;
+    /** Screenshot-capture hook (see src/main/docsCapture.ts): renders a demo transcript. */
+    __renderDocsSample?: () => void;
   }
 }
 
@@ -67,6 +70,62 @@ window.__renderMessageSample = () => {
 // Surface renderer crashes in the main-process log (and in the smoke report).
 const rendererErrors: string[] = [];
 (window as unknown as { __rendererErrors: string[] }).__rendererErrors = rendererErrors;
+
+/**
+ * Demo conversation for the README screenshots. It goes through the normal `buildEntry`
+ * path, so the images show the real bubble, tool-call and markdown rendering.
+ */
+window.__renderDocsSample = () => {
+  const at = new Date().toISOString();
+  const entries: TranscriptEntry[] = [
+    {
+      id: 'docs-user',
+      role: 'user',
+      at,
+      text:
+        'Open the Northwind support board and raise a ticket for the invoice PDF that renders a ' +
+        'blank second page. Priority high, and mention it is blocking the Contoso close.',
+    },
+    {
+      id: 'docs-assistant',
+      role: 'assistant',
+      at,
+      text: [
+        'Working in the **internal browser** — your desktop stays untouched.',
+        '',
+        '1. Open *Northwind Support → Tickets*',
+        '2. Read the open tickets to find the invoice one',
+        '3. Press **Create ticket** and fill in the report',
+        '',
+        '| step | tool | effect |',
+        '| --- | --- | --- |',
+        '| 1 | `browser_open` | new sandboxed tab |',
+        '| 2 | `browser_snapshot` | visible text + elements |',
+        '| 3 | `browser_click` | press *Create ticket* |',
+        '',
+        'The cursor in the panel moves to each target before it is used, so you can watch the ' +
+        'run instead of guessing what it touched.',
+      ].join('\n'),
+    },
+    {
+      id: 'docs-tool-open',
+      role: 'tool',
+      at,
+      toolName: 'browser_open',
+      toolCallId: 'docs-call-1',
+      text: '{\n  "url": "http://127.0.0.1:49152/"\n}',
+      toolResult: '{\n  "ok": true,\n  "tabId": "tab-1",\n  "title": "Northwind Support — Tickets"\n}',
+    },
+  ];
+  for (const entry of entries) {
+    try {
+      els.transcript.append(buildEntry(entry));
+    } catch {
+      // A capture-only convenience: never let a demo entry break the real UI.
+    }
+  }
+  els.transcript.scrollTop = 0;
+};
 window.addEventListener('error', (event) => rendererErrors.push(String(event.message)));
 window.addEventListener('unhandledrejection', (event) => rendererErrors.push(String((event as PromiseRejectionEvent).reason)));
 
@@ -112,6 +171,7 @@ const els = {
   app: document.getElementById('app') as HTMLElement,
   sessionList: document.getElementById('session-list') as HTMLElement,
   transcript: document.getElementById('transcript') as HTMLElement,
+  browserDock: document.getElementById('browser-dock') as HTMLElement,
   approvalSlot: document.getElementById('approval-slot') as HTMLElement,
   title: document.getElementById('session-title') as HTMLElement,
   cwd: document.getElementById('session-cwd') as HTMLElement,
@@ -137,6 +197,8 @@ void boot();
 
 async function boot(): Promise<void> {
   bindUi();
+  const browserDock = mountBrowserDock(els.browserDock, api.browser);
+  api.browser.onState((next) => browserDock.render(next));
   api.onEvent(handleEvent);
   api.onServiceStatus((payload) => {
     state.status = payload.supervisor;

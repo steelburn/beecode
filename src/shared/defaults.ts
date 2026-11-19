@@ -1,5 +1,6 @@
 import type {
   BeeCodeConfig,
+  BrowserConfig,
   McpServerConfig,
   ModelPreset,
   PolicyDocument,
@@ -69,6 +70,14 @@ export function defaultConfig(): BeeCodeConfig {
       workingDir: process.cwd(),
     },
     desktop: { enabled: true, driver: 'windows', allowInput: true },
+    browser: {
+      enabled: true,
+      maxTabs: 4,
+      homeUrl: 'https://duckduckgo.com',
+      persistSession: false,
+      showCursor: true,
+      allowScripts: true,
+    },
     subagents: {
       enabled: true,
       maxConcurrent: 3,
@@ -171,6 +180,16 @@ export function defaultPolicy(): PolicyDocument {
       ],
     },
     filesystem: { workspaceOnly: true, allowedRoots: [], writable: true },
+    // The internal browser is sandboxed (no OS reach), so it starts permissive but
+    // audited: any http(s) host, no denies, and every interaction is logged.
+    browser: {
+      enabled: true,
+      allowAnyHost: true,
+      allowedHosts: [],
+      deniedHosts: [],
+      allowInput: true,
+      requireApproval: false,
+    },
     updatedAt: new Date().toISOString(),
   };
 }
@@ -219,6 +238,7 @@ export function normalizeConfig(
       ? input.defaultModelId
       : models[0].id,
     mcpServers: normalizeMcpServers(input.mcpServers),
+    browser: normalizeBrowser(input.browser, fallback.browser),
     skills: normalizeSkills(input.skills, fallback.skills),
     agent: {
       ...fallback.agent,
@@ -245,6 +265,21 @@ function normalizeApiKeyEnv(raw: ModelPreset, strict: boolean): string | undefin
   }
   // Legacy config from a build that allowed it: drop the literal, never write it back.
   return undefined;
+}
+
+/**
+ * Repairs the browser block of a config written by an older build (missing keys) and
+ * clamps the tab cap: an unbounded `maxTabs` would let the agent open windows until the
+ * process runs out of memory, and 0 would make `browser_open` useless.
+ */
+function normalizeBrowser(input: BrowserConfig | undefined, fallback: BrowserConfig): BrowserConfig {
+  const merged = { ...fallback, ...(input ?? {}) };
+  const requested = Math.round(Number(merged.maxTabs));
+  return {
+    ...merged,
+    maxTabs: Number.isFinite(requested) ? Math.min(Math.max(requested, 1), 12) : fallback.maxTabs,
+    homeUrl: (merged.homeUrl ?? '').trim() || fallback.homeUrl,
+  };
 }
 
 /* ------------------------------------------------------------ mcp & skills */

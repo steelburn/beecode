@@ -1,0 +1,70 @@
+/**
+ * Sandboxing for the internal browser.
+ *
+ * The agent drives a real web page, so the interesting question is not "can the page run
+ * script" but "what can the page reach from inside beeCode". The answer must be: the
+ * network, and nothing else. That is what this module pins down, once per session:
+ *
+ *   - a dedicated partition (in-memory unless the user opted into persistence), so the
+ *     agent never shares cookies with the user's own browsing and forgets the run;
+ *   - every permission request denied — camera, microphone, geolocation, notifications,
+ *     clipboard, MIDI, serial, HID, fullscreen — regardless of what the page asks;
+ *   - downloads cancelled: a page the agent visits must not be able to write files;
+ *   - non-web schemes blocked at the network layer (`file:`, `chrome:`, custom protocol
+ *     handlers installed by other apps), so a `file:///C:/...` URL cannot become an
+ *     arbitrary-file-read primitive;
+ *   - popups and `window.open` denied in the host, which keeps a tab where the agent put it.
+ *
+ * Node integration is off and the view is sandboxed at construction (see `host.ts`); that
+ * combination is what makes "the page cannot touch the OS" true rather than aspirational.
+ */
+import { session, type Session } from 'electron';
+
+/** Schemes a page may load. Everything else is cancelled before it hits the network. */
+const ALLOWED_SCHEME = /^(https?|wss?|data|blob|about):/i;
+
+const hardened = new Set<string>();
+
+export interface BrowserSessionOptions {
+  /** Keep cookies and storage between runs. Default false: an ephemeral session. */
+  persistSession: boolean;
+}
+
+export function browserPartition(options: BrowserSessionOptions): string {
+  return options.persistSession ? 'persist:beecode-browser' : 'beecode-browser';
+}
+
+export function browserSession(options: BrowserSessionOptions): Session {
+  const partition = browserPartition(options);
+  const ses = session.fromPartition(partition);
+  if (hardened.has(partition)) return ses;
+  hardened.add(partition);
+  harden(ses);
+  return ses;
+}
+
+function harden(ses: Session): void {
+  // Deny everything, silently: answering "no" is the whole policy, and the agent cannot
+  // grant permissions on the user's behalf because there is no UI path to do so.
+  ses.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
+  ses.setPermissionCheckHandler(() => false);
+
+  // A download would be a file write performed by a page — out of scope by construction.
+  ses.on('will-download', (event) => event.preventDefault());
+
+  ses.webRequest.onBeforeRequest((details, callback) => {
+    callback({ cancel: !ALLOWED_SCHEME.test(details.url) });
+  });
+
+  ses.setSpellCheckerEnabled(false);
+}
+
+/** Exposed for tests: is this URL something the sandboxed session may request? */
+export function isAllowedRequestUrl(url: string): boolean {
+  return ALLOWED_SCHEME.test(url);
+}
+
+/** Exposed for tests: the scheme check used for top-level navigation. */
+export function isAllowedNavigation(url: string): boolean {
+  return /^(https?):/i.test(url) || url === 'about:blank';
+}

@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron';
+import type { BrowserState } from '../shared/browser';
 import type { BeeCodeBridge, ServiceStatusPayload } from '../shared/bridge';
 import type { RpcMethod, RpcRequests, ServiceEvent } from '../shared/protocol';
 
@@ -38,6 +39,21 @@ const bridge: BeeCodeBridge = {
     const handler = (_e: unknown, status: ServiceStatusPayload) => listener(status);
     ipcRenderer.on('beecode:service-status', handler);
     return () => ipcRenderer.removeListener('beecode:service-status', handler);
+  },
+
+  // The browser view is not in this document: it is a WebContentsView the main process
+  // positions over the rectangle the renderer reports. Commands and geometry go one way,
+  // state comes back the other.
+  browser: {
+    setBounds: (bounds) => ipcRenderer.send('beecode:browser-command', { kind: 'set-bounds', bounds }),
+
+    command: (command) => ipcRenderer.send('beecode:browser-command', command),
+
+    onState: (listener: (state: BrowserState) => void) => {
+      const handler = (_e: unknown, state: BrowserState) => listener(state);
+      ipcRenderer.on('beecode:browser-state', handler);
+      return () => ipcRenderer.removeListener('beecode:browser-state', handler);
+    },
   },
 };
 
