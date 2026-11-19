@@ -1058,6 +1058,19 @@ const workspaceActions: WorkspaceActions = {
 
 function paintWorkspaceGate(): void {
   renderWorkspaceGate(els.workspaceGate, state.workspace, workspaceActions);
+  // The gate covers the chat column visually, but a hidden composer is still reachable
+  // with Tab — `inert` is what keeps focus and the screen-reader cursor out of the
+  // surfaces the service would refuse anyway. Settings stays live so the workspace and
+  // the agent catalogue can still be configured.
+  const gated = !state.workspace?.configured;
+  for (const node of [els.transcript, els.goalSlot, els.approvalSlot, els.questionSlot, els.composer]) {
+    node.toggleAttribute('inert', gated);
+    if (gated) node.setAttribute('aria-hidden', 'true');
+    else node.removeAttribute('aria-hidden');
+  }
+  // The composer's disabled state follows the gate, including on the first paint (the
+  // early-return path in loadAll never reached renderBusy before).
+  renderBusy();
 }
 
 /**

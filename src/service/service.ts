@@ -107,10 +107,15 @@ export class BeeCodeService {
     // a tool, an RPC or a restore lands here, and the renderer panel and the persisted
     // transcript both follow from the same notification — no polling, no second copy.
     this.todos.onWrite((sessionId, todos) => {
+      // With `features.goalTodo` off there is no plan panel and no goal/todo tool, so a
+      // write is ignored outright instead of being emitted and persisted for a surface
+      // that is not there — re-enabling the feature must not resurrect a stale plan.
+      if (!this.deps.goalTodoEnabled) return;
       this.emit({ type: 'session.todos', payload: { sessionId, todos } });
       this.sessions?.persistNow(sessionId);
     });
     this.goals.onWrite((sessionId, goal) => {
+      if (!this.deps.goalTodoEnabled) return;
       this.emit({ type: 'session.goal', payload: { sessionId, goal } });
       this.sessions?.persistNow(sessionId);
     });

@@ -56,14 +56,23 @@ function slug(value: string): string {
 export function normalizeCliAgents(input: unknown): CliAgentConfig[] {
   const agents: CliAgentConfig[] = [];
   const seen = new Set<string>();
+  const commands = new Set<string>();
   for (const raw of Array.isArray(input) ? input : []) {
     if (!raw || typeof raw !== 'object') continue;
     const entry = raw as Record<string, unknown>;
     const command = typeof entry.command === 'string' ? entry.command.trim() : '';
     if (!command) continue;
-    const id = slug(typeof entry.id === 'string' && entry.id.trim() ? entry.id : command.split(/[\\/]/).pop() ?? command);
-    if (!id || RESERVED_IDS.has(id) || seen.has(id)) continue;
+    // Only the SAME command twice is a duplicate. Two different commands can share a
+    // basename (`C:\tools\run.cmd` and `D:\ci\run.cmd`), so a taken id is suffixed
+    // instead of silently dropping the second entry the user added.
+    const commandKey = command.toLowerCase();
+    if (commands.has(commandKey)) continue;
+    const base = slug(typeof entry.id === 'string' && entry.id.trim() ? entry.id : command.split(/[\\/]/).pop() ?? command);
+    if (!base || RESERVED_IDS.has(base)) continue;
+    let id = base;
+    for (let n = 2; seen.has(id); n += 1) id = `${base}-${n}`;
     seen.add(id);
+    commands.add(commandKey);
     const args = Array.isArray(entry.args)
       ? entry.args.filter((arg): arg is string => typeof arg === 'string' && arg.length > 0)
       : [];
