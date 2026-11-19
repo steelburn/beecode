@@ -65,6 +65,13 @@ All notable changes to beeCode will be documented in this file.
 
 ### Fixed
 
+- **The Workspace Files view and the skill drop-zone were refused by the main process.**
+  Both are renderer features that call RPCs the renderer allow-list never learned about, so
+  the panel died on `renderer may not call "fs.list"` (and the drag-and-drop skill install
+  would have failed the same way on `skill.install`). `fs.list`, `fs.read` and
+  `skill.install` are now in `RENDERER_METHODS`, and a static test walks the renderer for
+  every `api.invoke` and fails when a method is missing from that list
+  (`src/shared/bridge.ts`, `src/renderer/allowlist.test.ts`).
 - **The Subagents tab listed agents it could not delegate to.** The "Available agents"
   card rendered the whole catalogue — every built-in preset, whether or not the CLI was on
   PATH and whether or not it was ticked in Settings — so the panel advertised nine agents
