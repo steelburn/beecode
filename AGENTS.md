@@ -30,6 +30,8 @@ If Electron starts as plain Node, `ELECTRON_RUN_AS_NODE` is leaking from the she
 
 ## Hard conventions
 
+- **Node ≥ 22.12.** Electron 42's install chain (`@electron/get`, `undici`) requires it;
+  `package.json#engines` and `.nvmrc` say 22.12, so a clean `npm install` on Node 20 fails.
 - **Zero runtime dependencies.** Node builtins, Electron and `fetch` only. Dev deps:
   electron, esbuild, typescript, @types/node. Do not add a UI framework, an HTTP client,
   a validation library or a desktop-automation native module.
@@ -122,7 +124,11 @@ Full contract and config: [docs/plugins.md](docs/plugins.md).
   `normalizeManifest` drops unknown permissions, so a typo narrows access. Never widen a
   check inside `PluginHost` to make a starter work.
 - **File access is not a bypass.** `api.fs` runs the same `PolicyEngine.evaluateFile` as
-  `read_file`/`write_file`, and host calls are audited as action `plugin`.
+  `read_file`/`write_file`, and host calls are audited as action `plugin`. A host method
+  that writes demands `files:write` too (`HOST_METHOD_PERMISSION` holds a list per method),
+  and a plugin gates work of its own with `api.fs.assertWrite` before touching the disk.
+- **An entry point stays inside its own plugin directory** — the check is path-segment
+  aware, so a sibling sharing the name prefix (`md-stats-evil`) does not pass for a child.
 - **A plugin may not take the loop down.** Bad manifests, a throwing `activate`, duplicate
   tool names and handler exceptions become an `error` on `PluginInfo` or a failed tool
   result — never an unhandled rejection at startup.

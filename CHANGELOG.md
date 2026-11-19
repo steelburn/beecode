@@ -10,6 +10,8 @@ All notable changes to beeCode will be documented in this file.
   build step. Every capability is declared in the manifest — `files:read`, `files:write`,
   `pdf:view`, `pdf:render` — and re-checked on each call, file access runs through the same
   policy engine as the built-in file tools, and host calls are audited as action `plugin`.
+  `pdf_generate` runs that policy before it writes (`pdf/render` needs `files:write` on top
+  of `pdf:render`), and an entry point outside the plugin's own directory is refused.
   Bad manifests, a throwing `activate` or a failing handler degrade to an error on the
   plugin or a failed tool result, never a crashed service. Managed from the new
   **Plugins** card in the **MCP & skills** panel (or `plugin.list` / `plugin.setEnabled` /

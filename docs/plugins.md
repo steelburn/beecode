@@ -120,6 +120,7 @@ then hit **Reload** in the Plugins card (or call the `plugin.reload` RPC).
 | `api.manifest` | The normalized, read-only manifest. |
 | `api.registerTool(tool)` | Adds a tool. Duplicate names inside one plugin throw; a name already in the core catalogue is dropped with a warning instead of shadowing it. |
 | `api.fs.resolve(ctx, path)` | Absolute path, resolved against the session cwd. |
+| `api.fs.assertWrite(ctx, path)` | Runs the write policy **without** writing: call it before you create a directory or hand a path to a host method, so a denied path touches nothing. |
 | `api.fs.readText` / `readBuffer` | Read a file — needs `files:read`. |
 | `api.fs.writeText` / `writeBuffer` | Write a file — needs `files:write`. |
 | `api.host.call(method, params)` | Call an Electron host method — each method needs its own permission. |
@@ -138,9 +139,9 @@ then hit **Reload** in the Plugins card (or call the `plugin.reload` RPC).
 | Permission | Gates |
 | --- | --- |
 | `files:read` | `api.fs.readText` / `readBuffer` |
-| `files:write` | `api.fs.writeText` / `writeBuffer` |
+| `files:write` | `api.fs.writeText` / `writeBuffer` / `assertWrite`, and `api.host.call('pdf/render', …)` |
 | `pdf:view` | `api.host.call('pdf/open', …)` |
-| `pdf:render` | `api.host.call('pdf/render', …)` |
+| `pdf:render` | `api.host.call('pdf/render', …)` — the write also needs `files:write` |
 
 Anything not in this list is dropped at load time, so a typo in `permissions` narrows
 access rather than widening it. Calling a gated function without the permission throws —
@@ -150,6 +151,10 @@ File access is not a bypass of the desktop policy: `api.fs` runs the same
 `PolicyEngine.evaluateFile` check as the built-in `read_file` / `write_file` tools, so a
 workspace-only policy applies to plugins too. Host calls are audited with action
 `plugin`; every plugin tool call is audited under its own name.
+
+A host method that writes is not a way around that: `pdf/render` demands `files:write`
+on top of `pdf:render`, and `pdf_generate` calls `api.fs.assertWrite` before it creates
+the target directory, so a denied path is refused before anything reaches the disk.
 
 ### Host methods
 
@@ -165,7 +170,9 @@ Loading happens once, at service start, before the tool registry is built:
 1. **Discover** — bundled definitions first, then each `<dir>/<id>/` that has a
    `plugin.json`.
 2. **Validate** — id (lowercased, `^[a-z0-9][a-z0-9-]{1,39}$`, 2-40 kebab-case
-   chars), version (`0.0.0` when absent), entry point. A bad manifest shows up as a
+   chars), version (`0.0.0` when absent), entry point. The entry point must resolve
+   **inside** the plugin directory; the check compares path segments, so a sibling such
+   as `md-stats-evil` cannot stand in for `md-stats`. A bad manifest shows up as a
    plugin with an `error` and no tools; it never blocks startup.
 3. **Activate** — `activate(api)` runs only for enabled plugins. A throwing `activate`
    is caught and recorded the same way.

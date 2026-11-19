@@ -5,7 +5,7 @@
  * asks for a permission it did not declare must fail in-band, never crash the loop.
  */
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -18,8 +18,14 @@ import type { Logger } from '../service/logger';
 import type { PolicyEngine } from '../service/policy';
 import { BUILTIN_PLUGINS } from './builtin';
 import { markdownToHtml, markdownDocument } from './html';
-import { PluginHost, normalizeManifest } from './host';
-import { failResult, okResult, PLUGIN_API_VERSION, type PluginDefinition } from './types';
+import { PluginHost, loadExternalPlugin, normalizeManifest } from './host';
+import {
+  failResult,
+  HOST_METHOD_PERMISSION,
+  okResult,
+  PLUGIN_API_VERSION,
+  type PluginDefinition,
+} from './types';
 import { buildXlsx, columnName, crc32, sheetName } from './xlsx';
 import { parseDelimited, toCsv, toMatrix } from './builtin/tableExport';
 
@@ -537,5 +543,58 @@ test('the shipped sample plugin loads and its tool runs through the fs gate', as
     } finally {
       await host.stop();
     }
+  });
+});
+
+test('pdf/render needs files:write as well as pdf:render', () => {
+  // The write happens in the main process, outside api.fs — so the host method itself has to
+  // demand the permission, or it becomes a way around the file policy.
+  assert.deepEqual(HOST_METHOD_PERMISSION['pdf/render'], ['pdf:render', 'files:write']);
+  assert.deepEqual(HOST_METHOD_PERMISSION['pdf/open'], ['pdf:view']);
+});
+
+test('pdf_generate applies the file policy before it creates or writes anything', async () => {
+  const host = hostWith({ policy: denyPolicy });
+  await host.start();
+  try {
+    const tool = host.toolDefinitions().find((entry) => entry.name === 'pdf_generate');
+    assert.ok(tool);
+    await withTempDir(async (dir) => {
+      // The output sits in a directory the tool would have to create first: the denial has to
+      // land before that mkdir, so a refused path leaves nothing behind on disk.
+      const result = await tool.handler(
+        { path: join(dir, 'reports', 'blocked.pdf'), markdown: '# Report' },
+        context(dir),
+      );
+      assert.equal(result.failed, true);
+      assert.match(result.content, /outside the workspace/);
+      assert.equal(existsSync(join(dir, 'reports')), false);
+    });
+  } finally {
+    await host.stop();
+  }
+});
+
+test('an entry point outside the plugin directory is refused', async () => {
+  await withTempDir(async (dir) => {
+    // A sibling that merely shares the name prefix is the interesting case: a bare
+    // startsWith() test would accept "md-stats-evil" for the plugin "md-stats".
+    const root = join(dir, 'plugins');
+    const pluginDir = join(root, 'md-stats');
+    const siblingDir = join(root, 'md-stats-evil');
+    await mkdir(pluginDir, { recursive: true });
+    await mkdir(siblingDir, { recursive: true });
+    await writeFile(join(siblingDir, 'evil.js'), 'exports.activate = () => {};\n', 'utf8');
+    await writeFile(
+      join(pluginDir, 'plugin.json'),
+      JSON.stringify({
+        id: 'md-stats',
+        name: 'md-stats',
+        version: '1.0.0',
+        main: '../md-stats-evil/evil.js',
+      }),
+      'utf8',
+    );
+    await assert.rejects(() => loadExternalPlugin(pluginDir), /escapes the plugin directory/);
   });
 });

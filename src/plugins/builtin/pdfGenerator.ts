@@ -60,7 +60,9 @@ function pdfGenerateTool(api: PluginApi): ToolDefinition {
       const document = html.trim() ? (html.includes('<html') ? html : htmlDocument(html, options)) : markdownDocument(markdown, options);
 
       const base = isAbsolute(rawPath) ? rawPath : resolve(ctx.cwd, rawPath);
-      const path = withExtension(base);
+      // The write itself happens in the main process, outside `api.fs`, so the file policy is
+      // applied here first — before the directory is created and before pdf/render runs.
+      const path = api.fs.assertWrite(ctx, withExtension(base));
       await mkdir(dirname(path), { recursive: true });
 
       try {

@@ -8,7 +8,7 @@ import type { BrowserConfig } from '../shared/protocol';
 import { beeCodeHome } from '../shared/tools';
 import { BrowserHost } from './browser/host';
 import { pipeServiceEvents, registerIpc } from './ipc';
-import { createPluginHostBridge } from './pluginHost';
+import { createPluginHostBridge, type PluginHostBridge } from './pluginHost';
 import { ServiceSupervisor } from './serviceSupervisor';
 
 const isDev = process.env.NODE_ENV === 'development';
@@ -27,6 +27,7 @@ let tray: Tray | null = null;
 let quitting = false;
 let supervisor: ServiceSupervisor;
 let browserHost: BrowserHost | null = null;
+let pluginHostBridge: PluginHostBridge | null = null;
 /** Mirrors config.browser so the host can read it synchronously when it opens a tab. */
 let browserConfig: BrowserConfig = defaultConfig().browser;
 
@@ -64,10 +65,13 @@ async function bootstrap(): Promise<void> {
   // The host is created before the IPC handlers so the renderer can drive the panel as
   // soon as it mounts, and it answers the service's host requests (the agent's browser tools).
   browserHost = createBrowserHost();
-  const pluginHostBridge = createPluginHostBridge();
+  // Kept in a local too: the module-level binding is a mutable let, so it does not narrow
+  // inside the callback below.
+  const bridge = createPluginHostBridge();
+  pluginHostBridge = bridge;
   supervisor.setHostHandler(async (method, params) => {
     if (!browserHost) throw new Error('the internal browser is not available');
-    if (method === 'pdf/open' || method === 'pdf/render') return pluginHostBridge.exec(method, params);
+    if (method === 'pdf/open' || method === 'pdf/render') return bridge.exec(method, params);
     if (method === 'browser/exec') return browserHost.exec(params as BrowserExecParams);
     throw new Error(`unsupported host request: ${method}`);
   });
@@ -447,6 +451,7 @@ app.on('before-quit', (event) => {
   void (async () => {
     globalShortcut.unregisterAll();
     browserHost?.dispose();
+    pluginHostBridge?.closeViewers();
     await supervisor?.stop();
     tray?.destroy();
     app.exit(0);

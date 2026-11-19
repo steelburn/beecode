@@ -33,10 +33,12 @@ export interface PluginHostMethods {
 
 export type PluginHostMethod = keyof PluginHostMethods;
 
-/** The permission a plugin must declare before it may call a host method. */
-export const HOST_METHOD_PERMISSION: Record<PluginHostMethod, PluginPermission> = {
-  'pdf/open': 'pdf:view',
-  'pdf/render': 'pdf:render',
+/** The permissions a plugin must declare before it may call a host method. */
+export const HOST_METHOD_PERMISSION: Record<PluginHostMethod, readonly PluginPermission[]> = {
+  'pdf/open': ['pdf:view'],
+  // Rendering writes a file, so `files:write` is required as well — otherwise the host
+  // method would be a way around the file policy `api.fs` enforces.
+  'pdf/render': ['pdf:render', 'files:write'],
 };
 
 export interface PluginManifest {
@@ -56,6 +58,12 @@ export interface PluginManifest {
 export interface PluginFsApi {
   /** Absolute path for `path`, resolved against the session cwd. */
   resolve(ctx: ToolContext, path: string): string;
+  /**
+   * Runs the file policy for a write without writing anything, so a plugin can gate work it
+   * is about to do (create a directory, hand the path to a host method). Returns the absolute
+   * path and throws when the policy denies it.
+   */
+  assertWrite(ctx: ToolContext, path: string): string;
   readText(ctx: ToolContext, path: string): Promise<string>;
   readBuffer(ctx: ToolContext, path: string): Promise<Buffer>;
   writeText(ctx: ToolContext, path: string, text: string): Promise<string>;

@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs';
 import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
-import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import type { HostCall } from '../shared/browser';
 import type { PluginInfo, PluginPermission, PluginsConfig, PluginToolInfo } from '../shared/protocol';
 import { paths } from '../shared/tools';
@@ -260,6 +260,10 @@ export class PluginHost {
       },
       fs: {
         resolve: (ctx, path) => (isAbsolute(path) ? resolve(path) : resolve(ctx.cwd, path)),
+        assertWrite: (ctx, path) => {
+          require('files:write', 'write files');
+          return this.guard(plugin, ctx, path, true);
+        },
         readText: async (ctx, path) => {
           require('files:read', 'read files');
           return readFile(this.guard(plugin, ctx, path, false), 'utf8');
@@ -285,9 +289,9 @@ export class PluginHost {
       },
       host: {
         call: (async <M extends PluginHostMethod>(method: M, params: unknown): Promise<unknown> => {
-          const permission = HOST_METHOD_PERMISSION[method];
-          if (!permission) throw new Error(`plugin "${id}" may not call host method "${String(method)}"`);
-          require(permission, `call ${String(method)}`);
+          const permissions = HOST_METHOD_PERMISSION[method];
+          if (!permissions) throw new Error(`plugin "${id}" may not call host method "${String(method)}"`);
+          for (const permission of permissions) require(permission, `call ${String(method)}`);
           const call = this.options.hostCall();
           if (!call) {
             throw new Error('the desktop host is not attached — host methods need the Electron app');
@@ -358,7 +362,12 @@ export async function loadExternalPlugin(dir: string): Promise<PluginDefinition>
   );
   const entry = candidates.map((name) => resolve(dir, name)).find((file) => existsSync(file));
   if (!entry) throw new Error('no entry point (plugin.js / index.js)');
-  if (!entry.startsWith(resolve(dir))) throw new Error('entry point escapes the plugin directory');
+  const root = resolve(dir);
+  const rel = relative(root, entry);
+  // Segment-aware: a bare prefix test would accept a sibling such as `md-stats-evil`.
+  if (!rel || rel.startsWith('..') || isAbsolute(rel)) {
+    throw new Error('entry point escapes the plugin directory');
+  }
 
   const requireFrom = createRequire(join(dir, 'noop.cjs'));
   const loaded = requireFrom(entry) as PluginModule | { default: PluginModule };
