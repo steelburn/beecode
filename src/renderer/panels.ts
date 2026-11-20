@@ -24,6 +24,14 @@ import { clear, h } from './dom';
 export interface PanelCallbacks {
   savePolicy(next: PolicyDocument): Promise<void>;
   saveConfig?(next: BeeCodeConfig): Promise<void>;
+  /** Probe the configured endpoint for the models it advertises (Settings model picker). */
+  listModels?(input: {
+    presetId?: string;
+    provider?: string;
+    baseUrl?: string;
+    apiKeyEnv?: string;
+    apiKey?: string;
+  }): Promise<{ models: string[]; warning?: string }>;
   pickDirectory?(options?: DirectoryPickerOptions): Promise<string | undefined>;
   cancelSubagent(runId: string): Promise<void>;
   refreshAudit(): Promise<void>;
@@ -1113,6 +1121,92 @@ function renderAgentsCard(
 
 const PROVIDER_IDS: ProviderId[] = ['openai', 'anthropic', 'azure-openai', 'ollama', 'openai-compatible'];
 
+/** Model ids last reported per preset id, kept across repaints so a save does not empty the picker. */
+const modelLists = new Map<string, string[]>();
+
+/**
+ * Model field for one preset: a text input backed by a <datalist> of the models the endpoint
+ * reports, plus a Refresh button. The list is re-read whenever the Base URL or a key changes,
+ * and a model the endpoint does not advertise can still be typed (self-hosted names, aliases).
+ */
+function modelPicker(options: {
+  preset: { id: string; provider: string; model: string; baseUrl?: string; apiKeyEnv?: string; hasKey?: boolean };
+  draftKey(): string | undefined;
+  listModels?: PanelCallbacks['listModels'];
+  setNote(text: string): void;
+}): { el: HTMLElement; schedule(): void } {
+  const { preset, setNote } = options;
+  const listId = 'model-list-' + preset.id;
+  const list = h('datalist', { id: listId });
+  const input = h('input', {
+    class: 'settings-input',
+    type: 'text',
+    autocomplete: 'off',
+    placeholder: 'model id',
+    on: {
+      input: (event: Event) => {
+        preset.model = (event.target as HTMLInputElement).value.trim();
+        setNote('unsaved changes');
+      },
+    },
+  }) as HTMLInputElement;
+  input.value = preset.model;
+  // `list` is a readonly element property, so bind the datalist by attribute.
+  input.setAttribute('list', listId);
+  const status = h('span', { class: 'sub' });
+  let generation = 0;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+
+  const fill = (models: string[]): void => {
+    clear(list);
+    for (const model of models) list.append(h('option', { value: model }));
+  };
+  fill(modelLists.get(preset.id) ?? []);
+
+  const load = async (): Promise<void> => {
+    if (!options.listModels) return;
+    const mine = (generation += 1);
+    status.textContent = 'loading models...';
+    try {
+      const result = await options.listModels({
+        presetId: preset.id,
+        provider: preset.provider,
+        baseUrl: preset.baseUrl,
+        apiKeyEnv: preset.apiKeyEnv,
+        apiKey: options.draftKey(),
+      });
+      if (mine !== generation) return; // a newer probe already started
+      modelLists.set(preset.id, result.models);
+      fill(result.models);
+      status.textContent = result.warning ?? result.models.length + ' models';
+    } catch (error) {
+      if (mine === generation) status.textContent = (error as Error).message;
+    }
+  };
+
+  /** Debounced re-probe: typing a base URL or a key fires one request, not one per keystroke. */
+  const schedule = (): void => {
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => void load(), 700);
+  };
+
+  // A key that already resolves (stored, or from the env var) is worth probing straight away;
+  // without one the endpoint would only answer 401.
+  if (preset.hasKey) void load();
+
+  return {
+    el: h(
+      'div',
+      { class: 'settings-row' },
+      input,
+      list,
+      h('button', { class: 'btn small', type: 'button', text: 'Refresh', on: { click: () => void load() } }),
+      status,
+    ),
+    schedule,
+  };
+}
+
 function settingsInput(
   value: string,
   onChange: (next: string) => void,
@@ -1478,8 +1572,15 @@ export function renderSettings(
         option.selected = id === preset.provider;
         provider.append(option);
       }
+      const picker = modelPicker({
+        preset,
+        draftKey: () => keys[preset.id],
+        listModels: cb.listModels,
+        setNote,
+      });
       provider.addEventListener('change', () => {
         preset.provider = provider.value as ProviderId;
+        picker.schedule();
         setNote('unsaved changes');
       });
 
@@ -1525,26 +1626,22 @@ export function renderSettings(
             'div',
             { class: 'settings-grid' },
             settingsField('Provider', provider),
-            settingsField(
-              'Model',
-              settingsInput(preset.model, (next) => {
-                preset.model = next;
-                setNote('unsaved changes');
-              }, 'e.g. deepseek-v4-flash'),
-            ),
+            settingsField('Model', picker.el),
             settingsField(
               'Base URL',
               settingsInput(preset.baseUrl ?? '', (next) => {
                 preset.baseUrl = next || undefined;
                 setNote('unsaved changes');
+                picker.schedule();
               }, 'https://api.example.com/v1'),
             ),
             settingsField(
-              'API key env var',
+              'API key env var (optional)',
               settingsInput(preset.apiKeyEnv ?? '', (next) => {
                 preset.apiKeyEnv = next || undefined;
                 setNote('unsaved changes');
-              }, 'BEECODE_LLM_API_KEY'),
+                picker.schedule();
+              }, 'optional, e.g. OPENAI_API_KEY'),
             ),
             settingsField(
               'API key',
@@ -1557,6 +1654,7 @@ export function renderSettings(
                   input: (event: Event) => {
                     keys[preset.id] = (event.target as HTMLInputElement).value;
                     setNote('unsaved changes');
+                    picker.schedule();
                   },
                 },
               }),
@@ -1573,7 +1671,7 @@ export function renderSettings(
             class: 'sub',
             text: preset.hasKey
               ? 'Key: stored — leave the field blank to keep it.'
-              : 'Key: not set — paste it above, or set the env var / add API_KEY to .env.llm',
+              : 'Key: not set — paste one above; a stored key wins over the env var and .env.llm API_KEY',
           }),
         ),
       );

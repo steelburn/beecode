@@ -34,6 +34,8 @@ import { SkillStore } from './skills/store';
 import { installSkills } from './skills/install';
 import { createLogger, readJsonFile, writeJsonFile, type Logger } from './logger';
 import { loadEnvPreset } from './llm/envPreset';
+import { listModels } from './llm/models';
+import { resolveApiKey } from './llm/types';
 import { PolicyEngine } from './policy';
 import { AgentLoop } from './session/AgentLoop';
 import { SessionManager } from './session/SessionManager';
@@ -266,6 +268,19 @@ export class BeeCodeService {
    * explicit opt-in, so a valid one takes over as the default model — otherwise the user
    * would have to click through the picker before their key had any effect.
    */
+  /**
+   * True when a key resolves for this preset: one stored in secrets.json, or one exported in the
+   * preset's env var (or the provider default when that field is blank). Settings shows the
+   * stored/env alternative on this flag, so it has to agree with `resolveApiKey`.
+   */
+  private hasApiKey(preset: BeeCodeConfig['models'][number]): boolean {
+    try {
+      return Boolean(resolveApiKey(preset));
+    } catch {
+      return false;
+    }
+  }
+
   private applyEnvPreset(): void {
     const env = loadEnvPreset();
     for (const warning of env.warnings) this.log.warn(`env.llm: ${warning}`);
@@ -552,6 +567,17 @@ export class BeeCodeService {
         return this.policy.get();
       }
 
+      // Settings probes the endpoint for its model list; the key may still be a draft that
+      // has not been saved yet, so it travels with the request instead of being read from disk.
+      case 'models.list':
+        return listModels({
+          presetId: typeof args.presetId === 'string' ? args.presetId : undefined,
+          provider: typeof args.provider === 'string' ? args.provider : undefined,
+          baseUrl: typeof args.baseUrl === 'string' ? args.baseUrl : undefined,
+          apiKeyEnv: typeof args.apiKeyEnv === 'string' ? args.apiKeyEnv : undefined,
+          apiKey: typeof args.apiKey === 'string' ? args.apiKey : undefined,
+        });
+
       case 'config.get':
         // Keys are write-only: the renderer learns whether one exists, never its value.
         return {
@@ -560,7 +586,7 @@ export class BeeCodeService {
             ...preset,
             apiKey: undefined,
             hasKey:
-              this.secrets.has(preset.id) || Boolean(preset.apiKeyEnv && process.env[preset.apiKeyEnv]),
+              this.hasApiKey(preset),
           })),
         };
 

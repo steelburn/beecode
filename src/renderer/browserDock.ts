@@ -1,4 +1,5 @@
 import type { BrowserPanelApi, BrowserState } from '../shared/browser';
+import { activeTabPosition, tabLabel, tabsSignature } from './browserTabs';
 import { clear, h } from './dom';
 
 /**
@@ -13,7 +14,7 @@ import { clear, h } from './dom';
  *   - draw the chrome *around* that rectangle — tab strip, address display, AI-cursor
  *     switch, close — with plain DOM in the renderer's own process;
  *   - forward what the user clicks as panel commands (`activate-tab`, `close-tab`,
- *     `toggle-cursor`, `focus`, `close-all`), which main applies to the host.
+ *     `toggle-cursor`, `focus`, `close-all`, `tab-menu`), which main applies to the host.
  *
  * Because the chrome is a sibling of the reserved rectangle and never inside it, no page
  * script can style, cover or measure the chat UI.
@@ -80,10 +81,13 @@ export function mountBrowserDock(host: HTMLElement, api: BrowserPanelApi): Brows
   maxBtn.setAttribute('aria-label', 'Maximize the internal browser');
   const splitter = h('div', { class: 'browser-splitter', title: 'Drag to resize the internal browser' });
   const surface = h('div', { class: 'browser-surface' });
+  const tabCounter = h('span', { class: 'browser-tab-counter', title: 'Which of the agent tabs is on screen' });
+  tabCounter.hidden = true;
   const bar = h(
     'div',
     { class: 'browser-bar' },
     tabsEl,
+    tabCounter,
     h('div', { class: 'browser-actions' }, urlEl, cursorBtn, minBtn, maxBtn, closeBtn),
   );
 
@@ -135,13 +139,32 @@ export function mountBrowserDock(host: HTMLElement, api: BrowserPanelApi): Brows
     setTimeout(flush, BOUNDS_BACKSTOP_MS);
   };
 
+  // The strip is rebuilt from `BrowserState`, which is emitted on every navigation, title
+  // change and cursor toggle — so rebuild only when what it draws actually changed, and keep
+  // the scroll position the user chose instead of yanking the strip back to the first tab.
+  let lastSignature = '';
+  let lastPosition = 0;
+  let stripScroll = 0;
+
+  /** Bring the active tab into the strip; `nearest` leaves an already visible tab alone. */
+  const revealActive = (): void => {
+    tabsEl.querySelector<HTMLElement>('.browser-tab.active')?.scrollIntoView({ inline: 'nearest', block: 'nearest' });
+  };
+
   const renderTabs = (next: BrowserState): void => {
+    const signature = tabsSignature(next);
+    const position = activeTabPosition(next);
+    tabCounter.hidden = next.tabs.length < 2 || position < 1;
+    tabCounter.textContent = tabCounter.hidden ? '' : `${position}/${next.tabs.length}`;
+    if (signature === lastSignature) return;
+    lastSignature = signature;
+    stripScroll = tabsEl.scrollLeft;
+    const moved = position !== lastPosition;
+    lastPosition = position;
     clear(tabsEl);
     for (const tab of next.tabs) {
       const active = tab.active || tab.id === next.activeTabId;
-      const name = tab.loading
-        ? `${tab.title || tab.url || 'loading\u2026'}\u2026`
-        : tab.title || tab.url || 'untitled';
+      const name = tabLabel(tab);
       const closeTab = h('button', { type: 'button', class: 'browser-tab-close', text: '\u2715', title: 'Close tab' });
       closeTab.addEventListener('click', (event) => {
         event.stopPropagation();
@@ -149,7 +172,7 @@ export function mountBrowserDock(host: HTMLElement, api: BrowserPanelApi): Brows
       });
       const el = h(
         'div',
-        { class: `browser-tab${active ? ' active' : ''}`, role: 'tab', title: tab.url || name },
+        { class: `browser-tab${active ? ' active' : ''}`, role: 'tab', title: tab.url ? `${name} — ${tab.url}` : name },
         h('span', { class: 'browser-tab-name', text: name }),
         closeTab,
       );
@@ -157,9 +180,31 @@ export function mountBrowserDock(host: HTMLElement, api: BrowserPanelApi): Brows
         if (!active) api.command({ kind: 'activate-tab', tabId: tab.id });
         else api.command({ kind: 'focus' });
       });
+      // Right-click opens the tab menu (Close tab / Close other tabs / Close all tabs). It is
+      // built in main as a native menu: the page is a WebContentsView painted on top of this
+      // window, so a DOM dropdown here would be hidden behind the page it acts on.
+      el.addEventListener('contextmenu', (event) => {
+        event.preventDefault();
+        api.command({ kind: 'tab-menu', tabId: tab.id });
+      });
       tabsEl.append(el);
     }
+    // Restore the scroll the user chose, then make sure a newly activated tab is on screen.
+    tabsEl.scrollLeft = stripScroll;
+    if (moved) revealActive();
   };
+
+  // A plain mouse wheel cannot scroll a horizontal strip, and the strip is the only part of
+  // the bar that scrolls: map the wheel onto it so tabs past the right edge stay reachable.
+  tabsEl.addEventListener(
+    'wheel',
+    (event) => {
+      if (!event.deltaY || tabsEl.scrollWidth <= tabsEl.clientWidth) return;
+      tabsEl.scrollLeft += event.deltaY;
+      event.preventDefault();
+    },
+    { passive: false },
+  );
 
   const render = (next: BrowserState): void => {
     current = next;
@@ -187,6 +232,10 @@ export function mountBrowserDock(host: HTMLElement, api: BrowserPanelApi): Brows
       // The panel is gone: drop the stale tab strip, so a re-opened dock cannot show tabs
       // the host no longer has.
       clear(tabsEl);
+      lastSignature = '';
+      // A restored dock has to rebuild and re-reveal, or the active tab can come back off-screen.
+      lastPosition = 0;
+      tabCounter.hidden = true;
       urlEl.value = '';
       return;
     }

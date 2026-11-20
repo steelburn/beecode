@@ -541,6 +541,103 @@ async function runSmokeCheck(serviceReady: boolean): Promise<void> {
         dock,
       };
 
+      // Tab strip: the agent can have more tabs open than the bar can show. Open a few more
+      // and assert the strip stays usable — every tab keeps a readable width and the active
+      // one is scrolled into view instead of being clipped off the right edge.
+      // `about:blank` is the only scheme the internal browser accepts offline; opening it
+      // again still creates a tab, which is all this phase needs.
+      for (let i = 0; i < 3; i += 1) {
+        await browserHost.exec({ action: 'open', url: 'about:blank' });
+      }
+      await new Promise((r) => setTimeout(r, 900));
+      const expected = browserHost.state().tabs.length;
+      const strip = (await win.webContents.executeJavaScript(
+        `(() => {
+          const el = document.querySelector('.browser-tabs');
+          const tabs = Array.from(document.querySelectorAll('.browser-tab'));
+          if (!el || !tabs.length) return { strip: false, count: tabs.length };
+          const box = el.getBoundingClientRect();
+          const active = document.querySelector('.browser-tab.active');
+          const act = active ? active.getBoundingClientRect() : null;
+          return {
+            strip: true,
+            count: tabs.length,
+            widths: tabs.map((t) => Math.round(t.getBoundingClientRect().width)),
+            overflow: el.scrollWidth > el.clientWidth + 1,
+            scrolled: el.scrollLeft > 0,
+            activeVisible: Boolean(act) && act.left >= box.left - 1 && act.right <= box.right + 1,
+            counter: el.parentElement?.querySelector('.browser-tab-counter')?.textContent ?? '',
+          };
+        })()`,
+      )) as {
+        strip?: boolean;
+        count?: number;
+        widths?: number[];
+        overflow?: boolean;
+        scrolled?: boolean;
+        activeVisible?: boolean;
+        counter?: string;
+      };
+      browser.tabStrip = {
+        expected,
+        count: strip.count ?? 0,
+        minWidth: strip.widths?.length ? Math.min(...strip.widths) : 0,
+        overflow: strip.overflow === true,
+        scrolled: strip.scrolled === true,
+        activeVisible: strip.activeVisible === true,
+        counter: strip.counter ?? '',
+      };
+
+      // Tab menu: right-clicking a tab must reach the host and build the close rows. The menu is
+      // captured instead of popped — a real popup would grab input for the rest of the run.
+      // Electron's `popup` sits on `Menu.prototype` (checked: instances carry no own property),
+      // so the host's build-then-popup call routes through this stub.
+      const realPopup = Menu.prototype.popup;
+      let closeOthersOk = false;
+      const captured: Array<{ label: string; enabled: boolean; click: () => void }> = [];
+      (Menu.prototype as unknown as { popup: (this: Electron.Menu) => void }).popup = function (
+        this: Electron.Menu,
+      ): void {
+        for (const item of this.items) {
+          if (item.type !== 'separator') {
+            captured.push({ label: item.label, enabled: item.enabled, click: () => (item.click as unknown as () => void)() });
+          }
+        }
+      };
+      let contextClicked = false;
+      try {
+        contextClicked = (await win.webContents.executeJavaScript(
+          `(() => {
+            const tabs = document.querySelectorAll('.browser-tab');
+            const tab = tabs[tabs.length - 1];
+            if (!tab) return false;
+            tab.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+            return true;
+          })()`,
+        )) as boolean;
+        await new Promise((r) => setTimeout(r, 400));
+        // The rows must also *work*, not just exist: pick "Close other tabs" on the last tab and
+        // the strip has to come back holding exactly that tab. Three tabs are reopened afterwards
+        // so the window-control phase below still finds the strip it expects.
+        const targetTab = browserHost.state().tabs.at(-1)?.id ?? '';
+        captured.find((item) => item.label.startsWith('Close other'))?.click();
+        await new Promise((r) => setTimeout(r, 300));
+        const survivor = browserHost.state().tabs;
+        closeOthersOk = survivor.length === 1 && survivor[0].id === targetTab;
+        for (let i = 0; i < 3; i += 1) {
+          await browserHost.exec({ action: 'open', url: 'about:blank' });
+        }
+        await new Promise((r) => setTimeout(r, 400));
+      } finally {
+        Menu.prototype.popup = realPopup;
+      }
+      browser.tabMenu = {
+        contextClicked,
+        opened: captured.length > 0,
+        closeOthersOk,
+        items: captured.map((item) => `${item.label}${item.enabled ? '' : ' (off)'}`),
+      };
+
       // Window controls: minimize must collapse the dock (and report no area, so the page
       // view detaches), maximize must grow it into the column, close must remove the tabs.
       const controls = (await win.webContents.executeJavaScript(

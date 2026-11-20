@@ -1161,6 +1161,13 @@ function applyTerminal(next: TerminalState): void {
 function renderPanelBody(): void {
   const callbacks = {
     savePolicy,
+    listModels: (input: {
+      presetId?: string;
+      provider?: string;
+      baseUrl?: string;
+      apiKeyEnv?: string;
+      apiKey?: string;
+    }) => api.invoke('models.list', input),
     saveConfig: async (next: BeeCodeConfig) => {
       state.config = await api.saveConfig(next);
       populateModels();

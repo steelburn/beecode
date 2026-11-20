@@ -71,6 +71,9 @@ function renderStrip(
   browserVisible: boolean,
   handlers: MainAreaHandlers,
 ): void {
+  // The strip is rebuilt whenever the tab set changes: keep where the user scrolled it, or
+  // every tab open throws the view back to the first tab.
+  const keptScroll = strip.querySelector('.view-tablist')?.scrollLeft ?? 0;
   clear(strip);
   strip.hidden = state.tabs.length === 0 && !browserVisible;
   if (strip.hidden) return;
@@ -91,8 +94,9 @@ function renderStrip(
     );
   }
 
+  const list = h('div', { class: 'view-tablist', role: 'tablist' }, ...tabs);
   strip.append(
-    h('div', { class: 'view-tablist', role: 'tablist' }, ...tabs),
+    list,
     h(
       'div',
       { class: 'view-tabs-actions' },
@@ -104,6 +108,19 @@ function renderStrip(
         on: { click: () => handlers.toggleTheme() },
       }),
     ),
+  );
+  // Only now that the strip is in the document: restore the scroll the user chose and make
+  // sure the active tab is on screen — a tab opened past the right edge was simply invisible.
+  list.scrollLeft = keptScroll;
+  list.querySelector<HTMLElement>('.view-tab.active')?.scrollIntoView({ inline: 'nearest', block: 'nearest' });
+  list.addEventListener(
+    'wheel',
+    (event) => {
+      if (!event.deltaY || list.scrollWidth <= list.clientWidth) return;
+      list.scrollLeft += event.deltaY;
+      event.preventDefault();
+    },
+    { passive: false },
   );
 }
 

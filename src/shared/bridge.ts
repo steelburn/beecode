@@ -63,6 +63,7 @@ export const RENDERER_METHODS: RpcMethod[] = [
   'policy.set',
   'config.get',
   'config.set',
+  'models.list',
   'audit.list',
   'agents.list',
   'subagent.list',

@@ -239,6 +239,8 @@ export type BrowserPanelCommand =
   | { kind: 'close-all' }
   | { kind: 'activate-tab'; tabId: string }
   | { kind: 'close-tab'; tabId: string }
+  /** Right-click menu on a dock tab; main pops a native menu for it. */
+  | { kind: 'tab-menu'; tabId: string }
   | { kind: 'toggle-cursor'; enabled: boolean }
   | { kind: 'set-bounds'; bounds: BrowserBounds };
 

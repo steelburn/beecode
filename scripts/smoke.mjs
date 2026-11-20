@@ -150,6 +150,27 @@ const terminalOk =
   terminal.ranCommand === true &&
   terminal.insideWorkspace === true;
 
+// With more tabs open than the bar can show, every tab keeps a readable width and the
+// active one is scrolled into view rather than clipped off the right edge.
+const tabStrip = report.browser?.tabStrip ?? {};
+const tabsFitOk =
+  typeof tabStrip.count === 'number' &&
+  tabStrip.count === tabStrip.expected &&
+  (tabStrip.expected < 2 ||
+    (tabStrip.minWidth >= 80 && (tabStrip.overflow !== true || tabStrip.activeVisible === true)));
+
+// The dock tab's right-click menu is built in main (a native menu cannot be drawn in the DOM
+// over the page view), so the renderer only forwards the event. Check that the round trip
+// produced the close rows a multi-tab strip must offer.
+const tabMenu = report.browser?.tabMenu ?? {};
+const tabMenuOk =
+  tabMenu.contextClicked === true &&
+  tabMenu.opened === true &&
+  tabMenu.closeOthersOk === true &&
+  (tabMenu.items ?? []).includes('Close tab') &&
+  (tabMenu.items ?? []).includes('Close other tabs') &&
+  (tabMenu.items ?? []).includes('Close all tabs');
+
 const ok =
   report.serviceReady === true &&
   report.dom?.bridge === true &&
@@ -162,6 +183,8 @@ const ok =
   previewOk &&
   mainAreaOk &&
   browserTabOk &&
+  tabsFitOk &&
+  tabMenuOk &&
   terminalOk;
 if (!markdownOk) console.error(`[smoke] markdown/chart render check failed: ${JSON.stringify(rendered)}`);
 if (!integrationsOk) console.error(`[smoke] integrations panel check failed: ${JSON.stringify(integrations)}`);
@@ -171,6 +194,11 @@ if (!previewOk) console.error(`[smoke] files preview check failed: ${JSON.string
 if (!mainAreaOk) console.error(`[smoke] main-area tab check failed: ${JSON.stringify(mainArea)}`);
 if (!browserTabOk)
   console.error(`[smoke] browser tab check failed: ${JSON.stringify(report.browser?.controls)}`);
+if (!tabMenuOk) {
+  console.error(`[smoke] browser tab menu check failed: ${JSON.stringify(tabMenu)}`);
+}
+if (!tabsFitOk)
+  console.error(`[smoke] browser tab strip check failed: ${JSON.stringify(tabStrip)}`);
 if (!terminalOk) console.error(`[smoke] terminal check failed: ${JSON.stringify(terminal)}`);
 if (!composerOk) {
   console.error(

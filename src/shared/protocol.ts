@@ -652,6 +652,10 @@ export interface RpcRequests {
   'approval.respond': { params: ApprovalResponse; result: { ok: true } };
   'policy.get': { params: Record<string, never>; result: PolicyDocument };
   'policy.set': { params: { policy: PolicyDocument }; result: PolicyDocument };
+  'models.list': {
+    params: { presetId?: string; provider?: string; baseUrl?: string; apiKeyEnv?: string; apiKey?: string };
+    result: { models: string[]; warning?: string };
+  };
   'config.get': { params: Record<string, never>; result: BeeCodeConfig };
   'config.set': { params: { config: BeeCodeConfig }; result: BeeCodeConfig };
   'audit.list': { params: { limit?: number }; result: AuditEntry[] };

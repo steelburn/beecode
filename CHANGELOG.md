@@ -6,6 +6,21 @@ All notable changes to beeCode will be documented in this file.
 
 ### Added
 
+- **Model is a dropdown fed by the endpoint.** Picking a model meant typing an id from
+  memory into a free-text field. **Settings → Model** is now an input backed by the models
+  the endpoint advertises (`{Base URL}/models`, Ollama's `/api/tags`, Azure's
+  `?api-version`): it re-reads them when the **Base URL**, the provider or a key changes
+  (debounced, so one probe per edit) and on demand, and still accepts an id the endpoint does
+  not list. The list comes from a new `models.list` RPC, which resolves the key the same
+  either/or way the chat path does — the key typed but not yet saved, then the one in
+  `secrets.json`, then the env var — and reports an unreachable endpoint as a note instead of
+  an error (`src/service/llm/models.ts`, `src/renderer/panels.ts`, `src/shared/protocol.ts`).
+- **The API-key env var is optional, and now says so.** A key could always come from
+  `secrets.json` instead, but the field read as required. It is now **API key env var
+  (optional)** with a blank placeholder, and the key status line spells out the order: a
+  stored key wins over the env var and over `API_KEY` in `.env.llm`
+  (`src/renderer/panels.ts`, `src/service/service.ts`) — `hasKey` now resolves through that
+  same either/or order, so a key exported as the provider's default env var counts too.
 - **Rendered Markdown and HTML in the Files preview.** The preview was plain text, so a
   `README.md` or a generated HTML report read as markup. The Files panel now has a
   **Rendered / Source** switch: Markdown goes through the transcript renderer (headings,
@@ -101,8 +116,31 @@ All notable changes to beeCode will be documented in this file.
 - **The goal panel can be minimised.** A toggle on the goal line folds the plan down to a
   one-line summary (`n/m steps`) and the choice is remembered per window, so a long plan no
   longer pushes the transcript off-screen (`src/renderer/plan.ts`).
+- **A right-click menu on dock tabs.** With several browser tabs open, the only way back to one
+  of them was to close the rest one by one. Right-clicking a tab now offers **Close tab** /
+  **Close other tabs** / **Close all tabs**, with “Close other tabs” greyed out on the last tab
+  and worded for a single remaining neighbour. It is a native menu, not a DOM dropdown: the page
+  is a `WebContentsView` painted over the window, so anything drawn in the strip would be hidden
+  behind the page it acts on (`src/main/browser/tabMenu.ts`, `src/main/browser/host.ts`).
 
 ### Fixed
+
+- **The internal browser hid tabs past the first few.** The tabs shrank instead of the strip
+  scrolling — `.browser-tab` had no shrink floor, so with several tabs open every name
+  collapsed to a sliver next to its ✕ — and the strip was rebuilt from `BrowserState` on
+  every navigation, title change and cursor toggle, which threw away its scroll position and
+  yanked it back to the first tab. Tabs now keep a readable width, the strip scrolls and
+  remembers where the user scrolled it, the active tab is scrolled into view when the agent
+  opens or switches one, the mouse wheel scrolls the strip sideways, and a `3/8` counter says
+  how many tabs exist and which one is on screen — so a crowded strip never looks like it
+  holds only the tabs that fit (`src/renderer/browserDock.ts`, `src/renderer/browserTabs.ts`,
+  `src/renderer/styles.css`).
+
+- **The main-area tab strip jumped back to the first tab on every document open.** The strip
+  is rebuilt whenever the tab set changes, which discarded its scroll position — with many
+  documents open, the tab the user just opened sat past the right edge. It keeps its scroll,
+  brings the active tab into view and takes the mouse wheel
+  (`src/renderer/mainArea.ts`).
 
 - **Driving the browser no longer forces the browser dock on screen.** Every agent action
   used to set the dock visible, so a navigate, a keystroke or a DOM snapshot yanked the

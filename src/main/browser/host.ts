@@ -19,7 +19,7 @@
  * *before* the input is dispatched, so the user sees what the agent is about to do instead
  * of watching the page change under them.
  */
-import { BrowserWindow, WebContentsView } from 'electron';
+import { BrowserWindow, Menu, WebContentsView, type MenuItemConstructorOptions } from 'electron';
 import type {
   BrowserAction,
   BrowserBounds,
@@ -32,6 +32,7 @@ import type {
 import type { BrowserConfig } from '../../shared/protocol';
 import { agentBootstrapSource, AGENT_WORLD_ID } from './agentScript';
 import { browserSession, isAllowedNavigation } from './session';
+import { tabMenuItems, type TabMenuCommand } from './tabMenu';
 
 export interface BrowserHostOptions {
   getWindow: () => BrowserWindow | null;
@@ -177,6 +178,9 @@ export class BrowserHost {
       case 'close-tab':
         this.closeTab(command.tabId);
         this.emit();
+        return;
+      case 'tab-menu':
+        this.showTabMenu(command.tabId);
         return;
       case 'toggle-cursor':
         this.cursorOverride = command.enabled;
@@ -625,6 +629,49 @@ export class BrowserHost {
     // Only a page the user can actually see may take the keyboard: in a silent drive the view
     // is detached, and focusing it would pull every keystroke out of the composer.
     if (this.visible) tab.view.webContents.focus();
+  }
+
+  /**
+   * Right-click menu for a dock tab.
+   *
+   * It has to be a *native* menu: the page is a `WebContentsView` painted on top of the
+   * renderer, so a dropdown drawn in the DOM below the strip would sit behind the very page it
+   * acts on. `Menu.popup` is its own OS window and always wins that fight.
+   */
+  private showTabMenu(tabId: string): void {
+    const win = this.opts.getWindow();
+    // The tab can be gone already: a right-click races the eviction of an inactive tab.
+    if (!win || win.isDestroyed() || !this.tabs.has(tabId)) return;
+    const template: MenuItemConstructorOptions[] = tabMenuItems(tabId, this.state().tabs).map((item) => {
+      const command = item.command;
+      if (!command) return { type: 'separator' };
+      return { label: item.label, enabled: item.enabled, click: () => this.runTabMenuCommand(command, tabId) };
+    });
+    Menu.buildFromTemplate(template).popup({ window: win });
+  }
+
+  private runTabMenuCommand(command: TabMenuCommand, tabId: string): void {
+    // The menu is asynchronous, so a tab it was opened on can be closed before a row is picked.
+    if (command === 'close-all') {
+      this.closeAll();
+      return;
+    }
+    if (!this.tabs.has(tabId)) return;
+    if (command === 'close') {
+      this.closeTab(tabId);
+      this.emit();
+      return;
+    }
+    this.closeOthers(tabId);
+  }
+
+  /** Keep one tab and drop the rest — the tab menu's "Close other tabs". */
+  private closeOthers(tabId: string): void {
+    if (!this.tabs.has(tabId)) return;
+    for (const id of [...this.tabs.keys()]) if (id !== tabId) this.closeTab(id);
+    // Closing the active tab hands over to an LRU survivor; the tab the user aimed at has to win.
+    this.activate(tabId);
+    this.emit();
   }
 
   /**
