@@ -444,6 +444,16 @@ export interface FsListing {
   truncated: boolean;
 }
 
+/** Converted markup for a document the text preview cannot show. */
+export interface FsRender {
+  /** Only one shape so far: HTML converted from an Office document in the service. */
+  kind: 'html';
+  /** Untrusted markup — the renderer sanitises it before it reaches the DOM. */
+  html: string;
+  /** One line about what was left out (truncation, a missing part). */
+  note?: string;
+}
+
 /** A file preview: text when it is text, a binary flag when it is not. */
 export interface FsFile {
   path: string;
@@ -454,6 +464,8 @@ export interface FsFile {
   /** True when the content is not text; `text` is then empty. */
   binary: boolean;
   text: string;
+  /** Set when the service could convert the file (Office documents) instead of text. */
+  render?: FsRender;
 }
 
 export interface WorkspaceState {

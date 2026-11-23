@@ -1430,3 +1430,351 @@ body.dragging-browser-dock { cursor: row-resize; user-select: none; }
   padding: 16px;
   overflow-y: auto;
 }
+
+/* ---------------------------------------------------------------- file views */
+
+/* One container for every viewer the document pane and the explorer preview share. */
+.fileview {
+  display: block;
+  min-width: 0;
+}
+
+.fileview-note {
+  margin: 6px 0 0;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.fileview-code {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre;
+  color: inherit;
+}
+
+/* In the full tab a source view may wrap; the 240px peek panel prefers horizontal scroll. */
+.doc-body .fileview-code {
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* A rendered .html file lives in its own shadow root; contain it so its layout cannot
+   reach the app chrome. */
+.doc-html {
+  display: block;
+  contain: content;
+}
+
+/* ---------------------------------------------------- converted documents */
+
+.doc-document {
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.doc-document-body {
+  max-width: 900px;
+  color: inherit;
+  overflow-wrap: anywhere;
+}
+
+.doc-document-body h2,
+.doc-document-body h3,
+.doc-document-body h4 {
+  margin: 18px 0 6px;
+  line-height: 1.3;
+  font-weight: 650;
+}
+
+.doc-document-body h2 { font-size: 17px; }
+.doc-document-body h3 { font-size: 15px; }
+.doc-document-body h4 { font-size: 13px; }
+
+.doc-document-body p { margin: 6px 0; }
+.doc-document-body ul { margin: 6px 0; padding-left: 20px; }
+.doc-document-body li { margin: 2px 0; }
+.doc-document-body .doc-item { margin: 4px 0; }
+.doc-document-body .doc-subtitle { color: var(--text-dim); font-size: 13px; }
+.doc-document-body .doc-empty { color: var(--text-faint); font-style: italic; }
+
+.doc-document-body table {
+  border-collapse: collapse;
+  margin: 8px 0 14px;
+  font-size: 11.5px;
+  max-width: 100%;
+}
+
+.doc-document-body th,
+.doc-document-body td {
+  border: 1px solid var(--line);
+  padding: 4px 8px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.doc-sheet h3 {
+  margin: 20px 0 8px;
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--text-dim);
+}
+
+.doc-slide {
+  margin: 0 0 18px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.doc-slide-no {
+  margin: 0 0 6px;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+/* ------------------------------------------------------------------- table */
+
+.doc-table {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.table-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 10px;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.table-bar .fileview-note { margin: 0; }
+
+.table-scroll {
+  overflow: auto;
+  max-height: 60vh;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg-inset);
+}
+
+.data-table {
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+
+.data-table th,
+.data-table td {
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--line-soft);
+  border-right: 1px solid var(--line-soft);
+  text-align: left;
+  max-width: 420px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.data-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--bg-raised);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.data-table tbody tr.odd { background: rgba(255, 255, 255, 0.02); }
+.data-table tbody tr:hover { background: rgba(79, 157, 255, 0.08); }
+.data-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
+
+/* ----------------------------------------------------------------- picture */
+
+.doc-image {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.doc-image-img {
+  max-width: 100%;
+  max-height: 62vh;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background:
+    repeating-conic-gradient(rgba(255, 255, 255, 0.04) 0% 25%, transparent 0% 50%) 50% / 16px 16px;
+}
+
+.doc-image-bar {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.doc-image-name { color: var(--text-dim); }
+.doc-image-meta { font-variant-numeric: tabular-nums; }
+
+/* --------------------------------------------------------------------- pdf */
+
+.doc-pdf {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+}
+
+.doc-pdf-bar {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.doc-pdf-name { color: var(--text-dim); }
+
+.doc-pdf-frame {
+  width: 100%;
+  height: 62vh;
+  min-height: 320px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg-inset);
+}
+
+/* --------------------------------------------------------------------- log */
+
+.doc-log {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+  font-size: 12px;
+}
+
+.log-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.log-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+
+/* A level chip is a toggle: pressed when the level is shown. */
+.log-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--bg-raised);
+  color: var(--text-faint);
+  font-family: var(--mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  opacity: 0.55;
+}
+
+.log-chip.on { opacity: 1; color: var(--text); }
+.log-chip-count { font-variant-numeric: tabular-nums; opacity: 0.75; }
+
+.log-chip.log-error.on { border-color: var(--red); color: var(--red); }
+.log-chip.log-warn.on { border-color: var(--amber); color: var(--amber); }
+.log-chip.log-info.on { border-color: var(--blue); color: var(--blue); }
+.log-chip.log-debug.on { border-color: var(--green); color: var(--green); }
+.log-chip.log-trace.on { border-color: var(--text-dim); }
+.log-chip.log-other.on { border-color: var(--line); }
+
+.log-search {
+  flex: 1 1 160px;
+  min-width: 120px;
+  padding: 3px 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg-inset);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 11px;
+}
+
+.log-search:focus { outline: none; border-color: var(--blue); }
+
+.btn.ghost.on { color: var(--text); background: var(--bg-raised); }
+
+.log-status {
+  font-size: 11px;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.log-body {
+  overflow: auto;
+  max-height: 62vh;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg-inset);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.5;
+  padding: 4px 0;
+}
+
+.log-line {
+  display: flex;
+  gap: 8px;
+  padding: 0 8px;
+  white-space: pre;
+  border-left: 2px solid transparent;
+}
+
+.log-wrapped .log-line { white-space: pre-wrap; overflow-wrap: anywhere; }
+
+.log-line:hover { background: rgba(255, 255, 255, 0.04); }
+
+.log-no {
+  flex: 0 0 auto;
+  min-width: 3.5ch;
+  text-align: right;
+  color: var(--text-faint);
+  opacity: 0.6;
+  user-select: none;
+}
+
+.log-time { flex: 0 0 auto; color: var(--text-faint); }
+.log-text { flex: 1 1 auto; min-width: 0; }
+
+/* One accent per level: the left border plus the message colour, never a filled row. */
+.log-line.log-error { border-left-color: var(--red); }
+.log-line.log-error .log-text { color: var(--red); }
+.log-line.log-warn { border-left-color: var(--amber); }
+.log-line.log-warn .log-text { color: var(--amber); }
+.log-line.log-info { border-left-color: var(--blue); }
+.log-line.log-info .log-text { color: var(--text); }
+.log-line.log-debug { border-left-color: var(--green); }
+.log-line.log-debug .log-text { color: var(--text-dim); }
+.log-line.log-trace .log-text { color: var(--text-faint); }
+.log-line.log-other .log-text { color: var(--text-dim); }
+
+.log-hit {
+  background: rgba(245, 179, 1, 0.35);
+  color: inherit;
+  border-radius: 2px;
+}

@@ -6,6 +6,17 @@ All notable changes to beeCode will be documented in this file.
 
 ### Added
 
+- **The Files panel previews documents, pictures, tables and logs.** `fs.read` could only
+  hand back text, so a `.pdf`, a `.docx`, an `.xlsx`, a `.pptx` or a `.png` showed nothing
+  but "Binary file — no text preview". The service now unpacks Word, Excel and PowerPoint
+  (a ZIP of XML, read with the same reader a skill archive uses) and returns markup; the
+  renderer gained one viewer per kind: a table for CSV/TSV, a colour-coded log with a level
+  filter and a search, an `<img>` for pictures, Chromium's own PDF viewer in a frame, and
+  the converted Office markup. The explorer peek and the document tab share that viewer, so
+  a file looks the same in both. Pictures and PDFs are served over a new
+  `app://beecode/file` route confined to the workspace root — the renderer still has no
+  general file read.
+
 - **The file tools can also delete, move and create directories.** The toolset was read/
   write only: `fs_write` created missing parent folders as a side effect, and nothing could
   remove a stale file, rename one or make an empty directory. `fs_mkdir`, `fs_delete` and

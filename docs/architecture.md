@@ -145,6 +145,23 @@ trusted: scripting elements, inline handlers, `javascript:` / `vbscript:` / non-
 styles, tables, images and links survive. `preview.test.ts` covers the classification and
 the sanitiser.
 
+**File viewers** (`src/renderer/fileView.ts`) decide how one file is shown, so the preview
+peek and the document tab can never drift apart. Markdown and HTML open rendered and keep
+the Rendered / Source toggle; a `.csv` / `.tsv` is parsed into a table with a sticky header
+and right-aligned numbers (`src/renderer/csv.ts`); a `.log` is shown line by line with a
+level accent, a level filter carrying per-level counts and a search that highlights its
+matches (`src/renderer/logView.ts`); a picture is loaded as an `<img>` and a `.pdf` is
+handed to Chromium's own viewer in an `<iframe>`. Word, Excel and PowerPoint files are ZIP
+archives of XML: the service converts them to markup (`src/service/preview/office.ts`, over
+the same `readZip` a skill archive uses) and the renderer sanitises the result before it
+reaches the DOM, so layout, fonts and embedded objects are dropped while headings, tables,
+sheets and slides survive.
+
+Pictures and PDFs need the file itself rather than its text, so the renderer points at
+`app://beecode/file?path=…` — a route the main process serves (`serveWorkspaceFile`, on by
+`plugins: true` for the PDF viewer). It is confined to the workspace root and to the
+extensions a viewer asks for, so the renderer still has no general file read.
+
 **The terminal** (`src/main/terminal.ts` + `src/renderer/terminal.ts`) is a command runner
 that lives in the main process and is exposed as IPC channels (`beecode:terminal-*`), not as
 a renderer RPC method — the agent cannot reach it and nothing is added to

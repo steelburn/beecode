@@ -1,4 +1,5 @@
-import { clear, h, renderMarkdown } from './dom';
+import { clear, h } from './dom';
+import { canShowFile, mountFileView } from './fileView';
 import {
   BROWSER_TAB,
   CHAT_TAB,
@@ -9,7 +10,7 @@ import {
   type DocTabsState,
   type DocTheme,
 } from './docTabs';
-import { canSwitchView, htmlPreviewMarkup, type FileView } from './preview';
+import { canSwitchView, type FileView } from './preview';
 
 /**
  * The main-area tab strip and the document pane below it.
@@ -213,18 +214,13 @@ function viewToggle(tab: DocTab, handlers: MainAreaHandlers): HTMLElement {
 
 function docPaneBody(tab: DocTab): Node[] {
   const body: Node[] = [];
-  if (tab.binary) {
+  // One entry point for every kind of file, shared with the explorer's peek panel.
+  if (canShowFile(tab)) {
+    body.push(mountFileView(tab, { view: tab.view }));
+  } else {
     body.push(
       h('p', { class: 'doc-empty', text: 'This file is not text, so there is nothing to render.' }),
     );
-  } else if (tab.view === 'source' || tab.kind === 'text') {
-    body.push(h('pre', { class: 'doc-source', text: tab.text }));
-  } else if (tab.kind === 'markdown') {
-    // The transcript's `md-*` output is styled by the same prose rules the explorer
-    // preview uses, so a document looks identical in both places.
-    body.push(h('div', { class: 'doc-rendered explorer-rendered', html: renderMarkdown(tab.text) }));
-  } else {
-    body.push(htmlPreview(tab.text));
   }
   if (tab.truncated) {
     body.push(
@@ -235,14 +231,6 @@ function docPaneBody(tab: DocTab): Node[] {
     );
   }
   return body;
-}
-
-/** A rendered HTML file, isolated in its own shadow root. */
-function htmlPreview(html: string): HTMLElement {
-  const surface = h('div', { class: 'doc-rendered explorer-rendered html' });
-  const root = surface.attachShadow({ mode: 'open' });
-  root.innerHTML = htmlPreviewMarkup(html);
-  return surface;
 }
 
 function formatBytes(size: number): string {

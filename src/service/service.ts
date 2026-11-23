@@ -1,4 +1,4 @@
-import { mkdir, open, readdir, stat } from 'node:fs/promises';
+import { mkdir, open, readdir, readFile, stat } from 'node:fs/promises';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import {
   defaultConfig,
@@ -35,8 +35,10 @@ import { ScheduleStore } from './scheduler/store';
 import { BrowserController } from './browser/controller';
 import { DesktopController } from './desktop/controller';
 import { McpManager } from './mcp/manager';
+import { convertOffice, officeFormat, type OfficeFormat } from './preview/office';
 import { SkillStore } from './skills/store';
 import { installSkills } from './skills/install';
+import { readZip } from './skills/zip';
 import { installPlugins } from './plugins/install';
 import { createLogger, readJsonFile, writeJsonFile, type Logger } from './logger';
 import { loadEnvPreset } from './llm/envPreset';
@@ -855,10 +857,36 @@ export class BeeCodeService {
     };
   }
 
+  /**
+   * Convert one Word/Excel/PowerPoint file to preview markup.
+   *
+   * The file is a ZIP of XML parts, so the conversion happens here in the service, where
+   * a real inflate exists, and the renderer receives markup instead of a "binary file"
+   * placeholder. A conversion failure is reported as a note rather than an error: the file
+   * stays openable and the reason is visible.
+   */
+  private async readOfficePreview(
+    path: string,
+    name: string,
+    size: number,
+    format: OfficeFormat,
+  ): Promise<FsFile> {
+    const base: FsFile = { path, name, size, truncated: false, binary: true, text: '' };
+    try {
+      const document = convertOffice(readZip(await readFile(path)), format);
+      return { ...base, render: { kind: 'html', html: document.html, note: document.note } };
+    } catch (error) {
+      const reason = (error as Error).message;
+      return { ...base, render: { kind: 'html', html: '', note: `Could not read the document: ${reason}` } };
+    }
+  }
+
   private async readPreview(input: string): Promise<FsFile> {
     const path = this.resolveExplorerPath(input);
     const info = await stat(path);
     if (!info.isFile()) throw new Error(`not a file: ${path}`);
+    const office = officeFormat(basename(path));
+    if (office) return this.readOfficePreview(path, basename(path), info.size, office);
     const length = Math.min(info.size, FS_PREVIEW_BYTES);
     const buffer = Buffer.alloc(length);
     const handle = await open(path, 'r');

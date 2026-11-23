@@ -1,10 +1,10 @@
 import type { FsFile, FsListing } from '../shared/protocol';
-import { clear, h, renderMarkdown } from './dom';
+import { clear, h } from './dom';
+import { canShowFile, mountFileView } from './fileView';
 import {
   canSwitchView,
   defaultView,
   fileKind,
-  htmlPreviewMarkup,
   type FileView,
 } from './preview';
 
@@ -119,36 +119,21 @@ export function renderExplorer(host: HTMLElement, state: ExplorerState, cb: Expl
 }
 
 /*
- * A rendered HTML file is mounted in its own shadow root: the file's own stylesheets stay
- * inside the preview instead of restyling the whole app, and the app's rules cannot
- * reshape the file. `.explorer-rendered.html` adds layout containment on top, so a page
- * written with `position: fixed` cannot paint over the app chrome either.
- */
-function renderHtmlPreview(text: string): HTMLElement {
-  const host = h('div', { class: 'explorer-rendered html' });
-  host.attachShadow({ mode: 'open' }).innerHTML = htmlPreviewMarkup(text);
-  return host;
-}
-
-/*
- * Markdown and HTML open rendered and can be flipped to the raw source; every other file
- * only ever has a source view, so no switch is offered. HTML is sanitized and then
- * mounted isolated — see `renderHtmlPreview`; markdown is escaped, so it stays inline.
+ * One file at a time. Every view — picture, PDF, table, log, Markdown, source — comes from
+ * `mountFileView`, the same entry point the document tab uses, so the peek and the tab
+ * always agree. Markdown and HTML open rendered and can be flipped to the raw source; only
+ * those two offer the switch.
  */
 function renderPreview(file: FsFile, state: ExplorerState, cb: ExplorerCallbacks): HTMLElement {
   const kind = fileKind(file.name);
   const view = file.binary ? 'source' : (state.view ?? defaultView(kind));
   const body = h('div', { class: 'explorer-preview-body' });
-  if (file.binary) {
-    body.append(h('div', { class: 'explorer-empty', text: 'Binary file — no text preview.' }));
+  // The panel peeks at one file: a picture, a PDF, a table or a log gets its own view,
+  // text is rendered or shown as source, and a binary file with no viewer is only named.
+  if (canShowFile(file)) {
+    body.append(mountFileView(file, { view }));
   } else {
-    body.append(
-      view === 'source' || kind === 'text'
-        ? h('pre', { class: 'explorer-code', text: file.text })
-        : kind === 'html'
-          ? renderHtmlPreview(file.text)
-          : h('div', { class: 'explorer-rendered', html: renderMarkdown(file.text) }),
-    );
+    body.append(h('div', { class: 'explorer-empty', text: 'Binary file — no text preview.' }));
   }
   return h(
     'div',
@@ -174,7 +159,7 @@ function renderPreview(file: FsFile, state: ExplorerState, cb: ExplorerCallbacks
           )
         : null,
       // The panel is 240px wide: it peeks at a file, the main area is where one is read.
-      file.binary
+      !canShowFile(file)
         ? null
         : h('button', {
             class: 'btn ghost small',

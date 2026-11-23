@@ -1,4 +1,4 @@
-import type { FsFile } from '../shared/protocol';
+import type { FsFile, FsRender } from '../shared/protocol';
 import { canSwitchView, defaultView, fileKind, type FileKind, type FileView } from './preview';
 
 /**
@@ -30,6 +30,8 @@ export interface DocTab {
   truncated: boolean;
   /** True when the content is not text, so there is nothing to render. */
   binary: boolean;
+  /** Converted markup from the service, for documents an archive had to be unpacked from. */
+  render?: FsRender;
   view: FileView;
 }
 
@@ -72,6 +74,7 @@ export function openDoc(state: DocTabsState, file: FsFile): DocTabsState {
     size: file.size,
     truncated: file.truncated,
     binary: file.binary,
+    render: file.render,
     view: file.binary || !canSwitchView(kind) ? defaultView(kind) : (previous?.view ?? defaultView(kind)),
   };
   const tabs = previous

@@ -1,6 +1,6 @@
 import { app, BrowserWindow, globalShortcut, Menu, nativeImage, net, protocol, shell, Tray } from 'electron';
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
-import { basename, dirname, join, relative, resolve, isAbsolute } from 'node:path';
+import { basename, dirname, extname, join, relative, resolve, isAbsolute } from 'node:path';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { pathToFileURL } from 'node:url';
@@ -72,8 +72,10 @@ if (!app.requestSingleInstanceLock()) {
 }
 
 async function bootstrap(): Promise<void> {
-  protocol.handle('app', (request) => {
+  protocol.handle('app', async (request) => {
     const url = new URL(request.url);
+    // The document pane's viewers (pictures, PDFs) load the file itself, not its bytes.
+    if (url.pathname === '/file') return serveWorkspaceFile(url.searchParams.get('path'));
     const rel = decodeURIComponent(url.pathname).replace(/^\/+/, '') || 'index.html';
     const file = resolve(rendererDir, rel);
     const inside = !relative(rendererDir, file).startsWith('..') && !isAbsolute(relative(rendererDir, file));
@@ -168,6 +170,56 @@ async function bootstrap(): Promise<void> {
   app.on('activate', () => showWindow());
 }
 
+/** Extensions a viewer may load straight from disk, with the type it must be served as. */
+const VIEWABLE_TYPES: Record<string, string> = {
+  '.pdf': 'application/pdf',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.bmp': 'image/bmp',
+  '.avif': 'image/avif',
+  '.svg': 'image/svg+xml',
+  '.ico': 'image/x-icon',
+};
+
+let viewerRootCache: { at: number; root: string } | undefined;
+
+/** Workspace root the viewers may read from — the service owns that setting. */
+async function viewerRoot(): Promise<string> {
+  if (viewerRootCache && Date.now() - viewerRootCache.at < 1000) return viewerRootCache.root;
+  const config = await supervisor.request('config.get', {}).catch(() => undefined);
+  const root = (config?.workspace.root ?? '').trim() || workspace;
+  viewerRootCache = { at: Date.now(), root };
+  return root;
+}
+
+/**
+ * Serve one workspace file to the renderer.
+ *
+ * A picture needs bytes for its <img> and Chromium's PDF viewer needs a real navigation,
+ * so neither can travel through the text preview RPC. The route is deliberately narrow —
+ * inside the workspace root only, and only for the types a viewer asks for — so it cannot
+ * turn into a general file reader the renderer could abuse.
+ */
+async function serveWorkspaceFile(input: string | null): Promise<Response> {
+  if (!input) return new Response('missing path', { status: 400 });
+  const file = resolve(input);
+  const type = VIEWABLE_TYPES[extname(file).toLowerCase()];
+  if (!type) return new Response('unsupported type', { status: 403 });
+  const root = await viewerRoot();
+  if (!root) return new Response('no workspace', { status: 409 });
+  const sub = relative(resolve(root), file);
+  if (!sub || sub.startsWith('..') || isAbsolute(sub)) return new Response('forbidden', { status: 403 });
+  const source = await net.fetch(pathToFileURL(file).toString());
+  if (!source.ok) return source;
+  return new Response(source.body, {
+    status: source.status,
+    headers: { 'Content-Type': type, 'Cache-Control': 'no-cache' },
+  });
+}
+
 function createWindow(): void {
   mainWindow = new BrowserWindow({
     width: 1280,
@@ -184,6 +236,9 @@ function createWindow(): void {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      // Chromium's own PDF viewer is a plugin: without this the document pane can only
+      // fall back to the extracted text of a PDF.
+      plugins: true,
       spellcheck: false,
       devTools: isDev,
     },
