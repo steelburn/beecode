@@ -19,6 +19,7 @@ import type {
   SkillInfo,
   SkillInstallInput,
   SubagentRunInfo,
+  ToolInfo,
 } from '../shared/protocol';
 import { DESKTOP_ACTIONS } from '../shared/protocol';
 import { describeSchedule, formatMoment } from '../shared/schedule';
@@ -64,7 +65,155 @@ export interface PanelCallbacks {
   forgetWorkspace?(path: string): Promise<void>;
 }
 
-/* ---------------------------------------------------------------- permissions */
+/* -------------------------------------------------------------------- tools */
+
+/** Order the catalogue is grouped in; a group no tool uses simply never renders. */
+const TOOL_GROUP_ORDER: Array<ToolInfo['group']> = [
+  'control',
+  'files',
+  'shell',
+  'desktop',
+  'browser',
+  'agents',
+  'skills',
+  'scheduler',
+  'mcp',
+  'plugins',
+];
+
+const TOOL_GROUP_LABELS: Record<ToolInfo['group'], string> = {
+  control: 'Session & planning',
+  files: 'Files',
+  shell: 'Shell',
+  desktop: 'Desktop',
+  browser: 'Browser',
+  agents: 'Subagents',
+  skills: 'Skills & memory',
+  scheduler: 'Scheduled runs',
+  mcp: 'MCP servers',
+  plugins: 'Plugins',
+};
+
+/**
+ * Settings → Tools: the per-tool switches. This is the only place a tool can be taken out
+ * of the model's catalogue; `tools.list` keeps reporting switched-off tools so they can be
+ * turned back on, and the service refuses an in-band call to one that is off.
+ */
+export function renderTools(
+  host: HTMLElement,
+  tools: ToolInfo[],
+  config: BeeCodeConfig,
+  onDisabledChange: (disabled: string[]) => Promise<void>,
+): void {
+  clear(host);
+  const off = new Set(config.tools?.disabled ?? []);
+  let query = '';
+
+  const summary = h('p', { class: 'sub', text: '' });
+  const note = h('p', { class: 'sub', text: '' });
+  const list = h('div', {});
+  const filter = h('input', { class: 'settings-input', type: 'search', placeholder: 'Filter tools…' });
+  filter.addEventListener('input', () => {
+    query = filter.value;
+    render();
+  });
+
+  const save = async (): Promise<void> => {
+    try {
+      await onDisabledChange([...off].sort());
+      note.textContent = '';
+    } catch (err) {
+      note.textContent = `Could not save the switches: ${err instanceof Error ? err.message : String(err)}`;
+    }
+  };
+
+  const summaryText = (on: number): string =>
+    `${on} of ${tools.length} tools are on. A switched-off tool is not offered to the model ` +
+    'and refuses to run if it is called anyway; the next turn already sees the change.';
+
+  const groupHeaders = new Map<string, HTMLElement>();
+
+  /** Recount after a toggle without rebuilding the list, so the row keeps its focus. */
+  const refreshCounts = (): void => {
+    summary.textContent = summaryText(tools.filter((tool) => !off.has(tool.name)).length);
+    for (const [group, header] of groupHeaders) {
+      const inGroup = tools.filter((tool) => tool.group === group);
+      const groupOn = inGroup.filter((tool) => !off.has(tool.name)).length;
+      const label = TOOL_GROUP_LABELS[group as ToolInfo['group']];
+      header.textContent = `${label} · ${groupOn}/${inGroup.length}`;
+    }
+  };
+
+  const flip = (name: string, on: boolean): void => {
+    if (on) off.delete(name);
+    else off.add(name);
+    refreshCounts();
+    void save();
+  };
+
+  function render(): void {
+    groupHeaders.clear();
+    summary.textContent = summaryText(tools.filter((tool) => !off.has(tool.name)).length);
+    clear(list);
+    const needle = query.trim().toLowerCase();
+    const visible = tools.filter(
+      (tool) =>
+        !needle ||
+        tool.name.toLowerCase().includes(needle) ||
+        tool.description.toLowerCase().includes(needle),
+    );
+    if (visible.length === 0) {
+      list.append(
+        h('p', {
+          class: 'sub',
+          text: tools.length ? 'No tool matches that filter.' : 'The service reported no tools.',
+        }),
+      );
+      return;
+    }
+    for (const group of TOOL_GROUP_ORDER) {
+      const inGroup = visible.filter((tool) => tool.group === group);
+      if (inGroup.length === 0) continue;
+      const groupOn = inGroup.filter((tool) => !off.has(tool.name)).length;
+      const header = h('h4', {
+        text: `${TOOL_GROUP_LABELS[group]} · ${groupOn}/${inGroup.length}`,
+      });
+      groupHeaders.set(group, header);
+      const card = h('div', { class: 'card' }, header);
+      for (const tool of inGroup) {
+        const box = h('input', { type: 'checkbox' });
+        box.checked = !off.has(tool.name);
+        box.addEventListener('change', () => flip(tool.name, box.checked));
+        card.append(
+          h(
+            'label',
+            { class: 'tool-switch', title: tool.description },
+            box,
+            h('span', { class: 'tool-switch-name', text: tool.name }),
+            tool.mutating ? h('span', { class: 'badge', text: 'mutating' }) : null,
+            h('span', { class: 'sub', text: tool.description }),
+          ),
+        );
+      }
+      list.append(card);
+    }
+  }
+
+  host.append(
+    h(
+      'div',
+      { class: 'card' },
+      h('h4', { text: 'Tools' }),
+      summary,
+      filter,
+      note,
+    ),
+    list,
+  );
+  render();
+}
+
+/* -------------------------------------------------------------- permissions */
 
 /**
  * Permission editor. Every change is written straight through to the service policy,
@@ -1443,11 +1592,11 @@ function settingsChoice<T extends string>(
 }
 
 /**
- * Every config.json field the Permissions tab does not own, editable here.
+ * Every config.json field the Permissions section does not own, editable here.
  *
  * The point is discoverability: an error message may say "raise agent.maxSteps in settings",
  * and settings must then actually contain that field. Rules (what the agent may do) stay in
- * the Permissions tab; preferences (how it runs) live here.
+ * the Permissions section; preferences (how it runs) live here.
  */
 function renderConfigCards(draft: BeeCodeConfig, note: Note): HTMLElement[] {
   const touch = (): void => note('unsaved changes');
@@ -1458,7 +1607,7 @@ function renderConfigCards(draft: BeeCodeConfig, note: Note): HTMLElement[] {
     h('h4', { text: 'Agent' }),
     h('p', {
       class: 'sub',
-      text: 'How the loop behaves. Max steps is the cap behind "Stopped after N steps without finishing": raise it here for long tasks. Approval rules and the auto-approved tool list stay in the Permissions tab.',
+      text: 'How the loop behaves. Max steps is the cap behind "Stopped after N steps without finishing": raise it here for long tasks. Approval rules and the auto-approved tool list stay in Settings → Permissions.',
     }),
     settingsField(
       'Default mode',
@@ -1531,7 +1680,7 @@ function renderConfigCards(draft: BeeCodeConfig, note: Note): HTMLElement[] {
     h('h4', { text: 'Desktop control' }),
     h('p', {
       class: 'sub',
-      text: 'Whether the agent may see and drive windows at all. The hard stop for input is in the Permissions tab; this switch removes the desktop tools entirely.',
+      text: 'Whether the agent may see and drive windows at all. The hard stop for input is in Settings → Permissions; this switch puts the driver in mock mode, so the tools see no real window; switch the desktop_* tools themselves off in Settings → Tools.',
     }),
     toggle('Desktop tools enabled', draft.desktop.enabled, (checked) => {
       draft.desktop.enabled = checked;

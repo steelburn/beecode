@@ -6,6 +6,16 @@ All notable changes to beeCode will be documented in this file.
 
 ### Added
 
+- **Every tool can be switched off, not just gated.** All 44 registered tools used to be
+  offered to the model unconditionally: the policy and `agent.autoApproveTools` decided
+  whether a call needed a click, never whether the tool existed. **Settings → Tools** now lists
+  the whole catalogue grouped by subsystem, with a filter box, a switch per tool and an
+  *N of M tools are on* count, and writes `config.tools.disabled`. A switched-off tool keeps
+  its row — the panel has to show it as off — but it is filtered out of the schemas the model
+  receives and `execute` refuses it in-band (`{ "error": "tool \"x\" is switched off" }`)
+  without ever reaching the handler, so nothing gets at it through the router or a subagent
+  either. `config.set` rebuilds the registry when the list changes, and an unknown name is kept
+  rather than dropped: it may be a plugin or MCP tool that is merely not installed yet.
 - **Both side columns size and hide on their own — and come back.** The rail and the side
   panel each have a drag grip on their inner edge — double-click restores the shipped
   width, arrow keys work while the grip has focus — and each collapses from a chevron in
@@ -185,12 +195,12 @@ All notable changes to beeCode will be documented in this file.
 - **The right column keeps the session, not the app.** The side panel had grown to eight
   tabs — Permissions, Subagents, Activity, Files, MCP & skills, Settings, Scheduler and
   Terminal — which mixed two lifetimes in one 360px column. The strip now holds only the
-  four that describe the session you are looking at; everything app-wide moved out:
-  Settings, MCP & skills and Scheduled runs are sections of one dialog behind the gear in
-  the topbar (`Ctrl+,`), and the terminal became a drawer across the bottom of the chat
-  column (``Ctrl+` ``), where a shell actually has the width. The four remaining tabs
-  wrap instead of being squeezed into a single row, and `Esc` closes whichever of dialog
-  or drawer is on top. The smoke run now gates the tab strip itself, so a surface creeping
+  three that describe the session you are looking at; everything app-wide moved out:
+  Settings, Permissions, MCP & skills and Scheduled runs are sections of one dialog behind
+  the gear in the topbar (`Ctrl+,`), and the terminal became a drawer across the bottom of
+  the chat column (``Ctrl+` ``), where a shell actually has the width. The three remaining
+  tabs wrap instead of being squeezed into a single row, and `Esc` closes whichever of
+  dialog or drawer is on top. The smoke run now gates the tab strip itself, so a surface creeping
   back into it fails the check.
   Each surface is captured into `docs/images/` by `npm run docs:screenshots`, which now
   also records the card and line counts it saw while each was open.

@@ -58,7 +58,7 @@ curl -s -N -H "Authorization: Bearer $TOKEN" http://127.0.0.1:4870/events
 | `agents.list` | `{}` | `AgentInfo[]` |
 | `subagent.list` | `{}` | `SubagentRunInfo[]` |
 | `subagent.cancel` | `{ runId }` | `{ cancelled: boolean }` |
-| `tools.list` | `{}` | `ToolInfo[]` |
+| `tools.list` | `{}` | `ToolInfo[]` — every registered tool with `enabled: false` for a name in `config.tools.disabled` |
 | `mcp.list` | `{}` | `{ servers: McpServerStatus[] }` |
 | `mcp.reload` | `{}` | `{ servers: McpServerStatus[] }` |
 | `skill.list` / `skill.reload` | `{ cwd? }` | `{ skills: SkillInfo[] }` |
@@ -68,6 +68,22 @@ curl -s -N -H "Authorization: Bearer $TOKEN" http://127.0.0.1:4870/events
 MCP servers and skills attach to that catalogue rather than replacing anything:
 `tools.list` includes the `mcp__<server>__<tool>` entries once a server is connected, and
 the `skill` tool is always registered. See [mcp-and-skills.md](./mcp-and-skills.md).
+
+A tool is not offered to the model unless the user left it on. `config.tools.disabled` names
+the switched-off ones — the same list **Settings → Tools** writes:
+
+```json
+{ "tools": { "disabled": ["shell_run", "desktop_click"] } }
+```
+
+A switched-off tool stays in `tools.list` (the panel has to be able to show it as off), but it
+is filtered out of the schemas sent to the LLM, and an `execute` for it never reaches the
+handler — the result is `{ "error": "tool \"shell_run\" is switched off …", "disabled": true }`.
+Read-only subagents inherit the switches, and the unknown-tool error lists only the enabled
+names. This is the availability axis, not the approval axis: `agent.autoApproveTools` and the
+policy decide whether a call needs a click, never whether the tool exists. A name that matches
+no registered tool is kept rather than dropped — it may be a plugin or MCP tool that is merely
+not installed right now.
 
 `decision` is `allow`, `allow-session` (auto-approve this tool for the rest of the
 session) or `deny`. Errors use standard JSON-RPC codes: `-32700` parse, `-32600` invalid

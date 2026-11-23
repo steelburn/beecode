@@ -64,16 +64,36 @@ const rendered = report.dom?.markdown ?? {};
 const markdownOk =
   rendered.headings >= 1 && rendered.listItems >= 3 && rendered.tableRows >= 1 && rendered.charts === 1;
 
-// The right column keeps the four session surfaces. Settings, MCP & skills and the
-// scheduler moved into the settings dialog and the terminal into the drawer, so a
+// The right column keeps the three session surfaces. Settings, Permissions, MCP & skills
+// and the scheduler live in the settings dialog and the terminal in the drawer, so a
 // regression that puts them back into the strip is caught here.
 const panelTabs = report.dom?.panelTabs ?? {};
 const panelTabsOk =
-  panelTabs.count === 4 &&
+  panelTabs.count === 3 &&
   JSON.stringify(panelTabs.panels) ===
-    JSON.stringify(['permissions', 'subagents', 'activity', 'explorer']) &&
+    JSON.stringify(['subagents', 'activity', 'explorer']) &&
   panelTabs.dialog === true &&
   panelTabs.drawer === true;
+
+// The per-tool switches are a settings section too: every registered tool is listed with
+// a checkbox, so a broken catalogue or a renderer that drops rows fails here.
+const tools = report.dom?.tools ?? {};
+const toolsOk =
+  tools.dialog === true &&
+  tools.navLabel === 'Tools' &&
+  (tools.rows ?? 0) > 20 &&
+  tools.rows === tools.checkboxes &&
+  tools.described === true &&
+  tools.on > 0 &&
+  tools.on <= tools.rows;
+
+// Permissions is a settings section now: the policy cards come from the service, the
+// side panel keeps only the session surfaces.
+const permissions = report.dom?.permissions ?? {};
+const permissionsOk =
+  permissions.dialog === true &&
+  (permissions.headings ?? []).includes('Permissible applications') &&
+  (permissions.headings ?? []).includes('Shell');
 
 // The MCP & skills section of the settings dialog must render from the service.
 const integrations = report.dom?.integrations ?? {};
@@ -231,6 +251,8 @@ const ok =
   markdownOk &&
   columnsOk &&
   panelTabsOk &&
+  toolsOk &&
+  permissionsOk &&
   integrationsOk &&
   pluginsOk &&
   composerOk &&
@@ -246,6 +268,9 @@ if (!columnsOk) console.error(`[smoke] side column check failed: ${JSON.stringif
 if (!panelTabsOk)
   console.error(`[smoke] panel tab strip check failed: ${JSON.stringify(panelTabs)}`);
 if (!markdownOk) console.error(`[smoke] markdown/chart render check failed: ${JSON.stringify(rendered)}`);
+if (!toolsOk) console.error(`[smoke] tools section check failed: ${JSON.stringify(tools)}`);
+if (!permissionsOk)
+  console.error(`[smoke] permissions section check failed: ${JSON.stringify(permissions)}`);
 if (!integrationsOk)
   console.error(`[smoke] integrations section check failed: ${JSON.stringify(integrations)}`);
 if (!pluginsOk) console.error(`[smoke] plugins card check failed: ${JSON.stringify(integrations)}`);

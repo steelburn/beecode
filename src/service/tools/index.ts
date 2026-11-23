@@ -29,6 +29,11 @@ export interface ToolDeps {
   memory: MemoryStore;
   /** Goal/to-do feature switch: when false the planning tools are not registered. */
   goalTodoEnabled: boolean;
+  /**
+   * Tool names the user switched off (Settings → Tools). They stay registered so the
+   * settings list can offer them back, but the model never sees or calls them.
+   */
+  disabledTools: Iterable<string>;
   skills: SkillStore;
   /** Rescans the skill roots for a working directory (config-aware). */
   scanSkills: (cwd: string) => Promise<SkillInfo[]>;
@@ -85,6 +90,7 @@ export function buildToolRegistry(deps: ToolDeps, options: { allowDelegation: bo
   // the copy of itself that the previous registry still reports.
   if (deps.plugins) registry.register(...deps.plugins.toolDefinitions(registry.names()));
 
+  registry.setDisabled(deps.disabledTools);
   if (!options.readOnly) return registry;
   return registry.subset((tool) => SUBAGENT_TOOL_ALLOWLIST.has(tool.name));
 }

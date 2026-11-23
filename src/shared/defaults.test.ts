@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { defaultConfig, normalizeConfig } from './defaults';
+import { defaultConfig, normalizeConfig, normalizeTools } from './defaults';
 import type { BeeCodeConfig } from './protocol';
 
 function configWith(models: unknown[], overrides: Partial<BeeCodeConfig> = {}): BeeCodeConfig {
@@ -77,4 +77,18 @@ test('normalizeConfig falls back to the default working directory when blank', (
     agent: { ...base.agent, workingDir: '   ' },
   });
   assert.equal(result.agent.workingDir, base.agent.workingDir);
+});
+
+test('normalizeTools trims, de-duplicates and sorts the switched-off names', () => {
+  const result = normalizeTools(
+    { disabled: ['  shell_run ', 'fs_read', 'shell_run', '', 'fs_read'] },
+    { disabled: [] },
+  );
+  assert.deepEqual(result.disabled, ['fs_read', 'shell_run']);
+});
+
+test('normalizeConfig gives an older config an empty tool switch list', () => {
+  const raw = configWith([{ id: 'first', label: 'First', provider: 'openai', model: 'gpt-4o' }]);
+  delete (raw as Partial<BeeCodeConfig>).tools;
+  assert.deepEqual(normalizeConfig(raw).tools.disabled, []);
 });

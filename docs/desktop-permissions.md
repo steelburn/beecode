@@ -9,9 +9,10 @@ click — is in [windows-driver.md](windows-driver.md).
 
 ## Where the policy lives
 
-`~/.beecode/policy.json`, editable in the app's **Permissions** panel (changes are written
-straight through to the running service — the same `PolicyEngine` instance enforces them
-immediately). `~/.beecode/policy.json` is created from `defaultPolicy()` on first run.
+`~/.beecode/policy.json`, editable in the app's **Settings → Permissions** section
+(changes are written straight through to the running service — the same `PolicyEngine`
+instance enforces them immediately). `~/.beecode/policy.json` is created from
+`defaultPolicy()` on first run.
 
 ## Shape
 

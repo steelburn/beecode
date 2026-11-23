@@ -50,6 +50,7 @@ import {
   renderScheduler,
   renderSettings,
   renderSubagents,
+  renderTools,
 } from './panels';
 import { renderPlan, renderWorkspaceGate, type WorkspaceActions } from './plan';
 
@@ -170,10 +171,10 @@ window.addEventListener('unhandledrejection', (event) => rendererErrors.push(Str
  * it did, and the workspace files it can reach. Everything app-wide — models, integrations,
  * scheduled runs — lives in the settings dialog, and the shell in the bottom drawer.
  */
-type PanelTab = 'permissions' | 'subagents' | 'activity' | 'explorer';
+type PanelTab = 'subagents' | 'activity' | 'explorer';
 
 /** Settings dialog sections: one per card group that used to be a panel tab of its own. */
-type SettingsSection = 'general' | 'integrations' | 'automation';
+type SettingsSection = 'general' | 'tools' | 'permissions' | 'integrations' | 'automation';
 
 interface State {
   info?: AppInfo;
@@ -252,7 +253,7 @@ const state: State = {
   unread: new Set<string>(),
   explorer: {},
   docs: emptyDocTabs(readDocTheme()),
-  panel: 'permissions',
+  panel: 'subagents',
   settings: { open: false, section: 'general' },
   terminalOpen: false,
   ready: false,
@@ -522,7 +523,7 @@ function bindUi(): void {
 
   for (const tab of document.querySelectorAll<HTMLButtonElement>('.panel-tabs .tab')) {
     tab.addEventListener('click', () => {
-      state.panel = (tab.dataset.panel as PanelTab) ?? 'permissions';
+      state.panel = (tab.dataset.panel as PanelTab) ?? 'subagents';
       for (const other of document.querySelectorAll('.panel-tabs .tab')) other.classList.toggle('active', other === tab);
       // A boot load that failed — a transient RPC, a service that was still starting — left
       // every panel empty while the composer kept working. Opening a tab is the user asking
@@ -1561,11 +1562,39 @@ function renderPanels(): void {
   const host = state.settings.open ? els.settingsBody : els.panelBody;
 
   /**
-   * The settings dialog hosts what used to be three panel tabs — General, MCP & skills and
-   * Scheduled runs — so they keep their render functions and change only their host.
+   * The settings dialog hosts what used to be four panel tabs — General, Permissions,
+   * MCP & skills and Scheduled runs — so they keep their render functions and change only
+   * their host. The side panel keeps the session surfaces: subagents, activity and files.
    */
   const renderSettingsSection = (): void => {
     const section = state.settings.section;
+    if (section === 'tools' && state.config) {
+      renderTools(host, state.tools, state.config, async (disabled) => {
+        state.config = await api.saveConfig({
+          ...state.config!,
+          tools: { ...(state.config!.tools ?? { disabled: [] }), disabled },
+        });
+        // The service rebuilt its catalogue — re-read the flags so a reopen tells the truth.
+        state.tools = await api.invoke('tools.list', {});
+      });
+      // A fresh profile skips the bulk load, so the catalogue may not have arrived yet.
+      if (state.tools.length === 0) {
+        void api
+          .invoke('tools.list', {})
+          .then((tools) => {
+            state.tools = tools;
+            renderPanels();
+          })
+          .catch((error: unknown) =>
+            setHint(`Could not read the tool catalogue: ${(error as Error).message}`),
+          );
+      }
+      return;
+    }
+    if (section === 'permissions') {
+      renderPermissions(host, state.policy, state.config, callbacks);
+      return;
+    }
     if (section === 'integrations') {
       renderIntegrations(host, state.mcpServers, state.skills, state.plugins, state.config, callbacks);
       return;
@@ -1592,7 +1621,6 @@ function renderPanels(): void {
   };
 
   if (state.settings.open) renderSettingsSection();
-  else if (state.panel === 'permissions') renderPermissions(host, state.policy, state.config, callbacks);
   else if (state.panel === 'subagents') renderSubagents(host, state.subagents, state.agents, callbacks);
   else if (state.panel === 'explorer') {
     // First visit reads the workspace root; after that the listing is re-read when the tab

@@ -310,6 +310,28 @@ test('background service answers JSON-RPC over loopback HTTP', async () => {
     assert.ok(!afterRemoveTools.includes('mcp__second__read_note'), 'removed server tools dropped');
     assert.ok(afterRemoveTools.includes('mcp__fake__read_note'), 'untouched server kept its tools');
 
+    // Per-tool switches (Settings → Tools): the name stays registered so the panel can list it
+    // as off, but it stops being advertised to the model and refuses to run.
+    const switchedOn = { ...config, tools: { disabled: ['shell_run', 'fs_write', 'ghost_tool'] } };
+    const switchSave = await rpc('config.set', { config: switchedOn });
+    assert.equal(switchSave.error, undefined, switchSave.error?.message);
+    const switched = (await rpc('tools.list')).result as Array<{ name: string; enabled: boolean }>;
+    assert.equal(switched.find((tool) => tool.name === 'shell_run')?.enabled, false);
+    assert.equal(switched.find((tool) => tool.name === 'fs_write')?.enabled, false);
+    assert.equal(switched.find((tool) => tool.name === 'fs_read')?.enabled, true);
+    assert.equal(
+      switched.filter((tool) => tool.enabled === false).length,
+      2,
+      'only the tools actually listed are off',
+    );
+    // An unknown name is kept: it can be a plugin or MCP tool that is merely not installed
+    // right now, so dropping it on save would silently lose the user's choice.
+    const savedTools = ((await rpc('config.get')).result as { tools: { disabled: string[] } }).tools;
+    assert.deepEqual(savedTools.disabled, ['fs_write', 'ghost_tool', 'shell_run']);
+    await rpc('config.set', { config: { ...config, tools: { disabled: [] } } });
+    const restored = (await rpc('tools.list')).result as Array<{ enabled: boolean }>;
+    assert.ok(restored.every((tool) => tool.enabled), 'clearing the list turns every tool back on');
+
     const created = (await rpc('session.create', { title: 'e2e' })).result as { id: string; mode: string };
     assert.ok(created.id.startsWith('s_'));
     assert.equal(created.mode, 'ask');

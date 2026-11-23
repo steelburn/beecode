@@ -6,6 +6,7 @@ import {
   normalizeConfig,
   normalizeFeatures,
   normalizeMcpServers,
+  normalizeTools,
   normalizeWorkspace,
 } from '../shared/defaults';
 import { installSecrets } from './secrets';
@@ -219,6 +220,7 @@ export class BeeCodeService {
       todos: this.todos,
       memory: this.memory,
       goalTodoEnabled: this.config.features.goalTodo,
+      disabledTools: this.config.tools.disabled,
       skills: this.skills,
       scanSkills: (cwd) => this.scanSkills(cwd),
       mcp: this.mcp,
@@ -327,6 +329,7 @@ export class BeeCodeService {
       ...loaded,
       workspace,
       features: normalizeFeatures(loaded.features, base.features),
+      tools: normalizeTools(loaded.tools, base.tools),
       models: loaded.models?.length ? loaded.models : base.models,
       service: { ...base.service, ...(loaded.service ?? {}) },
       agent: {
@@ -700,6 +703,7 @@ export class BeeCodeService {
         const previousMcp = JSON.stringify(this.config.mcpServers ?? {});
         const previousPlugins = JSON.stringify(this.config.plugins ?? {});
         const previousGoalTodo = this.config.features.goalTodo;
+        const previousTools = JSON.stringify(this.config.tools);
         // The workspace is changed through `workspace.set` (it validates the folder) and
         // has its own RPC; a config save must never silently drop the root.
         sanitized.workspace = { ...this.config.workspace, ...(sanitized.workspace ?? {}) };
@@ -721,10 +725,13 @@ export class BeeCodeService {
           await this.plugins.reload();
           this.rebuildRegistries();
         }
-        // Turning the goal/to-do surface off removes its tools from the schema: the
-        // registry is rebuilt so the model cannot plan into a UI that is not there.
-        if (previousGoalTodo !== this.config.features.goalTodo) {
-          this.deps.goalTodoEnabled = this.config.features.goalTodo;
+        // Turning the goal/to-do surface (or a single tool) off removes it from the
+        // schema: the registry is rebuilt so the model cannot plan into a UI that is
+        // not there. rebuildRegistries() re-reads both switches from config.
+        if (
+          previousGoalTodo !== this.config.features.goalTodo ||
+          previousTools !== JSON.stringify(this.config.tools)
+        ) {
           this.rebuildRegistries();
         }
         this.emit({ type: 'service.health', payload: this.health() });
@@ -794,8 +801,14 @@ export class BeeCodeService {
     this.log.info('service stopping');
   }
 
-  /** Rebuilds the main and subagent catalogues (needed after an MCP or plugin reload). */
+  /**
+   * Rebuilds the main and subagent catalogues (needed after an MCP or plugin reload).
+   * The two config-driven switches are re-read here: every config write ends in a rebuild,
+   * so this is the one place that has to keep the deps in step with `config`.
+   */
   private rebuildRegistries(): void {
+    this.deps.goalTodoEnabled = this.config.features.goalTodo;
+    this.deps.disabledTools = this.config.tools.disabled;
     this.registry = buildToolRegistry(this.deps, { allowDelegation: true });
     this.subagentRegistry = buildToolRegistry(this.deps, { allowDelegation: false, readOnly: true });
   }

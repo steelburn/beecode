@@ -7,6 +7,7 @@ import type {
   PluginsConfig,
   PolicyDocument,
   SkillsConfig,
+  ToolsConfig,
   WorkspaceConfig,
 } from './protocol';
 import { POLICY_DOCUMENT_VERSION } from './protocol';
@@ -66,6 +67,7 @@ export function defaultConfig(): BeeCodeConfig {
     // folder the renderer shows the workspace setup step.
     workspace: { root: '', recent: [], restoreSession: true },
     features: { goalTodo: true },
+    tools: { disabled: [] },
     models: MODEL_PRESETS,
     defaultModelId: 'claude-sonnet',
     service: { httpPort: 4870, autoStart: true },
@@ -256,6 +258,26 @@ export function normalizeFeatures(
   };
 }
 
+/**
+ * Tool switches: names are trimmed, de-duplicated and sorted so the config diff stays
+ * readable. Unknown names are kept — an MCP or plugin tool can come back later.
+ */
+export function normalizeTools(
+  input: Partial<ToolsConfig> | undefined,
+  fallback: ToolsConfig,
+): ToolsConfig {
+  const raw = Array.isArray(input?.disabled)
+    ? input.disabled
+    : Array.isArray(fallback.disabled)
+      ? fallback.disabled
+      : [];
+  const names = raw
+    .filter((name): name is string => typeof name === 'string')
+    .map((name) => name.trim())
+    .filter(Boolean);
+  return { disabled: [...new Set(names)].sort() };
+}
+
 export function normalizeConfig(
   input: BeeCodeConfig,
   options: { strict?: boolean } = {},
@@ -291,6 +313,7 @@ export function normalizeConfig(
     ...input,
     workspace,
     features: normalizeFeatures(input.features, fallback.features),
+    tools: normalizeTools(input.tools, fallback.tools),
     models,
     defaultModelId: models.some((model) => model.id === input.defaultModelId)
       ? input.defaultModelId

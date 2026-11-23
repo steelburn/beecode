@@ -334,8 +334,9 @@ async function runSmokeCheck(serviceReady: boolean): Promise<void> {
             hintRow: hint ? window.getComputedStyle(hint).display : 'missing',
           };
         })(),
-        // The side panel keeps the session surfaces only: configuration lives in the
-        // settings dialog and the terminal in the drawer, so report the strip as it is.
+        // The side panel keeps the session surfaces only (subagents, activity, files):
+        // configuration lives in the settings dialog and the terminal in the drawer, so
+        // report the strip as it is.
         panelTabs: await (async () => {
           const tabs = Array.from(document.querySelectorAll('.panel-tabs .tab'));
           return {
@@ -374,6 +375,53 @@ async function runSmokeCheck(serviceReady: boolean): Promise<void> {
           };
           // Fold the dialog away again so the probes after it see the side panel as the
           // user would; the next probe opens it on its own section.
+          document.getElementById('close-settings')?.click();
+          return out;
+        })(),
+        // The per-tool switches: the section lists the whole catalogue, one checkbox per
+        // tool. The probe never flips one — that would rewrite the user's config.
+        tools: await (async () => {
+          const nav = document.querySelector('#settings-nav .modal-nav-item[data-settings="tools"]');
+          if (!nav) return { dialog: false };
+          nav.click();
+          const dialogOpen = await waitFor(
+            () => !document.getElementById('settings-modal')?.classList.contains('hidden'),
+          );
+          await waitFor(() => document.querySelectorAll('#settings-body .tool-switch').length > 0);
+          const body = document.getElementById('settings-body');
+          const rows = Array.from(body.querySelectorAll('.tool-switch'));
+          const boxes = rows.map((row) => row.querySelector('input[type="checkbox"]')).filter(Boolean);
+          const out = {
+            dialog: dialogOpen,
+            navLabel: (nav.textContent ?? '').trim(),
+            cards: body.querySelectorAll('.card').length,
+            rows: rows.length,
+            checkboxes: boxes.length,
+            on: boxes.filter((box) => box.checked).length,
+            described: rows.every((row) => (row.querySelector('.sub')?.textContent ?? '').trim().length > 0),
+            summary: (body.querySelector('.card .sub')?.textContent ?? '').slice(0, 140),
+            headings: Array.from(body.querySelectorAll('h4')).map((n) => (n.textContent ?? '').trim()),
+          };
+          document.getElementById('close-settings')?.click();
+          return out;
+        })(),
+        // Permissions is a settings section now: the side panel keeps only the session
+        // surfaces, so the policy cards are reached through the dialog nav.
+        permissions: await (async () => {
+          const nav = document.querySelector('#settings-nav .modal-nav-item[data-settings="permissions"]');
+          if (!nav) return { dialog: false };
+          nav.click();
+          const dialogOpen = await waitFor(
+            () => !document.getElementById('settings-modal')?.classList.contains('hidden'),
+          );
+          await waitFor(() => document.querySelectorAll('#settings-body .card').length > 0);
+          const body = document.getElementById('settings-body');
+          const out = {
+            dialog: dialogOpen,
+            cards: body.querySelectorAll('.card').length,
+            appRules: body.querySelectorAll('.app-rule').length,
+            headings: Array.from(body.querySelectorAll('h4')).map((n) => (n.textContent ?? '').trim()),
+          };
           document.getElementById('close-settings')?.click();
           return out;
         })(),

@@ -12,6 +12,30 @@ const WORKSPACE_GROUPS = new Set(['files', 'shell']);
 /** Ordered tool catalogue with a name index. */
 export class ToolRegistry {
   private tools = new Map<string, ToolDefinition>();
+  /**
+   * Names the user switched off in Settings → Tools. They stay in the catalogue so the
+   * settings list can offer them back, but they are neither advertised to the model nor
+   * callable: `schemas()` drops them and `execute()` refuses in-band.
+   */
+  private disabled = new Set<string>();
+
+  /**
+   * Applies the per-tool switches without deleting entries, so `info()` can still report
+   * the whole catalogue with an `enabled` flag.
+   */
+  setDisabled(names: Iterable<string>): this {
+    this.disabled = new Set(names);
+    return this;
+  }
+
+  isEnabled(name: string): boolean {
+    return !this.disabled.has(name);
+  }
+
+  /** The names the model may actually call — switched-off tools are filtered out. */
+  enabledNames(): string[] {
+    return this.names().filter((name) => !this.disabled.has(name));
+  }
 
   register(...defs: ToolDefinition[]): this {
     for (const def of defs) {
@@ -34,11 +58,13 @@ export class ToolRegistry {
   }
 
   schemas(): LlmToolSchema[] {
-    return this.all().map((t) => ({
-      name: t.name,
-      description: t.description,
-      parameters: t.inputSchema,
-    }));
+    return this.all()
+      .filter((t) => !this.disabled.has(t.name))
+      .map((t) => ({
+        name: t.name,
+        description: t.description,
+        parameters: t.inputSchema,
+      }));
   }
 
   info(): ToolInfo[] {
@@ -48,20 +74,40 @@ export class ToolRegistry {
       mutating: t.mutating,
       group: t.group,
       inputSchema: t.inputSchema,
+      enabled: !this.disabled.has(t.name),
     }));
   }
 
-  /** A restricted copy — used for read-only subagents and plan mode. */
+  /**
+   * A restricted copy — used for read-only subagents and plan mode. The per-tool switches
+   * travel with it, so a switched-off tool cannot come back through a subagent.
+   */
   subset(predicate: (tool: ToolDefinition) => boolean): ToolRegistry {
     const copy = new ToolRegistry();
     for (const tool of this.all()) if (predicate(tool)) copy.register(tool);
-    return copy;
+    return copy.setDisabled(this.disabled);
   }
 
   async execute(name: string, args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
     const tool = this.tools.get(name);
     if (!tool) {
-      return { content: JSON.stringify({ error: `unknown tool "${name}"`, available: this.names() }), failed: true };
+      return {
+        content: JSON.stringify({
+          error: `unknown tool "${name}"`,
+          available: this.enabledNames(),
+        }),
+        failed: true,
+      };
+    }
+    if (this.disabled.has(name)) {
+      return {
+        content: JSON.stringify({
+          error: `tool "${name}" is switched off in beeCode — ask the user to enable it in Settings → Tools`,
+          tool: name,
+          disabled: true,
+        }),
+        failed: true,
+      };
     }
     if (!ctx.cwd && WORKSPACE_GROUPS.has(tool.group)) {
       return {

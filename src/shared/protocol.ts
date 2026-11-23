@@ -129,6 +129,8 @@ export interface ToolInfo {
   description: string;
   /** Mutating tools are gated by the approval policy. */
   mutating: boolean;
+  /** False when the user switched the tool off in Settings; it is never offered then. */
+  enabled: boolean;
   /** Which subsystem owns the tool — used for grouping in the UI. */
   group:
     | 'desktop'
@@ -403,6 +405,15 @@ export interface FeaturesConfig {
   goalTodo: boolean;
 }
 
+/**
+ * Per-tool switches. A name listed in `disabled` stays registered so Settings can list it
+ * as off, but it is never advertised to the model and refuses to run if it is called
+ * anyway — the same in-band refusal the policy engine uses.
+ */
+export interface ToolsConfig {
+  disabled: string[];
+}
+
 /** One entry of a directory listing in the workspace explorer. */
 export interface FsEntry {
   name: string;
@@ -459,6 +470,8 @@ export interface BeeCodeConfig {
   plugins: PluginsConfig;
   workspace: WorkspaceConfig;
   features: FeaturesConfig;
+  /** Tools the user switched off (Settings → Tools). */
+  tools: ToolsConfig;
 }
 
 /* ------------------------------------------------------------ mcp & skills */

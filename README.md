@@ -86,7 +86,7 @@ shape.
 
 **Settings** — the gear in the topbar, or `Ctrl+,` — is where the endpoint, the model and
 the working directory are chosen, no file editing required. It is one dialog with three
-sections: **General**, **MCP & skills** and **Scheduled runs**.
+sections: **General**, **Tools**, **Permissions**, **MCP & skills** and **Scheduled runs**.
 
 ![The settings dialog, General section: provider presets, the API key and the working directory](docs/images/settings-dialog.png)
 
@@ -134,6 +134,17 @@ A loopback Base URL (Ollama, LM Studio) may still run keyless.
 | Browse the web (sandboxed, AI cursor) | `browser_open`, `browser_snapshot`, `browser_click`, `browser_type`, `browser_key`, `browser_scroll`, `browser_wait`, `browser_tabs`, `browser_screenshot`, `browser_close` |
 | Delegate | `subagent_delegate`, `agents_list`, `subagent_list`, `subagent_cancel` |
 | Remember | `todo_write` / `todo_read`, `memory_write` / `memory_read`, `ask_user` |
+
+### Switching tools off
+
+The **Tools** section lists every registered tool — grouped by subsystem, with its description
+and a switch — so the whole catalogue stays visible without every tool being offered to the
+model. A tool you switch off keeps its row (so you can see it is off and turn it back on) but
+is filtered out of the schemas the model receives, and calling it by name returns
+`tool "<name>" is switched off` instead of running. The switches are `config.tools.disabled`
+in `~/.beecode/config.json`, they apply to subagents too, and they are independent of the
+approval axis: `agent.autoApproveTools` and the policy decide whether a call needs a click,
+never whether the tool exists.
 
 Every one of those is gated. See [docs/desktop-permissions.md](docs/desktop-permissions.md)
 for the policy, and [docs/windows-driver.md](docs/windows-driver.md) for how the driver
@@ -187,7 +198,7 @@ cannot widen it:
 * Every allowed, denied, approved and failed action is appended to
   `~/.beecode/audit.jsonl` and mirrored in the **Activity** panel.
 
-Edit the policy in the app (Permissions panel) or at `~/.beecode/policy.json`.
+Edit the policy in the app (Settings → Permissions) or at `~/.beecode/policy.json`.
 
 ## The internal browser
 
