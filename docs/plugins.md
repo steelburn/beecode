@@ -50,7 +50,8 @@ contract (manifest, `activate`, schema, permission use, in-band errors).
 | `dirs` | `[]` | Plugin roots; relative paths resolve against the working directory. Empty means `~/.beecode/plugins` (`BEECODE_HOME` is honoured). |
 | `disabled` | `[]` | Plugin ids that are loaded but left inactive. |
 
-The same switches are exposed in the UI: the **Plugins** card in the **MCP & skills** panel lists every plugin
+The same switches are exposed in the UI: the **Plugins** card in the settings dialog's
+**MCP & skills** section lists every plugin
 with its source (`builtin` / `user`), permissions, contributed tools and load error, and
 toggles it on or off. Toggling writes `disabled` to `config.json`, so the panel and the
 file never disagree.

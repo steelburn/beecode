@@ -16,6 +16,8 @@ export interface TerminalActions {
   run: (command: string) => void;
   cancel: () => void;
   clear: () => void;
+  /** Set when the terminal lives in a drawer that can be folded away from its header. */
+  hide?: () => void;
 }
 
 interface Elements {
@@ -69,6 +71,13 @@ function mount(host: HTMLElement, actions: TerminalActions): Elements {
   const send = h('button', { class: 'btn primary small', type: 'button', text: 'Run' });
   const stop = h('button', { class: 'btn danger small hidden', type: 'button', text: 'Stop' });
   const wipe = h('button', { class: 'btn ghost small', type: 'button', text: 'Clear' });
+  const fold = h('button', {
+    class: 'btn ghost small',
+    type: 'button',
+    text: '✕',
+    title: 'Hide the terminal',
+  });
+  fold.addEventListener('click', () => actions.hide?.());
 
   const submit = (): void => {
     const command = input.value.trim();
@@ -105,7 +114,14 @@ function mount(host: HTMLElement, actions: TerminalActions): Elements {
   const root = h(
     'div',
     { class: 'card term' },
-    h('div', { class: 'term-head' }, h('h4', { text: 'Workspace terminal' }), stop, wipe),
+    h(
+      'div',
+      { class: 'term-head' },
+      h('h4', { text: 'Workspace terminal' }),
+      stop,
+      wipe,
+      ...(actions.hide ? [fold] : []),
+    ),
     h('p', { class: 'sub term-meta' }, where, status),
     scroll,
     h('div', { class: 'term-form' }, input, send),

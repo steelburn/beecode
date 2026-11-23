@@ -6,8 +6,14 @@ All notable changes to beeCode will be documented in this file.
 
 ### Added
 
-- **Scheduled runs, from chat or from their own tab.** beeCode could only start a run when
-  you typed something. A **Scheduler** tab now lists every schedule with its next and last
+- **Both side columns size and hide on their own.** The rail and the side panel each have
+  a drag grip on their inner edge — double-click restores the shipped width, arrow keys
+  work while the grip has focus — and both collapse away: the rail from its own button in
+  the topbar, the panel from the ☰ that was already there. Widths and collapsed flags are
+  window preferences in localStorage, so they survive a restart, and the conversation
+  column never drops below 360px however far a drag pushes.
+- **Scheduled runs, from chat or from the settings dialog.** beeCode could only start a run when
+  you typed something. **Settings → Scheduled runs** lists every schedule with its next and last
   run, and *Run now* · *Pause* · *Edit* · *Delete* are one click each; the new `schedule`
   tool does the same from chat (`list`, `add`, `update`, `remove`, `run`, `pause`,
   `resume`), so "every weekday at 8:15 summarise my inbox" is one sentence. Timing is
@@ -64,7 +70,7 @@ All notable changes to beeCode will be documented in this file.
   the previous dock mode, and because the page is bounded by the dock rectangle it never
   covers the composer (`src/renderer/docTabs.ts`, `src/renderer/mainArea.ts`,
   `src/renderer/browserDock.ts`, `src/renderer/explorer.ts`, `src/renderer/styles.css`).
-- **Workspace terminal.** A new **Terminal** panel tab runs shell commands from the app,
+- **Workspace terminal.** A new **Terminal** drawer runs shell commands from the app,
   confined to the workspace: the working directory can never leave the root (`cd ..` at the
   root is refused, so is an absolute path outside it, and switching workspace re-confines
   the session), output is capped at 4000 lines / 400 KB, and **Stop** kills the process
@@ -172,6 +178,18 @@ All notable changes to beeCode will be documented in this file.
 
 ### Changed
 
+- **The right column keeps the session, not the app.** The side panel had grown to eight
+  tabs — Permissions, Subagents, Activity, Files, MCP & skills, Settings, Scheduler and
+  Terminal — which mixed two lifetimes in one 360px column. The strip now holds only the
+  four that describe the session you are looking at; everything app-wide moved out:
+  Settings, MCP & skills and Scheduled runs are sections of one dialog behind the gear in
+  the topbar (`Ctrl+,`), and the terminal became a drawer across the bottom of the chat
+  column (``Ctrl+` ``), where a shell actually has the width. The four remaining tabs
+  wrap instead of being squeezed into a single row, and `Esc` closes whichever of dialog
+  or drawer is on top. The smoke run now gates the tab strip itself, so a surface creeping
+  back into it fails the check.
+  Each surface is captured into `docs/images/` by `npm run docs:screenshots`, which now
+  also records the card and line counts it saw while each was open.
 - **The chat composer gives its space back to the conversation.** *Attach* and *Send* are now
   icon buttons floating inside the input box — a paperclip on the left, an arrow (plus a stop
   square while a turn runs) on the right — instead of a labelled button row under it, and the

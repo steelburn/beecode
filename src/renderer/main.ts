@@ -23,6 +23,7 @@ import type {
   TranscriptEntry,
   WorkspaceState,
 } from '../shared/protocol';
+import { initColumns } from './columns';
 import { clear, formatJsonForDisplay, h, renderMarkdown } from './dom';
 import { mountBrowserDock, type BrowserDock, type DockMode } from './browserDock';
 import { renderExplorer, type ExplorerState } from './explorer';
@@ -164,15 +165,15 @@ window.__renderDocsSample = () => {
 window.addEventListener('error', (event) => rendererErrors.push(String(event.message)));
 window.addEventListener('unhandledrejection', (event) => rendererErrors.push(String((event as PromiseRejectionEvent).reason)));
 
-type PanelTab =
-  | 'permissions'
-  | 'subagents'
-  | 'integrations'
-  | 'activity'
-  | 'scheduler'
-  | 'settings'
-  | 'explorer'
-  | 'terminal';
+/**
+ * The right column is the session's own surface: what it may touch, who it delegated to, what
+ * it did, and the workspace files it can reach. Everything app-wide — models, integrations,
+ * scheduled runs — lives in the settings dialog, and the shell in the bottom drawer.
+ */
+type PanelTab = 'permissions' | 'subagents' | 'activity' | 'explorer';
+
+/** Settings dialog sections: one per card group that used to be a panel tab of its own. */
+type SettingsSection = 'general' | 'integrations' | 'automation';
 
 interface State {
   info?: AppInfo;
@@ -220,6 +221,10 @@ interface State {
   /** Main-area tabs: the open documents, the active view and the rendered theme. */
   docs: DocTabsState;
   panel: PanelTab;
+  /** App-wide configuration: it opens over the session instead of taking a panel tab. */
+  settings: { open: boolean; section: SettingsSection };
+  /** The terminal drawer at the bottom of the chat column. */
+  terminalOpen: boolean;
   ready: boolean;
 }
 
@@ -248,6 +253,8 @@ const state: State = {
   explorer: {},
   docs: emptyDocTabs(readDocTheme()),
   panel: 'permissions',
+  settings: { open: false, section: 'general' },
+  terminalOpen: false,
   ready: false,
 };
 
@@ -281,6 +288,17 @@ const els = {
   panel: document.getElementById('panel') as HTMLElement,
   panelBody: document.getElementById('panel-body') as HTMLElement,
   togglePanel: document.getElementById('toggle-panel') as HTMLButtonElement,
+  settingsModal: document.getElementById('settings-modal') as HTMLElement,
+  settingsNav: document.getElementById('settings-nav') as HTMLElement,
+  settingsBody: document.getElementById('settings-body') as HTMLElement,
+  openSettings: document.getElementById('open-settings') as HTMLButtonElement,
+  closeSettings: document.getElementById('close-settings') as HTMLButtonElement,
+  drawer: document.getElementById('drawer') as HTMLElement,
+  drawerBody: document.getElementById('drawer-body') as HTMLElement,
+  toggleTerminal: document.getElementById('toggle-terminal') as HTMLButtonElement,
+  toggleRail: document.getElementById('toggle-rail') as HTMLButtonElement,
+  railResizer: document.getElementById('resizer-rail') as HTMLElement,
+  panelResizer: document.getElementById('resizer-panel') as HTMLElement,
 };
 
 /* ------------------------------------------------- main-area tab handles */
@@ -415,7 +433,7 @@ async function loadAll(): Promise<void> {
     populateModels();
     renderSessions();
     paintWorkspaceGate();
-    renderPanelBody();
+    renderPanels();
     if (!workspace.configured) {
       // No workspace folder: the gate is the whole column and no session is started.
       renderGoalPanel();
@@ -489,29 +507,66 @@ function bindUi(): void {
     state.current.model = els.modelSelect.value;
   });
 
-  els.togglePanel.addEventListener('click', () => els.app.classList.toggle('panel-hidden'));
+  // Both side columns are dragged, collapsed and remembered by the columns module.
+  initColumns({
+    app: els.app,
+    railResizer: els.railResizer,
+    panelResizer: els.panelResizer,
+    toggleRail: els.toggleRail,
+    togglePanel: els.togglePanel,
+  });
 
-  for (const tab of document.querySelectorAll<HTMLButtonElement>('.tab')) {
+  for (const tab of document.querySelectorAll<HTMLButtonElement>('.panel-tabs .tab')) {
     tab.addEventListener('click', () => {
       state.panel = (tab.dataset.panel as PanelTab) ?? 'permissions';
-      for (const other of document.querySelectorAll('.tab')) other.classList.toggle('active', other === tab);
+      for (const other of document.querySelectorAll('.panel-tabs .tab')) other.classList.toggle('active', other === tab);
       // A boot load that failed — a transient RPC, a service that was still starting — left
       // every panel empty while the composer kept working. Opening a tab is the user asking
       // for that data, so retry instead of showing an empty card until the next restart.
       if (!state.ready) void loadAll();
-      renderPanelBody();
+      renderPanels();
       // Re-opening a tab re-reads what it shows: the Files listing and the CLI catalogue
       // are snapshots, so a second click was the only way to ask for a fresh one and it
       // did nothing before this.
       if (state.panel === 'explorer') void openExplorer(state.explorer.path);
-      else if (state.panel === 'settings') void refreshAgentCatalogue();
     });
   }
+
+  els.openSettings.addEventListener('click', () => setSettingsOpen(!state.settings.open));
+  els.closeSettings.addEventListener('click', () => setSettingsOpen(false));
+  // The backdrop is the dialog element itself, so only a click outside the card closes it.
+  els.settingsModal.addEventListener('click', (event) => {
+    if (event.target === els.settingsModal) setSettingsOpen(false);
+  });
+  for (const item of els.settingsNav.querySelectorAll<HTMLButtonElement>('.modal-nav-item')) {
+    item.addEventListener('click', () => {
+      const section = item.dataset.settings as SettingsSection | undefined;
+      setSettingsOpen(true, section);
+    });
+  }
+
+  els.toggleTerminal.addEventListener('click', () => setTerminalOpen(!state.terminalOpen));
 
   document.addEventListener('keydown', (event) => {
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'n') {
       event.preventDefault();
       void newSession();
+      return;
+    }
+    // Esc closes whatever the top layer is — the dialog first, then the drawer.
+    if (event.key === 'Escape') {
+      if (state.settings.open) setSettingsOpen(false);
+      else if (state.terminalOpen) setTerminalOpen(false);
+      return;
+    }
+    if (!(event.ctrlKey || event.metaKey)) return;
+    // Ctrl+, is the customary settings shortcut; the drawer gets the backtick beside it.
+    if (event.key === ',') {
+      event.preventDefault();
+      setSettingsOpen(!state.settings.open);
+    } else if (event.key === '`') {
+      event.preventDefault();
+      setTerminalOpen(!state.terminalOpen);
     }
   });
 }
@@ -777,7 +832,7 @@ async function respondApproval(approvalId: string, decision: 'allow' | 'allow-se
 
 async function savePolicy(next: PolicyDocument): Promise<void> {
   state.policy = await api.savePolicy(next);
-  renderPanelBody();
+  renderPanels();
 }
 
 /* ----------------------------------------------------------------- events */
@@ -888,14 +943,14 @@ function handleEvent(event: import('../shared/protocol').ServiceEvent): void {
 
     case 'scheduler.changed':
       state.schedules = event.payload.schedules;
-      if (state.panel === 'scheduler') renderPanelBody();
+      if (state.settings.open && state.settings.section === 'automation') renderPanels();
       break;
 
     case 'subagent.update': {
       const index = state.subagents.findIndex((r) => r.id === event.payload.id);
       if (index >= 0) state.subagents[index] = event.payload;
       else state.subagents.push(event.payload);
-      if (state.panel === 'subagents') renderPanelBody();
+      if (state.panel === 'subagents') renderPanels();
       break;
     }
 
@@ -916,7 +971,7 @@ function handleEvent(event: import('../shared/protocol').ServiceEvent): void {
     case 'desktop.activity':
       state.audit.unshift(event.payload);
       state.audit = state.audit.slice(0, 120);
-      if (state.panel === 'activity') renderPanelBody();
+      if (state.panel === 'activity') renderPanels();
       break;
 
     case 'log':
@@ -1211,7 +1266,7 @@ async function applyStepLimit(
         text: `Step limit raised to ${state.config.agent.maxSteps} — send “continue” to resume.`,
       }),
     );
-    if (state.panel === 'settings') renderPanelBody();
+    if (state.settings.open) renderPanels();
     setHint(`agent.maxSteps raised to ${state.config.agent.maxSteps}`);
   } catch (error) {
     button.disabled = false;
@@ -1355,14 +1410,16 @@ function renderApproval(): void {
 }
 
 /**
- * Draw the terminal panel. The actions are rebuilt per render because the panel re-mounts
- * whenever the panel body is rebuilt, and they close over nothing else.
+ * Draw the terminal in the bottom drawer of the chat column. The actions are rebuilt per
+ * render because the drawer re-mounts whenever its body is rebuilt, and they close over
+ * nothing else.
  */
-function renderTerminalPanel(next: TerminalState): void {
-  renderTerminal(els.panelBody, next, {
+function renderTerminalDrawer(next: TerminalState): void {
+  renderTerminal(els.drawerBody, next, {
     run: (command) => void api.terminal.run(command).then(applyTerminal),
     cancel: () => void api.terminal.cancel().then(applyTerminal),
     clear: () => void api.terminal.clear().then(applyTerminal),
+    hide: () => setTerminalOpen(false),
   });
 }
 
@@ -1372,10 +1429,11 @@ function renderTerminalPanel(next: TerminalState): void {
  */
 function applyTerminal(next: TerminalState): void {
   state.terminal = next;
-  if (state.panel === 'terminal') renderTerminalPanel(next);
+  // A closed drawer needs no painting: opening it reads the state back.
+  if (state.terminalOpen) renderTerminalDrawer(next);
 }
 
-function renderPanelBody(): void {
+function renderPanels(): void {
   const callbacks = {
     savePolicy,
     listModels: (input: {
@@ -1395,7 +1453,7 @@ function renderPanelBody(): void {
       // The goal/to-do switch changes the panel immediately; the service rebuilt the
       // tool catalogue in the same save.
       renderGoalPanel();
-      renderPanelBody();
+      renderPanels();
     },
     pickDirectory: async () => api.pickDirectory(),
     cancelSubagent: async (runId: string) => {
@@ -1403,7 +1461,7 @@ function renderPanelBody(): void {
     },
     refreshAudit: async () => {
       state.audit = await api.invoke('audit.list', { limit: 80 });
-      renderPanelBody();
+      renderPanels();
     },
     reloadIntegrations: async () => {
       const [mcp, skills, plugins] = await Promise.all([
@@ -1414,37 +1472,37 @@ function renderPanelBody(): void {
       state.mcpServers = mcp.servers;
       state.skills = skills.skills;
       state.plugins = plugins.plugins;
-      renderPanelBody();
+      renderPanels();
     },
     installPlugins: async (paths: string[]) => {
       const result = await api.invoke('plugin.install', { paths });
       state.plugins = result.plugins;
-      renderPanelBody();
+      renderPanels();
       return result;
     },
     removeSkill: async (name: string) => {
       const result = await api.invoke('skill.remove', { name });
       state.skills = result.skills;
-      renderPanelBody();
+      renderPanels();
       return result.skills;
     },
     togglePlugin: async (id: string, enabled: boolean) => {
       const result = await api.invoke('plugin.setEnabled', { id, enabled });
       state.plugins = result.plugins;
-      renderPanelBody();
+      renderPanels();
     },
     installSkill: async (input: SkillInstallInput) => {
       const result = await api.invoke('skill.install', input);
       state.skills = result.skills;
       // Rebuilding the panel is how the new card list appears; the note lives in the card.
-      renderPanelBody();
+      renderPanels();
       return result.installed;
     },
     detectAgents: async () => {
       const result = await api.invoke('agents.detect', {});
       state.detectedAgents = result.agents;
       state.agents = withInternalAgent(result.agents);
-      renderPanelBody();
+      renderPanels();
       return result.agents;
     },
     saveAgents: async (next: CliAgentEntry[]) => {
@@ -1452,7 +1510,7 @@ function renderPanelBody(): void {
       state.detectedAgents = result.agents;
       state.agents = withInternalAgent(result.agents);
       state.config = await api.getConfig();
-      // No `renderPanelBody()` here: rebuilding Settings on every checkbox click threw
+      // No `renderPanels()` here: rebuilding Settings on every checkbox click threw
       // away the caret in the command box and the scroll position. The card keeps its
       // own enable state and re-renders only on an explicit detect.
       return result.agents;
@@ -1464,7 +1522,7 @@ function renderPanelBody(): void {
       state.workspace = await api.invoke('workspace.forget', { path });
       state.config = await api.getConfig();
       paintWorkspaceGate();
-      renderPanelBody();
+      renderPanels();
     },
   };
 
@@ -1474,17 +1532,17 @@ function renderPanelBody(): void {
     openDoc: (path: string) => void openDocTab(path),
     close: () => {
       state.explorer = { ...state.explorer, file: undefined, view: undefined };
-      renderPanelBody();
+      renderPanels();
     },
     saveSchedule: async (input: ScheduleInput) => {
       const saved = await api.invoke('scheduler.save', input);
       state.schedules = saved.schedules;
-      renderPanelBody();
+      renderPanels();
     },
     removeSchedule: async (id: string) => {
       const removed = await api.invoke('scheduler.remove', { id });
       state.schedules = removed.schedules;
-      renderPanelBody();
+      renderPanels();
     },
     runSchedule: async (id: string) => {
       const started = await api.invoke('scheduler.run', { id });
@@ -1492,42 +1550,91 @@ function renderPanelBody(): void {
     },
     setView: (view: FileView) => {
       state.explorer = { ...state.explorer, view };
-      renderPanelBody();
+      renderPanels();
     },
   };
 
-  if (state.panel === 'permissions') renderPermissions(els.panelBody, state.policy, state.config, callbacks);
-  else if (state.panel === 'subagents') renderSubagents(els.panelBody, state.subagents, state.agents, callbacks);
-  else if (state.panel === 'integrations')
-    renderIntegrations(els.panelBody, state.mcpServers, state.skills, state.plugins, state.config, callbacks);
-  else if (state.panel === 'settings') {
-    if (state.config) renderSettings(els.panelBody, state.config, callbacks, state.detectedAgents);
-    else {
-      clear(els.panelBody);
-      els.panelBody.append(h('div', { class: 'empty', text: 'Reading the configuration…' }));
-      // Boot skips the bulk load until a workspace exists, so Settings fetches what it
-      // needs itself rather than showing an empty panel on a fresh profile.
-      void api
-        .getConfig()
-        .then((config) => {
-          state.config = config;
-          if (state.panel === 'settings') renderPanelBody();
-        })
-        .catch((error: unknown) => setHint(`Could not read the config: ${(error as Error).message}`));
+  const host = state.settings.open ? els.settingsBody : els.panelBody;
+
+  /**
+   * The settings dialog hosts what used to be three panel tabs — General, MCP & skills and
+   * Scheduled runs — so they keep their render functions and change only their host.
+   */
+  const renderSettingsSection = (): void => {
+    const section = state.settings.section;
+    if (section === 'integrations') {
+      renderIntegrations(host, state.mcpServers, state.skills, state.plugins, state.config, callbacks);
+      return;
     }
-  }
+    if (section === 'automation') {
+      renderScheduler(host, state.schedules, callbacks);
+      return;
+    }
+    if (state.config) {
+      renderSettings(host, state.config, callbacks, state.detectedAgents);
+      return;
+    }
+    clear(host);
+    host.append(h('div', { class: 'empty', text: 'Reading the configuration…' }));
+    // Boot skips the bulk load until a workspace exists, so Settings fetches what it needs
+    // itself rather than showing an empty dialog on a fresh profile.
+    void api
+      .getConfig()
+      .then((config) => {
+        state.config = config;
+        renderPanels();
+      })
+      .catch((error: unknown) => setHint(`Could not read the config: ${(error as Error).message}`));
+  };
+
+  if (state.settings.open) renderSettingsSection();
+  else if (state.panel === 'permissions') renderPermissions(host, state.policy, state.config, callbacks);
+  else if (state.panel === 'subagents') renderSubagents(host, state.subagents, state.agents, callbacks);
   else if (state.panel === 'explorer') {
     // First visit reads the workspace root; after that the listing is re-read when the tab
     // is opened again (see the tab handler) or when the user navigates.
-    if (state.explorer.listing || state.explorer.error) renderExplorer(els.panelBody, state.explorer, explorerCallbacks);
-    else void openExplorer(state.explorer.path);
-  } else if (state.panel === 'terminal') {
-      // Pushed updates only arrive once a command has run, so the first visit fetches.
-      if (state.terminal) renderTerminalPanel(state.terminal);
-      else void api.terminal.state().then(applyTerminal);
-    } else if (state.panel === 'scheduler') {
-      renderScheduler(els.panelBody, state.schedules, callbacks);
-    } else renderActivity(els.panelBody, state.audit, callbacks);
+    if (state.explorer.listing || state.explorer.error) {
+      renderExplorer(host, state.explorer, explorerCallbacks);
+    } else void openExplorer(state.explorer.path);
+  } else renderActivity(host, state.audit, callbacks);
+}
+
+/**
+ * Open or close the settings dialog. Configuration belongs to the app rather than to a
+ * session, so it is a single modal instead of three more tabs in the side panel.
+ */
+function setSettingsOpen(open: boolean, section?: SettingsSection): void {
+  state.settings = { open, section: section ?? state.settings.section };
+  els.settingsModal.classList.toggle('hidden', !open);
+  els.openSettings.setAttribute('aria-pressed', String(open));
+  paintSettingsNav();
+  // Repaint whichever surface is on screen: opening paints the dialog, closing paints the tab
+  // strip again, because an edit made in the dialog can change what a tab shows.
+  renderPanels();
+  if (!open) return;
+  // The catalogue is a probe, so it is refreshed on open rather than kept warm.
+  if (state.settings.section === 'general') void refreshAgentCatalogue();
+}
+
+/** Mark the section the dialog is showing; also run on open so the state survives a reload. */
+function paintSettingsNav(): void {
+  for (const item of els.settingsNav.querySelectorAll<HTMLButtonElement>('.modal-nav-item')) {
+    const active = item.dataset.settings === state.settings.section;
+    item.classList.toggle('active', active);
+    item.setAttribute('aria-selected', String(active));
+  }
+}
+
+/**
+ * Open or close the terminal drawer. It takes the bottom of the chat column instead of a
+ * 360px side tab, because a shell needs the width and belongs to the session's work.
+ */
+function setTerminalOpen(open: boolean): void {
+  state.terminalOpen = open;
+  els.drawer.classList.toggle('hidden', !open);
+  els.toggleTerminal.setAttribute('aria-pressed', String(open));
+  if (open) void api.terminal.state().then(applyTerminal);
+  else clear(els.drawerBody);
 }
 
 /* -------------------------------------------------------------------- plan */
@@ -1568,7 +1675,7 @@ const workspaceActions: WorkspaceActions = {
     state.workspace = await api.invoke('workspace.forget', { path });
     state.config = await api.getConfig();
     paintWorkspaceGate();
-    renderPanelBody();
+    renderPanels();
   },
 };
 
@@ -1615,7 +1722,7 @@ async function applyWorkspace(path: string): Promise<void> {
     paintWorkspaceGate();
     renderHeader();
     renderGoalPanel();
-    renderPanelBody();
+    renderPanels();
     setHint(`Workspace: ${state.workspace.root}`);
   } catch (error) {
     setHint(`Could not use that folder: ${(error as Error).message}`);
@@ -1634,7 +1741,7 @@ async function openExplorer(path?: string): Promise<void> {
     // the panel had no way back out of the error state.
     state.explorer = { path: state.explorer.path, error: (error as Error).message };
   }
-  if (state.panel === 'explorer') renderPanelBody();
+  if (state.panel === 'explorer') renderPanels();
 }
 
 /** Preview one file, clipped to the service's preview budget. */
@@ -1693,7 +1800,7 @@ async function openDocTab(path: string): Promise<void> {
     renderMainArea();
   } catch (error) {
     state.explorer = { ...state.explorer, error: (error as Error).message };
-    renderPanelBody();
+    renderPanels();
   }
 }
 
@@ -1720,7 +1827,7 @@ async function previewFile(path: string): Promise<void> {
   } catch (error) {
     state.explorer = { ...state.explorer, error: (error as Error).message };
   }
-  if (state.panel === 'explorer') renderPanelBody();
+  if (state.panel === 'explorer') renderPanels();
 }
 
 /* ------------------------------------------------------------- workspace menu */
@@ -1839,7 +1946,7 @@ async function refreshAgentCatalogue(): Promise<void> {
   try {
     const result = await api.invoke('agents.detect', { probe: true });
     state.detectedAgents = result.agents;
-    if (state.panel === 'settings') renderPanelBody();
+    if (state.settings.open) renderPanels();
   } catch (error) {
     setHint(`Could not probe the external agents: ${(error as Error).message}`);
   }

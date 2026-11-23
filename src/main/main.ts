@@ -334,19 +334,34 @@ async function runSmokeCheck(serviceReady: boolean): Promise<void> {
             hintRow: hint ? window.getComputedStyle(hint).display : 'missing',
           };
         })(),
+        // The side panel keeps the session surfaces only: configuration lives in the
+        // settings dialog and the terminal in the drawer, so report the strip as it is.
+        panelTabs: await (async () => {
+          const tabs = Array.from(document.querySelectorAll('.panel-tabs .tab'));
+          return {
+            count: tabs.length,
+            panels: tabs.map((tab) => tab.getAttribute('data-panel')),
+            dialog: !!document.getElementById('settings-modal'),
+            drawer: !!document.getElementById('drawer-body'),
+          };
+        })(),
         settings: await (async () => {
-          const tab = document.querySelector('.tab[data-panel="settings"]');
-          if (!tab) return { tab: false };
+          const opener = document.getElementById('open-settings');
+          if (!opener) return { opener: false };
           // Panels are painted from the bulk load; it can outlast these waits, so wait for
           // the renderer to say it landed before judging what a card contains.
           await waitFor(() => document.body.dataset.ready === 'true', 60000);
-          tab.click();
-          await waitFor(() => document.querySelectorAll('#panel-body .card').length > 0);
-          const body = document.getElementById('panel-body');
+          opener.click();
+          const dialogOpen = await waitFor(
+            () => !document.getElementById('settings-modal')?.classList.contains('hidden'),
+          );
+          await waitFor(() => document.querySelectorAll('#settings-body .card').length > 0);
+          const body = document.getElementById('settings-body');
           const inputs = Array.from(body.querySelectorAll('.settings-input'));
           const labels = Array.from(body.querySelectorAll('.settings-field > span')).map((n) => n.textContent);
-          return {
-            tab: true,
+          const out = {
+            opener: true,
+            dialog: dialogOpen,
             cards: body.querySelectorAll('.card').length,
             fields: labels,
             defaultRadios: body.querySelectorAll('input[type="radio"]').length,
@@ -357,8 +372,28 @@ async function runSmokeCheck(serviceReady: boolean): Promise<void> {
             })(),
             hasSave: Array.from(body.querySelectorAll('button')).some((b) => b.textContent === 'Save'), loadHint: (document.getElementById('composer-hint')?.textContent || '').slice(0, 200),
           };
+          // Fold the dialog away again so the probes after it see the side panel as the
+          // user would; the next probe opens it on its own section.
+          document.getElementById('close-settings')?.click();
+          return out;
         })(),
-        integrations: await (async () => { const tab = document.querySelector('.tab[data-panel="integrations"]'); if (!tab) return { tab: false }; tab.click(); await waitFor(() => document.querySelectorAll('#panel-body .badge').length > 0); const body = document.getElementById('panel-body'); return { tab: true, headings: Array.from(body.querySelectorAll('h4')).map((n) => n.textContent.trim()), badges: Array.from(body.querySelectorAll('.badge')).map((n) => n.textContent.trim()), pluginDrop: !!body.querySelector('.plugin-drop'), pluginDropButtons: body.querySelectorAll('.plugin-drop button').length, skillRemoves: body.querySelectorAll('.skill-remove').length }; })(),
+        integrations: await (async () => {
+          const nav = document.querySelector('#settings-nav .modal-nav-item[data-settings="integrations"]');
+          if (!nav) return { dialog: false };
+          nav.click();
+          await waitFor(() => document.querySelectorAll('#settings-body .badge').length > 0);
+          const body = document.getElementById('settings-body');
+          const out = {
+            dialog: true,
+            headings: Array.from(body.querySelectorAll('h4')).map((n) => n.textContent.trim()),
+            badges: Array.from(body.querySelectorAll('.badge')).map((n) => n.textContent.trim()),
+            pluginDrop: !!body.querySelector('.plugin-drop'),
+            pluginDropButtons: body.querySelectorAll('.plugin-drop button').length,
+            skillRemoves: body.querySelectorAll('.skill-remove').length,
+          };
+          document.getElementById('close-settings')?.click();
+          return out;
+        })(),
         configRoundTrip: await (async () => {
           const before = await window.beeCode.getConfig();
           const saved = await window.beeCode.saveConfig(before);
@@ -477,12 +512,12 @@ async function runSmokeCheck(serviceReady: boolean): Promise<void> {
         // Workspace terminal: the renderer mounts the panel, the main process runs the
         // command and streams the output back — this drives that whole chain.
         terminal: await (async () => {
-          const tab = document.querySelector('.tab[data-panel="terminal"]');
-          if (!tab) return { tab: false };
-          tab.click();
+          const toggle = document.getElementById('toggle-terminal');
+          if (!toggle) return { drawer: false };
+          toggle.click();
           const mounted = await waitFor(() => Boolean(document.querySelector('.term-input')));
-          if (!mounted) return { tab: true, mounted: false };
-          const body = document.getElementById('panel-body');
+          if (!mounted) return { drawer: true, mounted: false };
+          const body = document.getElementById('drawer-body');
           const input = body.querySelector('.term-input');
           const info = await window.beeCode.appInfo();
           const cfg = await window.beeCode.invoke('config.get', {});
@@ -494,8 +529,8 @@ async function runSmokeCheck(serviceReady: boolean): Promise<void> {
               (n.textContent || '').includes('beecode-terminal')),
             20000,
           );
-          return {
-            tab: true,
+          const out = {
+            drawer: true,
             mounted: true,
             ranCommand: ran,
             lines: body.querySelectorAll('.term-line').length,
@@ -503,6 +538,46 @@ async function runSmokeCheck(serviceReady: boolean): Promise<void> {
             insideWorkspace: (body.querySelector('.term-where')?.textContent || '') === expected,
             status: body.querySelector('.term-status')?.textContent || '',
           };
+          // Fold the drawer away again so the probes after it see an uncluttered window.
+          toggle.click();
+          return out;
+        })().catch((err) => ({ error: String(err) })),
+        // Side columns: both are draggable and both collapse away. Hide each one, bring it
+        // back, then drag the rail grip and check the width it lands on and remembers.
+        columns: await (async () => {
+          const out = { rail: 0, panel: 0 };
+          const widthOf = (sel) => Math.round(document.querySelector(sel)?.getBoundingClientRect().width ?? -1);
+          const toggleRail = document.getElementById('toggle-rail');
+          const togglePanel = document.getElementById('toggle-panel');
+          const grip = document.getElementById('resizer-rail');
+          if (!toggleRail || !togglePanel || !grip) return { missing: true };
+          out.rail = widthOf('#rail');
+          out.panel = widthOf('#panel');
+          toggleRail.click();
+          out.railHidden = await waitFor(() => widthOf('#rail') === 0, 20000);
+          toggleRail.click();
+          out.railShown = await waitFor(() => widthOf('#rail') === out.rail, 20000);
+          togglePanel.click();
+          out.panelHidden = await waitFor(() => widthOf('#panel') === 0, 20000);
+          togglePanel.click();
+          out.panelShown = await waitFor(() => widthOf('#panel') === out.panel, 20000);
+          // A synthetic drag: press the grip, move 60px right, release.
+          const before = widthOf('#rail');
+          const x = Math.round(grip.getBoundingClientRect().left) + 4;
+          const fire = (type, clientX) => grip.dispatchEvent(new PointerEvent(type, {
+            bubbles: true, cancelable: true, clientX, clientY: 12, button: 0,
+            buttons: type === 'pointerup' ? 0 : 1, pointerId: 1, pointerType: 'mouse', isPrimary: true,
+          }));
+          fire('pointerdown', x);
+          fire('pointermove', x + 60);
+          fire('pointerup', x + 60);
+          out.railDrag = widthOf('#rail');
+          out.railDragged = out.railDrag > before;
+          out.railStored = Number(localStorage.getItem('beecode.rail.width')) === out.railDrag;
+          // A double-click puts the shipped width back.
+          grip.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+          out.railReset = await waitFor(() => widthOf('#rail') === 240, 20000);
+          return out;
         })().catch((err) => ({ error: String(err) })),
         errors: window.__rendererErrors ?? [],
         // Markdown + chart rendering, measured in the real sandboxed renderer.

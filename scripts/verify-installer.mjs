@@ -48,7 +48,8 @@ check(
   'model preset editor + working directory shipped',
   ['Base URL', '+ Add model', 'Working directory', 'Browse'].every((s) => packedRenderer.includes(s)),
 );
-check('Settings tab in packaged index.html', /data-panel="settings"/.test(packedIndex));
+check('Settings dialog in packaged index.html', /id="settings-modal"/.test(packedIndex));
+check('Terminal drawer in packaged index.html', /id="drawer-body"/.test(packedIndex));
 
 // Byte-identity with dist/ rules out shipping a stale build.
 try {

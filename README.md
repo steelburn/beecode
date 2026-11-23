@@ -58,7 +58,7 @@ set ANTHROPIC_API_KEY=sk-...      # or OPENAI_API_KEY
 ```
 
 Local models work too — add an `openai-compatible` preset pointing at Ollama or LM Studio
-in the **Settings** panel (see below) or in `~/.beecode/config.json`.
+in the **Settings** dialog (see below) or in `~/.beecode/config.json`.
 
 ## Extending it
 
@@ -69,11 +69,11 @@ Three extension points sit beside the built-in tools:
   reaches the outside world only through the permissions its manifest declares. Three ship
   with the app — a PDF viewer (`pdf_open`), a Markdown/HTML → PDF generator
   (`pdf_generate`) and an Excel exporter (`excel_export`) — and every plugin can be
-  enabled or disabled in the **Plugins** card of the **MCP & skills** panel.
+  enabled or disabled in the **Plugins** card of the **MCP & skills** section of Settings.
 - **MCP servers** — point `mcpServers` in `~/.beecode/config.json` at any Model Context
   Protocol server (stdio or streamable HTTP); its tools appear as `mcp__<server>__<tool>`
   and go through the approval card unless the server marks them read-only. Servers can also
-  be added, edited, enabled and removed in the **MCP & skills** panel.
+  be added, edited, enabled and removed in that same section.
 - **Skills** — drop a `SKILL.md` playbook into `~/.beecode/skills/<name>/` (or
   `.beecode/skills/` in the workspace). The agent sees its name and description, and loads
   the instructions with the `skill` tool only when the task matches.
@@ -84,8 +84,11 @@ shape.
 
 ## Settings
 
-The **Settings** panel (right-hand sidebar, last tab) is where the endpoint, the model and
-the working directory are chosen — no file editing required.
+**Settings** — the gear in the topbar, or `Ctrl+,` — is where the endpoint, the model and
+the working directory are chosen, no file editing required. It is one dialog with three
+sections: **General**, **MCP & skills** and **Scheduled runs**.
+
+![The settings dialog, General section: provider presets, the API key and the working directory](docs/images/settings-dialog.png)
 
 | Control | Effect |
 | --- | --- |
@@ -273,8 +276,11 @@ by the same code the chat transcript uses.
 
 ## The workspace terminal
 
-The **Terminal** tab runs commands confined to the workspace: one at a time, always started
-with its working directory inside the workspace root.
+The **Terminal** drawer — the `>_` button in the topbar, or ``Ctrl+` `` — runs
+commands confined to the workspace: one at a time, always started with its working
+directory inside the workspace root.
+
+![The terminal drawer with a command and its output in the scrollback](docs/images/terminal-drawer.png)
 
 * The shell lives in the main process (`src/main/terminal.ts`); the renderer only draws the
   scrollback and sends a line, so it stays a sandboxed page with no `require`.
@@ -354,7 +360,7 @@ src/
 | `npm run smoke` | boots the real app in `--smoke` mode and asserts the UI reached the service |
 | `npm run check` | typecheck + test + build + smoke |
 | `npm run dist` | NSIS installer in `release/` via electron-builder |
-| `npm run docs:screenshots` | boots the app, drives the internal browser and regenerates `docs/images/*.png` |
+| `npm run docs:screenshots` | boots the app, drives the internal browser, opens the settings dialog and the terminal drawer, and regenerates `docs/images/*.png` |
 | `npm run verify:driver` | drives the real Windows driver against Calculator — UI Automation, coordinate clicks, resize |
 | `npm run verify:llm` | round-trips the `.env.llm` endpoint through the agent loop |
 | `npm run verify:installer` | boots the service out of the packaged `app.asar` and checks the shipped tools, driver and Settings panel |

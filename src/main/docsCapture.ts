@@ -6,12 +6,18 @@
  * in the internal browser, the AI cursor is parked on a control with the normal `hover`
  * action, and the window is captured with `capturePage`.
  *
- * Two captures are written:
+ * First, the README pair:
  *   - `app-window.png`  the whole window, composited from the renderer capture plus the
  *                       browser-view capture placed at the dock's rectangle (a child
  *                       `WebContentsView` is a separate surface and is NOT part of the
  *                       renderer's `capturePage`);
  *   - `ai-cursor.png`   the browser surface alone, so the cursor ring and label are legible.
+ *
+ * And the surfaces that no longer live in the side panel (captured with the dock
+ * closed, so they are the app alone):
+ *   - `settings-dialog.png`  General open in the settings dialog.
+ *   - `settings-mcp-skills.png`  the same dialog on its MCP & skills section.
+ *   - `terminal-drawer.png`  the terminal drawer with a real command in the scrollback.
  *
  * `capture-report.json` records the dimensions and pixel statistics of every image, which is
  * how CI — and a blind agent — can tell a real capture from a blank one.
@@ -131,6 +137,8 @@ export interface ImageStats {
 export interface CaptureReport {
   ok: boolean;
   images: ImageStats[];
+  /** What was on screen when a UI surface was captured (card and line counts). */
+  surfaces?: Record<string, number>;
   hovered: boolean;
   /** True when moving the cursor changes the captured pixels. */
   cursorPaints?: boolean;
@@ -264,7 +272,8 @@ interface Rect {
 export async function runDocsCapture(opts: CaptureOptions): Promise<CaptureReport> {
   const errors: string[] = [];
   const images: ImageStats[] = [];
-  const report: CaptureReport = { ok: false, images, hovered: false, errors };
+      const surfaces: Record<string, number> = {};
+    const report: CaptureReport = { ok: false, images, surfaces, hovered: false, errors };
 
   await mkdir(opts.outDir, { recursive: true });
   if (opts.window.isMinimized()) opts.window.restore();
@@ -385,7 +394,103 @@ export async function runDocsCapture(opts: CaptureOptions): Promise<CaptureRepor
     }
 
     await opts.browser.exec({ action: 'close' }).catch(() => undefined);
-  } finally {
+
+    // The two surfaces that used to be side-panel tabs. The dock is closed by now, so a
+    // plain window capture is the app itself — no compositing needed.
+    const shoot = async (file: string): Promise<void> => {
+      await delay(400);
+      const png = (await opts.window.webContents.capturePage()).toPNG();
+      await writeFile(join(opts.outDir, file), png);
+      images.push(measure(file, png));
+    };
+    const poll = async (script: string, ready: (n: number) => boolean): Promise<boolean> => {
+      const deadline = Date.now() + 15000;
+      for (;;) {
+        const n = Number(await opts.window.webContents.executeJavaScript(script).catch(() => 0)) || 0;
+        if (ready(n)) return true;
+        if (Date.now() > deadline) return false;
+        await delay(150);
+      }
+    };
+
+    // Settings dialog — General, opened the way a user opens it.
+    await opts.window.webContents
+      .executeJavaScript(`(() => { document.getElementById('open-settings')?.click(); return true; })()`)
+      .catch(() => undefined);
+    const dialogOpen = await poll(
+      `(() => { const m = document.getElementById('settings-modal'); if (!m || m.classList.contains('hidden')) return 0; return document.querySelectorAll('#settings-body .card').length; })()`,
+      (n) => n > 0,
+    );
+    if (!dialogOpen) errors.push('settings dialog never rendered a card');
+    surfaces['settings.cards'] = Number(
+      await opts.window.webContents
+        .executeJavaScript(`document.querySelectorAll('#settings-body .card').length`)
+        .catch(() => 0),
+    );
+    await shoot('settings-dialog.png');
+
+    // The same dialog on its second section — docs/mcp-and-skills.md points at it.
+    await opts.window.webContents
+      .executeJavaScript(
+        `(() => { document.querySelector('#settings-nav [data-settings="integrations"]')?.click(); return true; })()`,
+      )
+      .catch(() => undefined);
+    const mcpSection = await poll(
+      `(() => {
+        const nav = document.querySelector('#settings-nav [data-settings="integrations"]');
+        if (!nav || !nav.classList.contains('active')) return 0;
+        return document.querySelectorAll('#settings-body .card').length;
+      })()`,
+      (n) => n > 0,
+    );
+    if (!mcpSection) errors.push('settings dialog never switched to MCP & skills');
+    surfaces['settings.mcpCards'] = Number(
+      await opts.window.webContents
+        .executeJavaScript(`document.querySelectorAll('#settings-body .card').length`)
+        .catch(() => 0),
+    );
+    await shoot('settings-mcp-skills.png');
+    await opts.window.webContents
+      .executeJavaScript(
+        `(() => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); return true; })()`,
+      )
+      .catch(() => undefined);
+    const dialogClosed = await poll(
+      `document.getElementById('settings-modal')?.classList.contains('hidden') ? 1 : 0`,
+      (n) => n > 0,
+    );
+    if (!dialogClosed) errors.push('settings dialog did not close on Escape');
+
+    // Terminal drawer — opened from the topbar, then a real command is run through it.
+    await opts.window.webContents
+      .executeJavaScript(`(() => { document.getElementById('toggle-terminal')?.click(); return true; })()`)
+      .catch(() => undefined);
+    const terminalOpen = await poll(
+      `document.querySelectorAll('#drawer-body .term-input').length`,
+      (n) => n > 0,
+    );
+    if (!terminalOpen) errors.push('terminal drawer never rendered its command line');
+    await opts.window.webContents
+      .executeJavaScript(
+        `(() => {
+          const body = document.getElementById('drawer-body');
+          const input = body?.querySelector('.term-input');
+          const run = body?.querySelector('.term-form .btn.primary');
+          if (!input || !run) return false;
+          input.value = 'git status --short';
+          run.click();
+          return true;
+        })()`,
+      )
+      .catch(() => undefined);
+    // Output is a nicety, not a gate: a box without a workspace still has a drawer.
+    await poll(`document.querySelectorAll('#drawer-body .term-line').length`, (n) => n > 0);
+    surfaces['terminal.lines'] = Number(
+      await opts.window.webContents
+        .executeJavaScript(`document.querySelectorAll('#drawer-body .term-line').length`)
+        .catch(() => 0),
+    );
+    await shoot('terminal-drawer.png');  } finally {
     server.close();
   }
 

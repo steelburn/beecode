@@ -31,12 +31,43 @@ html, body {
 
 .app {
   display: grid;
-  grid-template-columns: 240px minmax(0, 1fr) 360px;
+  /* Both side columns belong to the user: renderer/columns.ts rewrites these two widths
+     on a drag and sets .rail-hidden / .panel-hidden when a column is collapsed. */
+  grid-template-columns: var(--rail-w, 240px) minmax(0, 1fr) var(--panel-w, 360px);
   height: 100vh;
+  position: relative;
 }
 
-.app.panel-hidden { grid-template-columns: 240px minmax(0, 1fr) 0; }
+.app.rail-hidden { grid-template-columns: 0 minmax(0, 1fr) var(--panel-w, 360px); }
+.app.rail-hidden .rail { display: none; }
+
+.app.panel-hidden { grid-template-columns: var(--rail-w, 240px) minmax(0, 1fr) 0; }
 .app.panel-hidden .panel { display: none; }
+
+.app.rail-hidden.panel-hidden { grid-template-columns: 0 minmax(0, 1fr) 0; }
+
+/* Column grips: a 10px strip on the inner edge of each side column, invisible until the
+   pointer or the keyboard arrives. Absolutely positioned, so it is not a grid item. */
+.col-resizer {
+  position: absolute; top: 0; bottom: 0; width: 10px; z-index: 5;
+  cursor: col-resize; background: transparent; touch-action: none;
+  transition: background 120ms ease;
+}
+.col-resizer[hidden] { display: none; }
+.col-resizer::after {
+  content: ''; position: absolute; top: 0; bottom: 0; left: 4px; width: 2px;
+  background: transparent; transition: background 120ms ease;
+}
+.col-resizer:hover, .col-resizer:focus-visible { background: rgba(245, 179, 1, 0.07); outline: none; }
+.col-resizer:hover::after,
+.col-resizer:focus-visible::after,
+.col-resizer.dragging::after { background: var(--amber-dim); }
+.app.resizing { user-select: none; }
+/* While a grip is held the cursor has to win everywhere, including over the transcript. */
+body.col-resizing, body.col-resizing * { cursor: col-resize !important; user-select: none !important; }
+
+.resizer-rail { left: calc(var(--rail-w, 240px) - 5px); }
+.resizer-panel { right: calc(var(--panel-w, 360px) - 5px); }
 
 /* ------------------------------------------------------------------ rail */
 
@@ -396,10 +427,11 @@ body.drag-files-over-composer .composer { background: #171308; }
   display: flex; flex-direction: column; border-left: 1px solid var(--line); background: var(--bg-inset);
   min-height: 0;
 }
-.panel-tabs { display: flex; border-bottom: 1px solid var(--line); }
+.panel-tabs { display: flex; flex-wrap: wrap; border-bottom: 1px solid var(--line); }
 .tab {
-  flex: 1; background: none; border: 0; border-bottom: 2px solid transparent; color: var(--text-faint);
-  padding: 11px 6px; font-size: 12px; cursor: pointer; font-family: inherit;
+  flex: 1 1 auto; min-width: 0; white-space: nowrap; background: none; border: 0;
+  border-bottom: 2px solid transparent; color: var(--text-faint);
+  padding: 11px 8px; font-size: 12px; cursor: pointer; font-family: inherit;
 }
 .tab.active { color: var(--amber); border-bottom-color: var(--amber); }
 .panel-body { flex: 1; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 12px; }
@@ -1230,3 +1262,102 @@ body.dragging-browser-dock { cursor: row-resize; user-select: none; }
 .workspace.view-doc .transcript,
 .workspace.view-browser .transcript { display: none; }
 .workspace.view-doc .browser-dock { display: none; }
+/* -------------------------------------------------------- terminal drawer */
+/* A shell needs width: the drawer borrows the bottom of the chat column instead of the
+   360px side panel, and the card inside it owns the header (run, stop, clear, fold away). */
+.drawer {
+  flex: 0 1 320px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 0 14px 12px;
+  border-top: 1px solid var(--line);
+  background: var(--bg-inset);
+}
+
+.drawer-body { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+
+.drawer .term {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+}
+
+.drawer .term-scroll { flex: 1; height: auto; min-height: 0; }
+
+/* -------------------------------------------------------- settings modal */
+/* Everything that is app-wide rather than session-wide lives here, behind the gear, so the
+   side panel stays a view of the running session. */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 28px;
+  background: rgba(6, 8, 12, 0.62);
+}
+
+.modal {
+  display: flex;
+  flex-direction: column;
+  width: min(900px, 100%);
+  height: min(720px, 100%);
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 12px;
+  background: var(--bg);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.55);
+}
+
+.modal-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 13px 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.modal-head h2 { flex: 1; margin: 0; font-size: 14px; font-weight: 600; letter-spacing: 0.02em; }
+
+.modal-main { display: flex; flex: 1; min-height: 0; }
+
+.modal-nav {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: 2px;
+  width: 180px;
+  padding: 10px;
+  border-right: 1px solid var(--line);
+}
+
+.modal-nav-item {
+  padding: 9px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: var(--text-faint);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.modal-nav-item:hover { background: #171d27; color: var(--text); }
+.modal-nav-item.active { background: #1b2230; color: var(--amber); }
+
+.modal-body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  padding: 16px;
+  overflow-y: auto;
+}

@@ -12,6 +12,10 @@
   </head>
   <body>
     <div id="app" class="app">
+      <!-- Drag grips for the two side columns. Absolutely positioned, so they are never
+           grid items of their own (see renderer/columns.ts). -->
+      <div class="col-resizer resizer-rail" id="resizer-rail" role="separator" tabindex="0"
+           aria-orientation="vertical" aria-label="Resize the navigation column"></div>
       <aside class="rail" id="rail">
         <div class="rail-head">
           <div class="brand">
@@ -59,7 +63,14 @@
               <span>model</span>
               <select id="model-select"></select>
             </label>
-            <button id="toggle-panel" class="btn ghost small" title="Toggle side panel">☰</button>
+            <button type="button" id="toggle-rail" class="btn ghost small" aria-pressed="true"
+                    title="Show or hide the navigation column">◧</button>
+            <button type="button" id="toggle-panel" class="btn ghost small" aria-pressed="true"
+                    title="Show or hide the side panel">☰</button>
+            <button type="button" id="toggle-terminal" class="btn ghost small" aria-pressed="false"
+                    title="Show or hide the workspace terminal (Ctrl+&#96;)">&gt;_</button>
+            <button type="button" id="open-settings" class="btn ghost small"
+                    title="Settings: models, integrations and scheduled runs (Ctrl+,)">⚙</button>
           </div>
         </header>
 
@@ -106,22 +117,47 @@
           </div>
           <span class="hint" id="composer-hint"></span>
         </form>
+
+        <!-- A terminal is a work surface, not session state: it takes the bottom of the chat
+             column (where there is width for it) and folds away from its own header. -->
+        <section class="drawer hidden" id="drawer" aria-label="Workspace terminal">
+          <div class="drawer-body" id="drawer-body"></div>
+        </section>
       </main>
 
       <aside class="panel" id="panel">
         <div class="panel-tabs" role="tablist">
           <button class="tab active" data-panel="permissions" role="tab">Permissions</button>
           <button class="tab" data-panel="subagents" role="tab">Subagents</button>
-          <button class="tab" data-panel="integrations" role="tab">MCP &amp; skills</button>
           <button class="tab" data-panel="activity" role="tab">Activity</button>
-          <button class="tab" data-panel="scheduler" role="tab">Scheduler</button>
           <button class="tab" data-panel="explorer" role="tab">Files</button>
-          <button class="tab" data-panel="terminal" role="tab">Terminal</button>
-        <button class="tab" data-panel="settings" role="tab">Settings</button>
         </div>
         <div class="panel-body" id="panel-body"></div>
       </aside>
+      <div class="col-resizer resizer-panel" id="resizer-panel" role="separator" tabindex="0"
+           aria-orientation="vertical" aria-label="Resize the side panel column"></div>
     </div>
+
+    <!-- Configuration belongs to the app, not to a session, so it lives behind the gear
+         instead of competing for space with the session's own tabs. -->
+    <div class="modal-backdrop hidden" id="settings-modal">
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+        <header class="modal-head">
+          <h2 id="settings-title">Settings</h2>
+          <button type="button" id="close-settings" class="btn ghost small"
+                  title="Close settings (Esc)">✕</button>
+        </header>
+        <div class="modal-main">
+          <nav class="modal-nav" id="settings-nav" aria-label="Settings sections">
+            <button type="button" class="modal-nav-item active" data-settings="general">General</button>
+            <button type="button" class="modal-nav-item" data-settings="integrations">MCP &amp; skills</button>
+            <button type="button" class="modal-nav-item" data-settings="automation">Scheduled runs</button>
+          </nav>
+          <div class="modal-body" id="settings-body"></div>
+        </div>
+      </div>
+    </div>
+
     <script src="./renderer.js"></script>
   </body>
 </html>

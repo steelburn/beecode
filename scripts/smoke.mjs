@@ -64,10 +64,21 @@ const rendered = report.dom?.markdown ?? {};
 const markdownOk =
   rendered.headings >= 1 && rendered.listItems >= 3 && rendered.tableRows >= 1 && rendered.charts === 1;
 
-// The MCP & skills panel must render from the service, not just exist as a tab.
+// The right column keeps the four session surfaces. Settings, MCP & skills and the
+// scheduler moved into the settings dialog and the terminal into the drawer, so a
+// regression that puts them back into the strip is caught here.
+const panelTabs = report.dom?.panelTabs ?? {};
+const panelTabsOk =
+  panelTabs.count === 4 &&
+  JSON.stringify(panelTabs.panels) ===
+    JSON.stringify(['permissions', 'subagents', 'activity', 'explorer']) &&
+  panelTabs.dialog === true &&
+  panelTabs.drawer === true;
+
+// The MCP & skills section of the settings dialog must render from the service.
 const integrations = report.dom?.integrations ?? {};
 const integrationsOk =
-  integrations.tab === true &&
+  integrations.dialog === true &&
   (integrations.headings ?? []).includes('MCP servers') &&
   (integrations.headings ?? []).includes('Plugins') &&
   (integrations.headings ?? []).includes('Skills');
@@ -163,7 +174,7 @@ const browserTabOk =
 
 const terminal = report.dom?.terminal ?? {};
 const terminalOk =
-  terminal.tab === true &&
+  terminal.drawer === true &&
   terminal.mounted === true &&
   terminal.ranCommand === true &&
   terminal.insideWorkspace === true;
@@ -189,11 +200,27 @@ const tabMenuOk =
   (tabMenu.items ?? []).includes('Close other tabs') &&
   (tabMenu.items ?? []).includes('Close all tabs');
 
+// Both side columns: each one hides from its toggle and comes back, and the rail grip
+// drags a new width that is remembered — the two ways the shell hands the columns over.
+const columns = report.dom?.columns ?? {};
+const columnsOk =
+  columns.rail > 0 &&
+  columns.panel > 0 &&
+  columns.railHidden === true &&
+  columns.railShown === true &&
+  columns.panelHidden === true &&
+  columns.panelShown === true &&
+  columns.railDragged === true &&
+  columns.railStored === true &&
+  columns.railReset === true;
+
 const ok =
   report.serviceReady === true &&
   report.dom?.bridge === true &&
   report.dom?.errors?.length === 0 &&
   markdownOk &&
+  columnsOk &&
+  panelTabsOk &&
   integrationsOk &&
   pluginsOk &&
   composerOk &&
@@ -205,8 +232,12 @@ const ok =
   tabsFitOk &&
   tabMenuOk &&
   terminalOk;
+if (!columnsOk) console.error(`[smoke] side column check failed: ${JSON.stringify(columns)}`);
+if (!panelTabsOk)
+  console.error(`[smoke] panel tab strip check failed: ${JSON.stringify(panelTabs)}`);
 if (!markdownOk) console.error(`[smoke] markdown/chart render check failed: ${JSON.stringify(rendered)}`);
-if (!integrationsOk) console.error(`[smoke] integrations panel check failed: ${JSON.stringify(integrations)}`);
+if (!integrationsOk)
+  console.error(`[smoke] integrations section check failed: ${JSON.stringify(integrations)}`);
 if (!pluginsOk) console.error(`[smoke] plugins card check failed: ${JSON.stringify(integrations)}`);
 if (!silentOk) console.error(`[smoke] silent browser drive check failed: ${JSON.stringify(silent)}`);
 if (!previewOk) console.error(`[smoke] files preview check failed: ${JSON.stringify(preview)}`);
@@ -218,7 +249,7 @@ if (!tabMenuOk) {
 }
 if (!tabsFitOk)
   console.error(`[smoke] browser tab strip check failed: ${JSON.stringify(tabStrip)}`);
-if (!terminalOk) console.error(`[smoke] terminal check failed: ${JSON.stringify(terminal)}`);
+if (!terminalOk) console.error(`[smoke] terminal drawer check failed: ${JSON.stringify(terminal)}`);
 if (!composerUiOk)
   console.error(`[smoke] composer icon check failed: ${JSON.stringify(composerUi)}`);
 if (!composerOk) {

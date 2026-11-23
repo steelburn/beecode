@@ -129,8 +129,11 @@ section, and the tool reports that nothing is installed.
 
 ## In the app
 
+![The MCP & skills section of the settings dialog](images/settings-mcp-skills.png)
+
 The service exposes both lists over RPC, so the renderer shows them in the **MCP & skills**
-panel of the sidebar: every configured server with its connection state, its identity and the
+section of the settings dialog: every configured server with its connection state, its
+identity and the
 tools it contributes (flagged *needs approval* or *read-only*), plus every discovered skill
 with its source (`user` or `project`). **Reconnect** calls `mcp.reload` + `skill.reload` and
 re-renders. Nothing in the panel is cached locally, so it always mirrors what the agent loop
@@ -179,5 +182,5 @@ renderer errors), alongside the markdown/chart check.
 | `src/shared/defaults.ts` | `normalizeMcpServers`, `normalizeSkills`, default config |
 | `src/shared/protocol.ts` | config + RPC types |
 | `src/shared/bridge.ts` | `RENDERER_METHODS` — the renderer may call the RPC methods above |
-| `src/renderer/panels.ts` | `renderIntegrations` — the MCP & skills panel and its server editor |
+| `src/renderer/panels.ts` | `renderIntegrations` — the MCP & skills section and its server editor |
 | `src/renderer/main.ts` | passes the config into the panel and re-reads `mcp.list` after a save |
