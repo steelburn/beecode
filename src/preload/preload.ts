@@ -1,6 +1,11 @@
-import { contextBridge, ipcRenderer } from 'electron';
+import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type { BrowserState } from '../shared/browser';
-import type { BeeCodeBridge, ServiceStatusPayload } from '../shared/bridge';
+import type {
+  BeeCodeBridge,
+  CopyIntoWorkspaceResult,
+  FilePickerOptions,
+  ServiceStatusPayload,
+} from '../shared/bridge';
 import type { TerminalState } from '../shared/terminal';
 import type { RpcMethod, RpcRequests, ServiceEvent } from '../shared/protocol';
 
@@ -27,6 +32,24 @@ const bridge: BeeCodeBridge = {
   saveConfig: (config) => ipcRenderer.invoke('beecode:config-set', config),
 
   pickDirectory: (options) => ipcRenderer.invoke('beecode:pick-directory', options),
+
+  pickFiles: (options?: FilePickerOptions) => ipcRenderer.invoke('beecode:pick-files', options),
+
+  copyIntoWorkspace: (paths: string[], targetDir?: string): Promise<CopyIntoWorkspaceResult> =>
+    ipcRenderer.invoke('beecode:copy-to-workspace', { paths, targetDir }),
+
+  // Runs in the isolated preload world, so the File objects handed over by the page
+  // still resolve to real paths; the renderer itself has no such API.
+  pathsForFiles: (files: File[]) =>
+    files
+      .map((file) => {
+        try {
+          return webUtils.getPathForFile(file);
+        } catch {
+          return "";
+        }
+      })
+      .filter((path) => path.length > 0),
 
   openExternal: (url: string) => ipcRenderer.invoke('beecode:open-external', url),
 

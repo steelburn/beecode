@@ -105,13 +105,26 @@ module.exports = {
 };
 ```
 
-A ready-to-copy version is in `resources/sample-plugin/`:
+A ready-to-copy version is in `resources/sample-plugin/`, and installing it is one step in
+the app: open the **Skills & plugins** card and either drop the plugin folder (or a `.zip`
+of it) on the **Plugins** drop zone, or press **Choose folder…** / **Choose .zip…** and pick
+it. `plugin.install` copies the plugin into the first configured plugin root
+(`~/.beecode/plugins` by default) under its manifest `id`, switches `plugins.allowExternal`
+on when it was off — otherwise nothing would load — and reloads the host, so the tools are
+there without a restart.
+
+A drop may carry several folders and archives. One that is refused (no `plugin.json`,
+malformed manifest, an id that cannot name a folder, an entry point the plugin does not
+ship) is reported back by path with its reason and the rest still install, so a bad item in
+a multi-file drop does not cost the good ones. Installing the same `id` again replaces the
+folder, which keeps a stale file from a previous version from lingering in it.
+
+From a shell it is still just a copy, followed by **Reload** in the Plugins card (or the
+`plugin.reload` RPC):
 
 ```powershell
 Copy-Item -Recurse resources\sample-plugin "$env:USERPROFILE\.beecode\plugins\md-stats"
 ```
-
-then hit **Reload** in the Plugins card (or call the `plugin.reload` RPC).
 
 ### The `api` object
 
@@ -190,6 +203,7 @@ running, so a broken plugin costs one tool call, not the session.
 | `plugin.list` | — | `{ plugins: PluginInfo[] }` |
 | `plugin.setEnabled` | `{ id, enabled }` | `{ plugins: PluginInfo[] }` |
 | `plugin.reload` | — | `{ plugins: PluginInfo[] }` |
+| `plugin.install` | `{ paths: string[] }` | `{ installed: string[], skipped: { path, reason }[], allowExternal, plugins: PluginInfo[] }` — copies a plugin folder or `.zip` in and reloads |
 
 `PluginInfo` carries `id`, `name`, `version`, `description`, `author`, `source`
 (`builtin` / `user`), `path`, `enabled`, `permissions`, `tools` and `error`.

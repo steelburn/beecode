@@ -68,6 +68,11 @@ export interface TranscriptEntry {
   actions?: TranscriptAction[];
   /** Set when this assistant turn was interleaved with reasoning text. */
   reasoning?: string;
+  /**
+   * Absolute paths of files the user attached to this prompt. Displayed as a chip row
+   * under the entry text so the attachment survives a session reload.
+   */
+  attachments?: string[];
 }
 
 /**
@@ -525,6 +530,23 @@ export interface PluginToolInfo {
   mutating: boolean;
 }
 
+/**
+ * Answer to `plugin.install`: what a dropped folder or archive added.
+ *
+ * The install copies files into the plugin root and the service reloads the host, so
+ * `plugins` is the authoritative catalogue — the renderer never has to ask again.
+ */
+export interface PluginInstallResult {
+  /** Plugin ids written under the plugin root. */
+  installed: string[];
+  /** Sources the service refused, each with the reason, so the card can name them. */
+  skipped: { path: string; reason: string }[];
+  /** True when the install switched `plugins.allowExternal` on to let them load. */
+  allowExternal: boolean;
+  plugins: PluginInfo[];
+}
+
+
 export interface PluginInfo {
   id: string;
   name: string;
@@ -585,6 +607,15 @@ export interface SkillInstallResult {
   /** Folder names written under `<home>/skills`. */
   installed: string[];
 }
+
+/** Answer to `skill.remove`: what went away and what is left. */
+export interface SkillRemoveResult {
+  /** Absolute path that was deleted — the skill folder, or a flat `.md` file. */
+  removed: string;
+  /** The re-scanned list, so the caller never has to read the folders again. */
+  skills: SkillInfo[];
+}
+
 
 /* ---------------------------------------------------------------- scheduler */
 
@@ -663,6 +694,12 @@ export interface HelloResult {
 export interface PromptArgs {
   sessionId: string;
   text: string;
+  /**
+   * Absolute paths the user attached. They are not copied anywhere: the agent is told
+   * about them so it can read them with the file tools, and they are echoed on the user
+   * transcript entry.
+   */
+  attachments?: string[];
 }
 
 export interface ApprovalResponse {
@@ -683,6 +720,8 @@ export interface RpcRequests {
   'plugin.list': { params: Record<string, never>; result: { plugins: PluginInfo[] } };
   'plugin.reload': { params: Record<string, never>; result: { plugins: PluginInfo[] } };
   'plugin.setEnabled': { params: { id: string; enabled: boolean }; result: { plugins: PluginInfo[] } };
+  'plugin.install': { params: { paths: string[] }; result: PluginInstallResult };
+
   'app.hello': { params: { clientVersion: string }; result: HelloResult };
   'workspace.state': { params: Record<string, never>; result: WorkspaceState };
   'workspace.set': { params: { path: string }; result: WorkspaceState };
@@ -702,6 +741,8 @@ export interface RpcRequests {
   'skill.reload': { params: { cwd?: string }; result: SkillListResult };
   'skill.read': { params: { name: string; cwd?: string }; result: SkillReadResult };
   'skill.install': { params: SkillInstallInput; result: SkillInstallResult };
+  'skill.remove': { params: { name: string; cwd?: string }; result: SkillRemoveResult };
+
   'session.list': { params: Record<string, never>; result: SessionSummary[] };
   'session.create': {
     params: { title?: string; cwd?: string; mode?: AgentMode; model?: string; parentSessionId?: string };

@@ -36,6 +36,7 @@ import { DesktopController } from './desktop/controller';
 import { McpManager } from './mcp/manager';
 import { SkillStore } from './skills/store';
 import { installSkills } from './skills/install';
+import { installPlugins } from './plugins/install';
 import { createLogger, readJsonFile, writeJsonFile, type Logger } from './logger';
 import { loadEnvPreset } from './llm/envPreset';
 import { listModels } from './llm/models';
@@ -399,6 +400,38 @@ export class BeeCodeService {
       case 'service.health':
         return this.health();
 
+      case 'plugin.install': {
+        const sources = Array.isArray(args.paths)
+          ? args.paths.filter((entry): entry is string => typeof entry === 'string' && !!entry.trim())
+          : [];
+        if (!sources.length) throw new Error('plugin.install needs at least one folder or .zip');
+
+        const result = await installPlugins(sources, {
+          dirs: this.config.plugins.dirs ?? [],
+          fallbackRoot: paths().plugins,
+        });
+
+        // A plugin the user just dropped is meant to run: flip the master switch and the
+        // external-plugin switch instead of sending them off to edit config by hand.
+        let allowExternal = this.config.plugins.allowExternal;
+        if (result.installed.length && !(allowExternal && this.config.plugins.enabled)) {
+          allowExternal = true;
+          this.config = {
+            ...this.config,
+            plugins: { ...this.config.plugins, enabled: true, allowExternal: true },
+          };
+          await this.persistConfig();
+        }
+
+        await this.plugins.reload();
+        this.rebuildRegistries();
+        this.log.info('plugins installed', {
+          installed: result.installed,
+          skipped: result.skipped.length,
+        });
+        return { ...result, allowExternal, plugins: this.plugins.info() };
+      }
+
       case 'plugin.list':
         return { plugins: this.plugins.info() };
 
@@ -518,7 +551,13 @@ export class BeeCodeService {
       }
 
       case 'session.prompt':
-        return this.sessions.prompt(this.requireString(args, 'sessionId'), this.requireString(args, 'text'));
+        return this.sessions.prompt(
+          this.requireString(args, 'sessionId'),
+          this.requireString(args, 'text'),
+          Array.isArray(args.attachments)
+            ? args.attachments.filter((path): path is string => typeof path === 'string')
+            : [],
+        );
 
       case 'session.abort':
         return { aborted: this.sessions.abort(this.requireString(args, 'sessionId')) };
@@ -588,6 +627,14 @@ export class BeeCodeService {
 
       case 'session.setModel':
         return this.sessions.setModel(this.requireString(args, 'sessionId'), this.requireString(args, 'model'));
+
+      case 'skill.remove': {
+        const cwd = this.skillsCwd(args);
+        const name = this.requireString(args, 'name');
+        const result = await this.skills.remove(name, this.skillScanOptions(cwd));
+        this.log.info('skill removed', { name, path: result.removed });
+        return result;
+      }
 
       case 'session.setCwd':
         return this.sessions.setCwd(this.requireString(args, 'sessionId'), this.requireString(args, 'cwd'));

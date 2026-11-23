@@ -10,6 +10,7 @@ import type {
   McpServerConfig,
   McpServerStatus,
   ModelPreset,
+  PluginInstallResult,
   PolicyDocument,
   ProviderId,
   Schedule,
@@ -53,6 +54,10 @@ export interface PanelCallbacks {
   saveAgents?(agents: CliAgentEntry[]): Promise<AgentInfo[]>;
   /** Install a dropped skill (SKILL.md text or a base64 ZIP); returns the new folder names. */
   installSkill?(input: SkillInstallInput): Promise<string[]>;
+  /** Install a plugin folder or .zip (`plugin.install`); returns the refreshed catalogue. */
+  installPlugins?(paths: string[]): Promise<PluginInstallResult>;
+  /** Delete one installed skill (`skill.remove`); returns the re-scanned list. */
+  removeSkill?(name: string): Promise<SkillInfo[]>;
   /** Validate, persist and activate a workspace folder (`workspace.set`). */
   setWorkspace?(path: string): Promise<void>;
   /** Drop a folder from the recents, or clear the active root (`workspace.forget`). */
@@ -330,6 +335,138 @@ function renderAddApp(update: (mutate: (draft: PolicyDocument) => void) => void)
 /* ------------------------------------------------------------- mcp & skills */
 
 /**
+ * The delete control for one skill.
+ *
+ * Deleting a playbook is destructive, so the first press only arms the button and the
+ * second one — within four seconds — removes it. Whether the folder may go at all is the
+ * service's call; its refusal (a skill outside the scanned roots) lands in the card note
+ * rather than a dialog nobody reads.
+ */
+function renderSkillRemove(
+  skill: SkillInfo,
+  cb: PanelCallbacks,
+  note: HTMLElement,
+): HTMLElement {
+  let timer = 0;
+  const button = h('button', {
+    class: 'btn ghost small skill-remove',
+    type: 'button',
+    text: 'Delete',
+    on: {
+      click: async () => {
+        if (!timer) {
+          button.textContent = 'Confirm delete';
+          timer = window.setTimeout(() => {
+            timer = 0;
+            button.textContent = 'Delete';
+          }, 4000);
+          return;
+        }
+
+        window.clearTimeout(timer);
+        timer = 0;
+        button.disabled = true;
+        try {
+          await cb.removeSkill?.(skill.name);
+          note.textContent = `Removed ${skill.name} ✓`;
+        } catch (error) {
+          note.textContent = `Could not remove ${skill.name}: ${
+            error instanceof Error ? error.message : String(error)
+          }`;
+          button.disabled = false;
+          button.textContent = 'Delete';
+        }
+      },
+    },
+  }) as HTMLButtonElement;
+  return button;
+}
+
+/**
+ * The install controls for plugins: one drop target, two native pickers.
+ *
+ * A dropped folder or `.zip` goes to the service, which validates the manifest, copies it
+ * into the plugin root, switches external plugins on and reloads — so installing is one
+ * gesture instead of writing files by hand, editing config and pressing reload.
+ */
+function renderPluginInstallZone(cb: PanelCallbacks, note: HTMLElement): HTMLElement {
+  const install = async (paths: string[]): Promise<void> => {
+    if (!cb.installPlugins) return;
+    if (!paths.length) {
+      note.textContent = 'Nothing to install — a plugin folder or a .zip is needed.';
+      return;
+    }
+
+    note.textContent = 'Installing…';
+    try {
+      const result = await cb.installPlugins(paths);
+      const installed = result.installed.length ? [`Installed ${result.installed.join(', ')} ✓`] : [];
+      const refused = result.skipped.map((skip) => {
+        const name = skip.path.split(/[\\/]/).pop() ?? skip.path;
+        return `${name}: ${skip.reason}`;
+      });
+      note.textContent = [...installed, ...refused].join(' · ') || 'Nothing was installed.';
+    } catch (error) {
+      note.textContent = `Install failed: ${error instanceof Error ? error.message : String(error)}`;
+    }
+  };
+
+  const zone = h(
+    'div',
+    { class: 'skill-drop-zone plugin-drop' },
+    h('div', {
+      class: 'skill-drop-hint',
+      text: 'Drop a plugin folder or a plugin .zip here to install it',
+    }),
+    h('button', {
+      class: 'btn ghost small',
+      type: 'button',
+      text: 'Choose folder…',
+      on: {
+        click: async () => {
+          const picked = await window.beeCode.pickDirectory({ title: 'Choose a plugin folder' });
+          if (picked) await install([picked]);
+        },
+      },
+    }),
+    h('button', {
+      class: 'btn ghost small',
+      type: 'button',
+      text: 'Choose .zip…',
+      on: {
+        click: async () => {
+          const picked = await window.beeCode.pickFiles({
+            title: 'Choose a plugin .zip',
+            extensions: ['zip'],
+            multiple: false,
+          });
+          if (picked.length) await install(picked);
+        },
+      },
+    }),
+  );
+
+  zone.addEventListener('dragover', (event) => {
+    if (!event.dataTransfer?.types.includes('Files')) return;
+    // Claim the drop: the window-level handler would otherwise copy it into the workspace.
+    event.preventDefault();
+    event.stopPropagation();
+    zone.classList.add('over');
+  });
+  zone.addEventListener('dragleave', () => zone.classList.remove('over'));
+  zone.addEventListener('drop', (event) => {
+    const files = event.dataTransfer?.files;
+    if (!files?.length) return;
+    event.preventDefault();
+    event.stopPropagation();
+    zone.classList.remove('over');
+    void install(window.beeCode.pathsForFiles([...files]));
+  });
+
+  return zone;
+}
+
+/**
  * External integrations: which MCP servers the service managed to connect, which tools
  * they contribute and which skills exist on disk. Server definitions are editable here,
  * but an edit only *proposes* a change: it goes back through `config.set`, where the
@@ -343,9 +480,11 @@ function renderPluginsCard(plugins: PluginInfo[] | undefined, cb: PanelCallbacks
     h('h4', { text: 'Plugins' }),
     h('p', {
       class: 'sub',
-      text: 'Plugins add tools to the agent. The bundled starters cover PDF viewing, PDF generation and Excel export; drop your own into ~/.beecode/plugins, then reload.',
+      text: 'Plugins add tools to the agent. The bundled starters cover PDF viewing, PDF generation and Excel export; install your own by dropping a plugin folder or .zip below.',
     }),
   );
+  const installNote = h('p', { class: 'sub plugin-drop-note' });
+  card.append(renderPluginInstallZone(cb, installNote), installNote);
   if (!plugins) {
     card.append(h('div', { class: 'empty', text: 'Loading plugins…' }));
     return card;
@@ -743,14 +882,14 @@ function renderSkillsCard(skills: SkillInfo[], cb: PanelCallbacks): HTMLElement 
 
   if (!skills.length) card.append(h('div', { class: 'empty', text: 'No skills found.' }));
   for (const skill of skills) {
-    card.append(
-      h(
-        'div',
-        { class: 'skill-row' },
-        h('h4', {}, skill.name, ' ', h('span', { class: 'badge', text: skill.source })),
-        h('p', { class: 'sub', text: skill.description }),
-      ),
+    const row = h(
+      'div',
+      { class: 'skill-row' },
+      h('h4', {}, skill.name, ' ', h('span', { class: 'badge', text: skill.source })),
+      h('p', { class: 'sub', text: skill.description }),
     );
+    if (cb.removeSkill) row.append(renderSkillRemove(skill, cb, note));
+    card.append(row);
   }
   return card;
 }

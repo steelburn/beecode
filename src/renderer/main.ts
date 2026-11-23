@@ -188,6 +188,8 @@ interface State {
   /** Last directory the user picked; new sessions start there. */
   lastCwd?: string;
   entries: TranscriptEntry[];
+  /** Absolute paths attached to the next prompt; cleared once it is sent. */
+  attachments: string[];
   approval?: ApprovalRequest;
   /** Pending `ask_user` question, shown above the composer until answered. */
   question?: PendingQuestion;
@@ -230,6 +232,7 @@ const state: State = {
   status: 'starting',
   sessions: [],
   entries: [],
+  attachments: [],
   todos: [],
   audit: [],
   subagents: [],
@@ -269,6 +272,8 @@ const els = {
   send: document.getElementById('send') as HTMLButtonElement,
   stop: document.getElementById('stop') as HTMLButtonElement,
   hint: document.getElementById('composer-hint') as HTMLElement,
+  attach: document.getElementById('attach') as HTMLButtonElement,
+  attachments: document.getElementById('composer-attachments') as HTMLElement,
   serviceDot: document.getElementById('service-dot') as HTMLElement,
   serviceText: document.getElementById('service-text') as HTMLElement,
   restart: document.getElementById('restart-service') as HTMLButtonElement,
@@ -403,6 +408,9 @@ async function loadAll(): Promise<void> {
     state.workspace = workspace;
     state.sessions = sessions;
     state.ready = true;
+    // The bulk load is observable from outside: the smoke probes wait for it instead of
+    // racing a fan-out that includes CLI agent detection.
+    document.body.dataset.ready = 'true';
 
     populateModels();
     renderSessions();
@@ -440,6 +448,11 @@ function bindUi(): void {
       void sendPrompt();
     }
   });
+
+  els.attach.addEventListener('click', () => {
+    void pickAttachments();
+  });
+  bindDragAndDrop();
 
   els.input.addEventListener('input', () => {
     els.input.style.height = 'auto';
@@ -482,6 +495,10 @@ function bindUi(): void {
     tab.addEventListener('click', () => {
       state.panel = (tab.dataset.panel as PanelTab) ?? 'permissions';
       for (const other of document.querySelectorAll('.tab')) other.classList.toggle('active', other === tab);
+      // A boot load that failed — a transient RPC, a service that was still starting — left
+      // every panel empty while the composer kept working. Opening a tab is the user asking
+      // for that data, so retry instead of showing an empty card until the next restart.
+      if (!state.ready) void loadAll();
       renderPanelBody();
       // Re-opening a tab re-reads what it shows: the Files listing and the CLI catalogue
       // are snapshots, so a second click was the only way to ask for a fresh one and it
@@ -577,9 +594,151 @@ async function openSession(sessionId: string): Promise<void> {
   renderBusy();
 }
 
+/** Absolute path → the label shown on a chip: the file name, unique enough in a row. */
+function attachmentLabel(path: string): string {
+  const parts = path.split(/[\\/]/).filter((part) => part.length > 0);
+  return parts.length ? (parts[parts.length - 1] as string) : path;
+}
+
+/** Add paths to the pending prompt, ignoring the ones already attached. */
+function setAttachments(paths: string[]): void {
+  const seen = new Set<string>();
+  state.attachments = paths.filter((path) => {
+    const key = path.toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  renderAttachments();
+}
+
+function addAttachments(paths: string[]): void {
+  if (!paths.length) return;
+  setAttachments([...state.attachments, ...paths]);
+  setHint(`${state.attachments.length} file${state.attachments.length === 1 ? '' : 's'} attached — Send to hand them to the agent.`);
+}
+
+function renderAttachments(): void {
+  clear(els.attachments);
+  els.attachments.classList.toggle('hidden', state.attachments.length === 0);
+  for (const path of state.attachments) {
+    const chip = h('span', { class: 'attachment-chip', title: path });
+    chip.append(h('span', { class: 'attachment-name', text: attachmentLabel(path) }));
+    chip.append(
+      h('button', {
+        class: 'attachment-remove',
+        text: '✕',
+        attrs: { type: 'button', 'aria-label': `Remove ${attachmentLabel(path)}` },
+        on: { click: () => setAttachments(state.attachments.filter((entry) => entry !== path)) },
+      }),
+    );
+    els.attachments.append(chip);
+  }
+}
+
+/** Attach the files of a drop/selection; nothing to do when the OS gave no paths. */
+function attachPaths(paths: string[]): void {
+  if (!paths.length) {
+    setHint('The dropped item did not resolve to a file path.');
+    return;
+  }
+  addAttachments(paths);
+}
+
+async function pickAttachments(): Promise<void> {
+  const paths = await api.pickFiles({ title: 'Attach files to the prompt' });
+  attachPaths(paths);
+  els.input.focus();
+}
+
+/* ------------------------------------------------------- drag and drop */
+
+/** True only for a drag that carries files, so dragging a selection inside the window is ignored. */
+function isFileDrag(event: DragEvent): boolean {
+  return Array.from(event.dataTransfer?.types ?? []).includes('Files');
+}
+
+/**
+ * Files dropped on the composer are attached to the prompt; files dropped anywhere else are
+ * copied into the workspace. Both routes need the main process — the renderer has no
+ * file-system access. The counter keeps the highlight steady while the pointer crosses
+ * child elements, each of which fires its own dragleave.
+ */
+function bindDragAndDrop(): void {
+  let depth = 0;
+
+  window.addEventListener('dragenter', (event) => {
+    if (!isFileDrag(event)) return;
+    event.preventDefault();
+    depth += 1;
+    document.body.classList.add('drag-files');
+  });
+
+  window.addEventListener('dragover', (event) => {
+    if (!isFileDrag(event)) return;
+    // Without preventDefault the browser never reports a drop at all.
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
+    const overComposer =
+      event.target instanceof Element && Boolean(event.target.closest('.composer'));
+    document.body.classList.toggle('drag-files-over-composer', overComposer);
+  });
+
+  window.addEventListener('dragleave', (event) => {
+    if (!isFileDrag(event)) return;
+    depth = Math.max(0, depth - 1);
+    if (depth === 0) {
+      document.body.classList.remove('drag-files', 'drag-files-over-composer');
+    }
+  });
+
+  window.addEventListener('drop', (event) => {
+    if (!isFileDrag(event)) return;
+    event.preventDefault();
+    depth = 0;
+    document.body.classList.remove('drag-files', 'drag-files-over-composer');
+    const files = Array.from(event.dataTransfer?.files ?? []);
+    const paths = files.length ? api.pathsForFiles(files) : [];
+    if (!paths.length) return;
+    const target = event.target instanceof Element ? event.target : null;
+    if (target?.closest('.composer')) {
+      attachPaths(paths);
+      return;
+    }
+    // A drop on the file panel lands in the folder it shows; anywhere else, in the root.
+    const targetDir = target?.closest('#panel') ? state.explorer.path : undefined;
+    void copyDroppedPaths(paths, targetDir);
+  });
+}
+
+/** Copy dropped paths into the workspace and point the explorer at where they landed. */
+async function copyDroppedPaths(paths: string[], targetDir?: string): Promise<void> {
+  if (!state.workspace?.configured) {
+    setHint('Choose a workspace folder first — beeCode will not copy files into an unset directory.');
+    return;
+  }
+  try {
+    const result = await api.copyIntoWorkspace(paths, targetDir);
+    const copied = result.copied.length;
+    const parts = [
+      `${copied} file${copied === 1 ? '' : 's'} copied into the workspace`,
+    ];
+    if (result.skipped.length) parts.push(`${result.skipped.length} already there`);
+    if (result.errors.length) {
+      parts.push(`${result.errors.length} could not be copied: ${result.errors[0]?.error ?? 'unknown error'}`);
+    }
+    setHint(parts.join(' · '));
+    if (state.panel === 'explorer') await openExplorer(state.explorer.path);
+  } catch (error) {
+    setHint(`Could not copy those files: ${(error as Error).message}`);
+  }
+}
+
 async function sendPrompt(): Promise<void> {
   const text = els.input.value.trim();
-  if (!text) return;
+  const attachments = [...state.attachments];
+  // An attachment on its own is a valid prompt ("here is the file, look at it").
+  if (!text && !attachments.length) return;
   if (!state.workspace?.configured) {
     setHint('Choose a workspace folder first — beeCode will not work in an unset directory.');
     paintWorkspaceGate();
@@ -594,9 +753,17 @@ async function sendPrompt(): Promise<void> {
   els.input.style.height = 'auto';
   els.input.disabled = true;
   setHint('');
+  // The chips move to the transcript with the prompt, so the composer starts empty.
+  setAttachments([]);
   try {
-    await api.invoke('session.prompt', { sessionId: session.id, text });
+    await api.invoke('session.prompt', {
+      sessionId: session.id,
+      text: text || '(see the attached file)',
+      attachments: attachments.length ? attachments : undefined,
+    });
   } catch (err) {
+    // Nothing was accepted: put the paths back so the user does not re-attach them.
+    setAttachments(attachments);
     setHint(`could not send: ${(err as Error).message}`);
   } finally {
     els.input.disabled = !state.workspace?.configured;
@@ -963,6 +1130,7 @@ function buildEntry(entry: TranscriptEntry): HTMLElement {
   if (role === 'assistant') body.innerHTML = renderMarkdown(entry.text || '');
   else body.textContent = entry.text;
   wrapper.append(body);
+  if (entry.attachments?.length) wrapper.append(buildEntryAttachments(entry.attachments));
 
   if (entry.actions?.length) wrapper.append(buildEntryActions(entry.actions));
 
@@ -984,6 +1152,15 @@ function buildEntry(entry: TranscriptEntry): HTMLElement {
     }
   }
   return wrapper;
+}
+
+/** The files a user entry was sent with; the prompt already ran, so these are read-only. */
+function buildEntryAttachments(paths: string[]): HTMLElement {
+  const row = h('div', { class: 'msg-attachments' });
+  for (const path of paths) {
+    row.append(h('span', { class: 'attachment-chip static', text: attachmentLabel(path), title: path }));
+  }
+  return row;
 }
 
 /**
@@ -1238,6 +1415,18 @@ function renderPanelBody(): void {
       state.skills = skills.skills;
       state.plugins = plugins.plugins;
       renderPanelBody();
+    },
+    installPlugins: async (paths: string[]) => {
+      const result = await api.invoke('plugin.install', { paths });
+      state.plugins = result.plugins;
+      renderPanelBody();
+      return result;
+    },
+    removeSkill: async (name: string) => {
+      const result = await api.invoke('skill.remove', { name });
+      state.skills = result.skills;
+      renderPanelBody();
+      return result.skills;
     },
     togglePlugin: async (id: string, enabled: boolean) => {
       const result = await api.invoke('plugin.setEnabled', { id, enabled });

@@ -82,12 +82,15 @@
         <div class="goal-slot" id="goal-slot"></div>
 
         <form class="composer" id="composer">
+          <!-- Attachments chips: filled by the renderer, one row per attached file. -->
+          <div class="composer-attachments hidden" id="composer-attachments"></div>
           <textarea
             id="input"
             rows="1"
             placeholder="Describe what to do on the desktop…  (Enter to send, Shift+Enter for a new line)"
           ></textarea>
           <div class="composer-actions">
+            <button type="button" id="attach" class="btn ghost small" title="Attach files to this prompt">📎 Attach</button>
             <span class="hint" id="composer-hint"></span>
             <button type="button" id="stop" class="btn danger small hidden">Stop</button>
             <button type="submit" id="send" class="btn primary">Send</button>

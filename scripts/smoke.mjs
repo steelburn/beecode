@@ -75,7 +75,15 @@ const integrationsOk =
 // Every bundled plugin must reach the Plugins card as a row with its source badge, so a
 // starter that fails to load fails the smoke run instead of only the service log.
 const builtinBadges = (integrations.badges ?? []).filter((badge) => badge === 'builtin').length;
-const pluginsOk = builtinBadges >= 3;
+const pluginsOk =
+  builtinBadges >= 3 &&
+  // Installing a plugin is one step from the card: the drop zone is there, with both pickers,
+  // so a regression that drops it fails here instead of only in the UI.
+  integrations.pluginDrop === true &&
+  integrations.pluginDropButtons === 2 &&
+  // Deleting a skill is a per-row control, and the skills of the smoke home do load, so a
+  // missing remove button means the card lost it — or boot stopped loading skills again.
+  integrations.skillRemoves >= 1;
 
 // The prompt must survive a maximised dock: the composer keeps its full height inside the
 // window and the dock never covers it (the dock is what the page view is painted into).

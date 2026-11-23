@@ -63,6 +63,7 @@ curl -s -N -H "Authorization: Bearer $TOKEN" http://127.0.0.1:4870/events
 | `mcp.reload` | `{}` | `{ servers: McpServerStatus[] }` |
 | `skill.list` / `skill.reload` | `{ cwd? }` | `{ skills: SkillInfo[] }` |
 | `skill.read` | `{ name, cwd? }` | `{ skill: SkillInfo, content }` |
+| `skill.remove` | `{ name, cwd? }` | `{ removed: string, skills: SkillInfo[] }` — deletes the skill folder and rescans |
 
 MCP servers and skills attach to that catalogue rather than replacing anything:
 `tools.list` includes the `mcp__<server>__<tool>` entries once a server is connected, and

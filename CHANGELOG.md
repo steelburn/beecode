@@ -141,6 +141,34 @@ All notable changes to beeCode will be documented in this file.
   and worded for a single remaining neighbour. It is a native menu, not a DOM dropdown: the page
   is a `WebContentsView` painted over the window, so anything drawn in the strip would be hidden
   behind the page it acts on (`src/main/browser/tabMenu.ts`, `src/main/browser/host.ts`).
+- **Delete a skill from the Skills card.** Removing a playbook meant finding and deleting
+  `~/.beecode/skills/<name>/` in a file manager and restarting. Every skill row now has a
+  *Delete* button that arms on the first press and deletes on the second (four seconds, then
+  it disarms), so a misclick costs nothing. `skill.remove` deletes the folder that holds the
+  `SKILL.md` — the scripts and references beside it go too — or the `.md` alone for a skill
+  that sits flat in a root, and only ever inside a scan root: a record pointing elsewhere, an
+  unknown name or a path outside the roots is refused with an error instead of guessed at.
+  The listing comes back re-scanned, so the row is gone as soon as the call returns.
+- **Install a plugin in one step.** The Plugins card is a drop zone: drop a plugin folder or a
+  `.zip` of one, or use *Choose folder…* / *Choose .zip…*. `plugin.install` copies it under the
+  first configured plugin root by its manifest `id`, strips the single wrapper folder a `.zip`
+  is usually packed in, switches `plugins.allowExternal` on when it was off (nothing would load
+  otherwise), reloads the host and returns the fresh plugin list — no hand-copying and no
+  second Reload. A refused item in a multi-file drop (no `plugin.json`, malformed manifest, an
+  entry point the plugin does not ship, an id that cannot name a folder) is reported back by
+  path with its reason while the rest still install, and re-installing an `id` replaces its
+  folder so a stale file from the previous version cannot linger.
+- **Attach files to a prompt.** The composer has an *Attach* button that opens a multi-select
+  file dialog; the files become chips with a ✕ and travel with the prompt as `attachments`.
+  The model gets their absolute paths in an explicit "read these files" instruction, while the
+  transcript keeps the text the user typed plus the chips. A prompt made only of attachments
+  still sends, and a failed send puts the chips back.
+- **Drop files onto the window to copy them into the workspace.** A drop on the chat composer
+  attaches the files; a drop anywhere else copies them into the workspace folder the Files
+  panel is showing (clamped to the workspace root when they came from outside it), refreshes
+  the tree and reports what landed. A name that already exists becomes `name (2).ext` instead
+  of overwriting, a folder is copied recursively, and a path that cannot be copied is named
+  without aborting the rest of the drop.
 
 ### Fixed
 
@@ -177,6 +205,19 @@ All notable changes to beeCode will be documented in this file.
   `skill.install` are now in `RENDERER_METHODS`, and a static test walks the renderer for
   every `api.invoke` and fails when a method is missing from that list
   (`src/shared/bridge.ts`, `src/renderer/allowlist.test.ts`).
+- **Every panel started empty because boot was refused one RPC.** The same allow-list gap,
+  one layer up: the boot load runs the twelve startup calls in a `Promise.all`, and
+  `scheduler.list` was never added to `RENDERER_METHODS`, so the whole load rejected on
+  `renderer may not call "scheduler.list"`. Nothing was assigned — no config, no skills, no
+  plugins, no sessions — and Settings, Plugins, Skills and Subagents painted their headings
+  with zero rows while the composer still worked, which reads as a rendering bug rather than
+  a failed load. `scheduler.list`, `scheduler.save`, `scheduler.remove` and `scheduler.run`
+  are allowed now, so the Scheduler panel works and the startup load completes; the smoke run
+  proves it (7 badges, 4 skill delete controls, `scripts/smoke.mjs`).
+  The renderer now marks `document.body.dataset.ready` once that load lands — the smoke probes
+  wait for it instead of racing a fan-out that includes CLI agent detection — and the first tab
+  click retries a load that failed, so a slow boot self-heals instead of leaving empty cards on
+  screen. The Settings probe, empty for as long as it has existed, now reads 12 cards.
 - **The Subagents tab listed agents it could not delegate to.** The "Available agents"
   card rendered the whole catalogue — every built-in preset, whether or not the CLI was on
   PATH and whether or not it was ticked in Settings — so the panel advertised nine agents
@@ -260,6 +301,12 @@ All notable changes to beeCode will be documented in this file.
   flaky, not the UI. The probe now polls for the cards and badges it asserts on, and reads
   the working directory from its labelled field instead of "the last input on the page"
   (`src/main/main.ts`).
+- **The prompt you just sent is echoed in the transcript.** `AgentLoop` appended the user
+  message to the session but never emitted `session.entry` for it, so the transcript stayed
+  empty until the first assistant chunk arrived — pressing Enter, picking an option on a
+  question and clicking a quickstart example all looked like they did nothing. The user entry
+  is now broadcast like every other entry, attachments included, so the message appears the
+  moment it is sent.
 
 ## [0.1.0] - 2026-11-19
 

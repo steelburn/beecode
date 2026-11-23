@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs';
-import { readdir, readFile } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { readdir, readFile, rm } from 'node:fs/promises';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import type { SkillInfo } from '../../shared/protocol';
 import { paths } from '../../shared/tools';
 
@@ -77,6 +77,28 @@ export class SkillStore {
     if (direct) return direct;
     const lowered = name.trim().toLowerCase();
     return [...this.skills.values()].find((record) => record.info.name === lowered);
+  }
+
+  /**
+   * Deletes one installed skill and re-scans.
+   *
+   * The target is the folder that holds the `SKILL.md` — so scripts and references next
+   * to it go too — or the `.md` file itself for a skill that sits flat in a root. Only a
+   * path inside a scan root is ever removed: a name that vanished since the last scan, or a
+   * record pointing somewhere else, is refused instead of guessed at.
+   */
+  async remove(name: string, options: SkillScanOptions): Promise<{ removed: string; skills: SkillInfo[] }> {
+    const record = this.get(name);
+    if (!record) throw new Error(`no skill named "${name}"`);
+
+    const file = resolve(record.info.path);
+    const folder = dirname(file);
+    const root = this.roots(options).find((entry) => within(entry.dir, file));
+    if (!root) throw new Error(`"${name}" lives outside the skill folders — refusing to delete it`);
+
+    const target = folder === resolve(root.dir) ? file : folder;
+    await rm(target, { recursive: true, force: true });
+    return { removed: target, skills: await this.load(options) };
   }
 
   /** System-prompt section; empty string when no skill is installed. */
@@ -190,6 +212,12 @@ function firstParagraph(body: string): string {
 
 function truncate(value: string, max: number): string {
   return value.length <= max ? value : `${value.slice(0, max - 1)}…`;
+}
+
+/** True when `file` sits inside `dir` (or is `dir` itself). */
+function within(dir: string, file: string): boolean {
+  const rel = relative(resolve(dir), resolve(file));
+  return !rel || (!rel.startsWith('..') && !isAbsolute(rel));
 }
 
 /** Skill names double as tool arguments, so they must be stable and URL-ish. */

@@ -88,6 +88,17 @@ export function stepLimitNote(maxSteps: number): Omit<TranscriptEntry, 'id' | 'a
 }
 
 /**
+ * The prompt as the model sees it. Attachments are listed with their absolute path so a
+ * file tool can read them; the transcript entry keeps the plain text plus the chip list,
+ * so the UI never shows the instruction twice.
+ */
+export function promptWithAttachments(text: string, attachments: string[]): string {
+  if (!attachments.length) return text;
+  const list = attachments.map((path) => `- ${path}`).join(`\n`);
+  return `${text}\n\nAttached files (absolute paths — read them with the file tools before you answer):\n${list}`;
+}
+
+/**
  * The agentic loop: stream a completion, execute the requested tools under the
  * permission gate, feed results back, repeat until the model stops asking for tools.
  *
@@ -98,14 +109,23 @@ export function stepLimitNote(maxSteps: number): Omit<TranscriptEntry, 'id' | 'a
 export class AgentLoop {
   constructor(private readonly deps: AgentLoopDeps) {}
 
-  async run(session: SessionState, userText: string): Promise<void> {
+  async run(session: SessionState, userText: string, attachments: string[] = []): Promise<void> {
     const config = this.deps.config();
     const maxSteps = Math.max(1, config.agent.maxSteps);
     session.abort = new AbortController();
     session.busy = true;
 
-    const userEntry = this.appendEntry(session, { role: 'user', text: userText });
-    session.messages.push({ role: 'user', content: userText });
+    const attached = attachments.map((path) => path.trim()).filter((path) => path.length > 0);
+    const userEntry = this.appendEntry(session, {
+      role: 'user',
+      text: userText,
+      attachments: attached.length ? attached : undefined,
+    });
+    // The transcript is the only place a sent prompt becomes visible, so the user entry
+    // has to be broadcast like every other one. Without this, pressing Enter, clicking a
+    // question option or starting from a quickstart example looks like it went nowhere.
+    this.deps.emit({ type: 'session.entry', payload: { sessionId: session.id, entry: { ...userEntry } } });
+    session.messages.push({ role: 'user', content: promptWithAttachments(userText, attached) });
     this.setStatus(session, 'thinking');
 
     try {

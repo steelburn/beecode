@@ -322,6 +322,9 @@ async function runSmokeCheck(serviceReady: boolean): Promise<void> {
         settings: await (async () => {
           const tab = document.querySelector('.tab[data-panel="settings"]');
           if (!tab) return { tab: false };
+          // Panels are painted from the bulk load; it can outlast these waits, so wait for
+          // the renderer to say it landed before judging what a card contains.
+          await waitFor(() => document.body.dataset.ready === 'true', 60000);
           tab.click();
           await waitFor(() => document.querySelectorAll('#panel-body .card').length > 0);
           const body = document.getElementById('panel-body');
@@ -337,10 +340,10 @@ async function runSmokeCheck(serviceReady: boolean): Promise<void> {
                 (n.querySelector('span')?.textContent ?? '').toLowerCase().includes('working directory'));
               return field?.querySelector('.settings-input')?.value ?? '';
             })(),
-            hasSave: Array.from(body.querySelectorAll('button')).some((b) => b.textContent === 'Save'),
+            hasSave: Array.from(body.querySelectorAll('button')).some((b) => b.textContent === 'Save'), loadHint: (document.getElementById('composer-hint')?.textContent || '').slice(0, 200),
           };
         })(),
-        integrations: await (async () => { const tab = document.querySelector('.tab[data-panel="integrations"]'); if (!tab) return { tab: false }; tab.click(); await waitFor(() => document.querySelectorAll('#panel-body .badge').length > 0); const body = document.getElementById('panel-body'); return { tab: true, headings: Array.from(body.querySelectorAll('h4')).map((n) => n.textContent.trim()), badges: Array.from(body.querySelectorAll('.badge')).map((n) => n.textContent.trim()) }; })(),
+        integrations: await (async () => { const tab = document.querySelector('.tab[data-panel="integrations"]'); if (!tab) return { tab: false }; tab.click(); await waitFor(() => document.querySelectorAll('#panel-body .badge').length > 0); const body = document.getElementById('panel-body'); return { tab: true, headings: Array.from(body.querySelectorAll('h4')).map((n) => n.textContent.trim()), badges: Array.from(body.querySelectorAll('.badge')).map((n) => n.textContent.trim()), pluginDrop: !!body.querySelector('.plugin-drop'), pluginDropButtons: body.querySelectorAll('.plugin-drop button').length, skillRemoves: body.querySelectorAll('.skill-remove').length }; })(),
         configRoundTrip: await (async () => {
           const before = await window.beeCode.getConfig();
           const saved = await window.beeCode.saveConfig(before);

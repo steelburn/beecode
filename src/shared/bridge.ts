@@ -28,6 +28,34 @@ export interface DirectoryPickerOptions {
   defaultPath?: string;
 }
 
+/** Options for the native file picker behind `pickFiles`. */
+export interface FilePickerOptions {
+  title?: string;
+  /** Folder the dialog opens in; defaults to the app workspace. */
+  defaultPath?: string;
+  /** Allow more than one file; defaults to true. */
+  multiple?: boolean;
+  /** Extension filter without dots, e.g. `['zip']`; omitted means every file. */
+  extensions?: string[];
+}
+
+/** One file (or folder) copied into the workspace by a drag-and-drop. */
+export interface CopiedFile {
+  /** Absolute source path. */
+  from: string;
+  /** Destination path relative to the workspace root. */
+  to: string;
+}
+
+/** Best-effort result of copying dropped paths into the workspace. */
+export interface CopyIntoWorkspaceResult {
+  copied: CopiedFile[];
+  /** Paths deliberately left alone, e.g. a file that already lives in the target. */
+  skipped: string[];
+  /** Per-path failures: one bad path never aborts the rest of the drop. */
+  errors: Array<{ path: string; error: string }>;
+}
+
 export interface ServiceStatusPayload {
   supervisor: 'starting' | 'ready' | 'restarting' | 'stopped' | 'failed';
   health?: ServiceHealth;
@@ -74,10 +102,16 @@ export const RENDERER_METHODS: RpcMethod[] = [
   'skill.list',
   'skill.reload',
   'skill.install',
+  'skill.remove',
   'skill.read',
   'plugin.list',
   'plugin.reload',
   'plugin.setEnabled',
+  'plugin.install',
+  'scheduler.list',
+  'scheduler.remove',
+  'scheduler.run',
+  'scheduler.save',
 ];
 
 /**
@@ -109,4 +143,22 @@ export interface BeeCodeBridge {
    * and streams its scrollback back over IPC; the renderer only renders it.
    */
   terminal: TerminalApi;
+
+  /**
+   * Native multi-select file picker for chat attachments. Returns absolute paths;
+   * the renderer never learns anything else about the file system from this call.
+   */
+  pickFiles(options?: FilePickerOptions): Promise<string[]>;
+
+  /**
+   * Copy paths dropped onto the UI into the workspace (or one of its folders). The
+   * copy happens in the main process: the renderer has no file-system access.
+   */
+  copyIntoWorkspace(paths: string[], targetDir?: string): Promise<CopyIntoWorkspaceResult>;
+
+  /**
+   * Absolute paths of the dropped files. `File.path` is gone from the renderer, so the
+   * preload resolves the paths with `webUtils.getPathForFile`.
+   */
+  pathsForFiles(files: File[]): string[];
 }

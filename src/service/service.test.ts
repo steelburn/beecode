@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AddressInfo } from 'node:net';
 import { test } from 'node:test';
-import type { FsFile, FsListing, McpListResult, SkillInstallResult, SkillListResult, SkillReadResult } from '../shared/protocol';
+import type { FsFile, FsListing, McpListResult, PluginInstallResult, SkillInstallResult, SkillListResult, SkillReadResult } from '../shared/protocol';
 
 /** A real stdio MCP server with one read-only and one mutating tool. */
 const FAKE_MCP_SERVER = `
@@ -346,6 +346,66 @@ test('background service answers JSON-RPC over loopback HTTP', async () => {
     })).result as { agents: Array<{ id: string; enabled: boolean }> };
     const mine = savedAgents.agents.find((agent) => agent.id === 'mine');
     assert.equal(mine?.enabled, false, 'a disabled custom command must survive a save');
+
+// Plugin install: one step from a folder on disk to a loaded plugin. The service copies
+    // it under the plugin root, switches external plugins on when they were off and lists
+    // the result, so nobody has to hand-place files and reload the host.
+    const pluginSource = join(home, 'drop-hello');
+    await mkdir(pluginSource, { recursive: true });
+    await writeFile(
+      join(pluginSource, 'plugin.json'),
+      JSON.stringify({ id: 'hello-plugin', name: 'Hello', version: '1.2.3', description: 'Says hello' }),
+      'utf8',
+    );
+    await writeFile(join(pluginSource, 'index.js'), 'exports.activate = () => {};', 'utf8');
+    const pluginInstalled = (await rpc('plugin.install', { paths: [pluginSource] })).result as PluginInstallResult;
+    assert.deepEqual(pluginInstalled.installed, ['hello-plugin']);
+    assert.deepEqual(pluginInstalled.skipped, []);
+    assert.equal(
+      pluginInstalled.allowExternal,
+      true,
+      'installing an external plugin turns plugins.allowExternal on',
+    );
+    const listedPlugin = pluginInstalled.plugins.find((plugin) => plugin.id === 'hello-plugin');
+    assert.ok(listedPlugin, 'the installed plugin is listed straight away');
+    assert.equal(listedPlugin.source, 'user');
+    assert.match(
+      await readFile(join(home, 'plugins', 'hello-plugin', 'plugin.json'), 'utf8'),
+      /hello-plugin/,
+      'the plugin lands under the default plugin root',
+    );
+
+    // A folder without a manifest is refused by path, and the refusal does not abort the
+    // rest of the same drop.
+    const bareDrop = join(home, 'drop-bare');
+    await mkdir(bareDrop, { recursive: true });
+    const refusedDrop = (await rpc('plugin.install', { paths: [bareDrop, pluginSource] }))
+      .result as PluginInstallResult;
+    assert.deepEqual(refusedDrop.installed, ['hello-plugin']);
+    assert.equal(refusedDrop.skipped.length, 1);
+    assert.match(refusedDrop.skipped[0].reason, /no plugin\.json/);
+    const noSources = await rpc('plugin.install', { paths: [] });
+    assert.ok(noSources.error, 'plugin.install without a source must fail');
+
+    // Skill deletion: the whole skill folder goes, sidecar files included, and a name that
+    // is no longer on disk is refused instead of being reported as deleted.
+    const doomed = join(workspace, '.beecode', 'skills', 'scratch');
+    await mkdir(doomed, { recursive: true });
+    await writeFile(
+      join(doomed, 'SKILL.md'),
+      ['---', 'name: scratch', 'description: Temporary playbook', '---', '', '# Scratch', ''].join('\n'),
+      'utf8',
+    );
+    await writeFile(join(doomed, 'notes.txt'), 'sidecar', 'utf8');
+    await rpc('skill.reload', { cwd: workspace });
+    const deleted = (await rpc('skill.remove', { name: 'scratch', cwd: workspace })).result as SkillListResult & {
+      removed: string;
+    };
+    assert.equal(deleted.removed, doomed);
+    assert.ok(!deleted.skills.some((skill) => skill.name === 'scratch'), 'the deleted skill left the listing');
+    await assert.rejects(readFile(join(doomed, 'notes.txt'), 'utf8'), 'the sidecar file goes with the skill');
+    const deleteAgain = await rpc('skill.remove', { name: 'scratch', cwd: workspace });
+    assert.ok(deleteAgain.error, 'removing a skill that is already gone must fail');
 
     const unknown = await rpc('session.explode');
     assert.match(unknown.error?.message ?? '', /unknown method/);

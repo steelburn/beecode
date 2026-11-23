@@ -1,10 +1,16 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
 import type { BrowserPanelCommand } from '../shared/browser';
-import { RENDERER_METHODS, type AppInfo, type ServiceStatusPayload } from '../shared/bridge';
+import {
+  RENDERER_METHODS,
+  type AppInfo,
+  type FilePickerOptions,
+  type ServiceStatusPayload,
+} from '../shared/bridge';
 import type { BeeCodeConfig, PolicyDocument, RpcMethod, RpcRequests } from '../shared/protocol';
 import { beeCodeHome } from '../shared/tools';
 import type { ServiceSupervisor } from './serviceSupervisor';
 import type { WorkspaceTerminal } from './terminal';
+import { copyIntoWorkspace } from './workspaceFiles';
 
 export interface IpcDeps {
   supervisor: ServiceSupervisor;
@@ -112,6 +118,36 @@ export function pipeServiceEvents(deps: IpcDeps): void {
   // Terminal: one command at a time, always started inside the workspace root. Output is
   // pushed back over `beecode:terminal-update` rather than returned here, because a command
   // keeps producing lines long after the invoke has answered.
+  // Multi-select file picker for chat attachments: the renderer only ever sees paths.
+  ipcMain.handle('beecode:pick-files', async (_event, options?: FilePickerOptions) => {
+    const win = deps.getWindow();
+    const dialogOptions = {
+      title: options?.title ?? 'Attach files to the prompt',
+      filters: options?.extensions?.length
+        ? [{ name: 'Supported', extensions: options.extensions }]
+        : undefined,
+      defaultPath: options?.defaultPath || deps.workspace || undefined,
+      properties: (options?.multiple === false
+        ? ['openFile']
+        : ['openFile', 'multiSelections']) as Array<'openFile' | 'multiSelections'>,
+    };
+    const result = win
+      ? await dialog.showOpenDialog(win, dialogOptions)
+      : await dialog.showOpenDialog(dialogOptions);
+    return result.canceled ? [] : result.filePaths;
+  });
+
+  // Drag-and-drop of files onto the window: copied here, where the file system is.
+  ipcMain.handle('beecode:copy-to-workspace', (_event, payload: { paths?: unknown; targetDir?: unknown }) =>
+    copyIntoWorkspace(
+      Array.isArray(payload?.paths)
+        ? payload.paths.filter((entry): entry is string => typeof entry === 'string')
+        : [],
+      deps.workspace,
+      typeof payload?.targetDir === 'string' ? payload.targetDir : undefined,
+    ),
+  );
+
   ipcMain.handle('beecode:terminal-state', () => deps.terminal.state);
   ipcMain.handle('beecode:terminal-run', (_event, line: unknown) =>
     deps.terminal.run(typeof line === 'string' ? line : ''),

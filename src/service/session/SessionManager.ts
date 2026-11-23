@@ -254,7 +254,7 @@ export class SessionManager {
   /* ---------------------------------------------------------------- prompts */
 
   /** Queue a prompt; a session runs one turn at a time. */
-  prompt(id: string, text: string): { accepted: boolean } {
+  prompt(id: string, text: string, attachments: string[] = []): { accepted: boolean } {
     const session = this.get(id);
     if (!text.trim()) throw new Error('prompt is empty');
     if (session.entries.length === 0) {
@@ -263,7 +263,7 @@ export class SessionManager {
     const previous = this.queue.get(id) ?? Promise.resolve();
     const next = previous
       .catch(() => undefined)
-      .then(() => this.deps.loop.run(session, text))
+      .then(() => this.deps.loop.run(session, text, attachments))
       .catch((err) => {
         this.deps.log.error('session run failed', { sessionId: id, message: (err as Error).message });
       })

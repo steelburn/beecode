@@ -344,6 +344,28 @@ html, body {
 .btn.ok { border-color: #2c5c40; color: #a7e8c3; }
 .hidden { display: none !important; }
 
+/* -------------------------------------------------- attachments · drops */
+
+.composer-attachments { display: flex; flex-wrap: wrap; gap: 6px; }
+.attachment-chip {
+  display: inline-flex; align-items: center; gap: 6px; max-width: 220px;
+  background: var(--bg-raised); border: 1px solid var(--line); border-radius: 6px;
+  padding: 3px 8px; font-size: 11px; color: var(--text-dim);
+}
+.attachment-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.attachment-remove {
+  border: 0; background: transparent; color: var(--text-faint); cursor: pointer;
+  font-size: 11px; line-height: 1; padding: 0;
+}
+.attachment-remove:hover { color: var(--red); }
+.msg-attachments { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+
+/* Advertise both drop targets while a file drag is over the window. */
+body.drag-files .transcript,
+body.drag-files .panel { outline: 1px dashed var(--line); outline-offset: -6px; }
+body.drag-files .composer { outline: 1px dashed var(--amber-dim); outline-offset: -4px; }
+body.drag-files-over-composer .composer { background: #171308; }
+
 /* ---------------------------------------------------------------- panel */
 
 .panel {
@@ -938,6 +960,21 @@ body.dragging-browser-dock { cursor: row-resize; user-select: none; }
 .skill-row { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
 .skill-row h4 { margin: 0 0 2px; }
 .skill-row p { margin: 0; }
+/* Delete sits under the description so it never competes with the playbook name. */
+.skill-remove { margin-top: 6px; padding: 2px 8px; font-size: 11px; color: var(--text-dim); }
+.skill-remove:hover { color: #ffb3ba; border-color: #5a2a30; }
+.skill-remove:disabled { opacity: 0.5; cursor: default; }
+
+/* Plugin install zone: same gesture as a skill drop, its own class so the two targets can
+   be styled and matched independently (`plugin.install` replaces, `skill.install` adds). */
+.plugin-drop { flex-direction: row; flex-wrap: wrap; align-items: center; gap: 8px; }
+.plugin-drop.over {
+  border-color: var(--amber);
+  background: rgba(214, 158, 46, 0.08);
+}
+.plugin-drop .skill-drop-hint { flex: 1 1 100%; }
+.plugin-drop-note:empty { display: none; }
+.plugin-drop-note { margin-top: 6px; }
 
 /* Workspace terminal (src/renderer/terminal.ts). The shell lives in the main process, so
    this is only the scrollback and the command line. */

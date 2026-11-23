@@ -146,7 +146,13 @@ Nothing is applied optimistically. The panel re-reads `mcp.list` after saving an
 whatever state the service reached, so a server that fails to start shows `error` with its
 message instead of vanishing — and a server that cannot start never fails the save.
 
-Skills stay file-based: they are discovered from disk and only listed here.
+Skills stay file-based: they are discovered from disk and listed here. Every row carries a
+*Delete* button — press it twice (it arms for four seconds, so a single misclick does
+nothing) and `skill.remove` deletes the skill and re-scans. The folder that holds the
+`SKILL.md` goes, so the scripts and references next to it go too; the `.md` file alone is
+removed only for a skill that sits flat in a root. Nothing outside a scan root is ever
+deleted: a record pointing elsewhere, or a name that is already gone, is refused instead of
+guessed at.
 
 `npm run smoke` asserts the panel renders in a real Electron window (headings present, no
 renderer errors), alongside the markdown/chart check.
@@ -160,6 +166,7 @@ renderer errors), alongside the markdown/chart check.
 | `skill.list` | `{ cwd? }` | `{ skills: SkillInfo[] }` |
 | `skill.reload` | `{ cwd? }` | `{ skills: SkillInfo[] }` — forgets the cache and rescans |
 | `skill.read` | `{ name, cwd? }` | `{ skill: SkillInfo, content }` — the raw playbook |
+| `skill.remove` | `{ name, cwd? }` | `{ removed: string, skills: SkillInfo[] }` — deletes the skill folder and rescans |
 
 ## Code map
 
@@ -171,6 +178,6 @@ renderer errors), alongside the markdown/chart check.
 | `src/service/tools/skills.ts` | the `skill` tool |
 | `src/shared/defaults.ts` | `normalizeMcpServers`, `normalizeSkills`, default config |
 | `src/shared/protocol.ts` | config + RPC types |
-| `src/shared/bridge.ts` | `RENDERER_METHODS` — the renderer may call the five RPC methods above |
+| `src/shared/bridge.ts` | `RENDERER_METHODS` — the renderer may call the RPC methods above |
 | `src/renderer/panels.ts` | `renderIntegrations` — the MCP & skills panel and its server editor |
 | `src/renderer/main.ts` | passes the config into the panel and re-reads `mcp.list` after a save |
