@@ -196,7 +196,7 @@ All notable changes to beeCode will be documented in this file.
   tabs — Permissions, Subagents, Activity, Files, MCP & skills, Settings, Scheduler and
   Terminal — which mixed two lifetimes in one 360px column. The strip now holds only the
   three that describe the session you are looking at; everything app-wide moved out:
-  Settings, Permissions, MCP & skills and Scheduled runs are sections of one dialog behind
+  Settings, Tools, Permissions, MCP & skills and Scheduled runs are sections of one dialog behind
   the gear in the topbar (`Ctrl+,`), and the terminal became a drawer across the bottom of
   the chat column (``Ctrl+` ``), where a shell actually has the width. The three remaining
   tabs wrap instead of being squeezed into a single row, and `Esc` closes whichever of

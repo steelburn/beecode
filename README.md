@@ -85,7 +85,7 @@ shape.
 ## Settings
 
 **Settings** — the gear in the topbar, or `Ctrl+,` — is where the endpoint, the model and
-the working directory are chosen, no file editing required. It is one dialog with three
+the working directory are chosen, no file editing required. It is one dialog with five
 sections: **General**, **Tools**, **Permissions**, **MCP & skills** and **Scheduled runs**.
 
 ![The settings dialog, General section: provider presets, the API key and the working directory](docs/images/settings-dialog.png)
