@@ -142,6 +142,21 @@ const composerUiOk =
 // Driving the browser must not force the dock on screen: after an explicit open and a
 // collapse, the dock stays hidden and navigation still works. The actions that need a surface
 // fail fast with an explanation (a detached view has none) instead of hanging the agent loop.
+// Downloads are the one path by which a page writes to the real machine, so the smoke
+// drives a real one: a loopback server answers with an attachment, the sandboxed session
+// turns that into `will-download`, and the file must land inside `<workspace>/Downloads`.
+// A silent overwrite of the first save, or a write with no workspace at all, fails here.
+const download = report.browser?.download ?? {};
+const downloadFiles = download.files ?? [];
+const downloadOk =
+  download.state === 'completed' &&
+  download.inside === true &&
+  download.content === 'beeCode download' &&
+  download.distinct === true &&
+  download.refused === true &&
+  downloadFiles.length === 2 &&
+  downloadFiles.filter((name) => / \(1\)/.test(name)).length === 1;
+
 const silent = report.browser?.silent ?? {};
 const silentOk =
   silent.reopened === true &&
@@ -192,8 +207,18 @@ const browserTabOk =
   browserTab.transcriptHidden === true &&
   report.browser?.controls?.tabClosed?.active === true;
 
-const terminal = report.dom?.terminal ?? {};
-const terminalOk =
+// The session rail rolls sessions up per workspace: two sample folders have to produce two
+// headers, only the open workspace expanded, and the label/count of each header filled in.
+const rail = report.dom?.rail ?? {};
+const railOk =
+  rail.groups === 2 &&
+  rail.headers === 2 &&
+  rail.currentHeaders === 1 &&
+  rail.labels === 2 &&
+  rail.expandedItems === 2 &&
+  rail.collapsedBodies === 1;
+
+const terminal = report.dom?.terminal ?? {};const terminalOk =
   terminal.drawer === true &&
   terminal.mounted === true &&
   terminal.ranCommand === true &&
@@ -258,11 +283,13 @@ const ok =
   composerOk &&
   composerUiOk &&
   silentOk &&
+  downloadOk &&
   previewOk &&
   mainAreaOk &&
   browserTabOk &&
   tabsFitOk &&
   tabMenuOk &&
+  railOk &&
   terminalOk;
 if (!columnsOk) console.error(`[smoke] side column check failed: ${JSON.stringify(columns)}`);
 if (!panelTabsOk)
@@ -275,6 +302,8 @@ if (!integrationsOk)
   console.error(`[smoke] integrations section check failed: ${JSON.stringify(integrations)}`);
 if (!pluginsOk) console.error(`[smoke] plugins card check failed: ${JSON.stringify(integrations)}`);
 if (!silentOk) console.error(`[smoke] silent browser drive check failed: ${JSON.stringify(silent)}`);
+if (!downloadOk)
+  console.error(`[smoke] download check failed: ${JSON.stringify(download)}`);
 if (!previewOk) console.error(`[smoke] files preview check failed: ${JSON.stringify(preview)}`);
 if (!mainAreaOk) console.error(`[smoke] main-area tab check failed: ${JSON.stringify(mainArea)}`);
 if (!browserTabOk)
@@ -284,6 +313,7 @@ if (!tabMenuOk) {
 }
 if (!tabsFitOk)
   console.error(`[smoke] browser tab strip check failed: ${JSON.stringify(tabStrip)}`);
+if (!railOk) console.error(`[smoke] session rail grouping check failed: ${JSON.stringify(rail)}`);
 if (!terminalOk) console.error(`[smoke] terminal drawer check failed: ${JSON.stringify(terminal)}`);
 if (!composerUiOk)
   console.error(`[smoke] composer icon check failed: ${JSON.stringify(composerUi)}`);

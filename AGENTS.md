@@ -25,6 +25,9 @@ renderer and prints a JSON report (`serviceReady`, `tools`, `dom.bridge`, `dom.e
 `browser.dock`). The `browser` block is the end-to-end proof that the dock laid out and
 the sandboxed view was attached, so check it whenever you touch `src/main/browser/**` or
 the renderer dock.
+`browser.download` drives a real download against a loopback server in a throwaway
+workspace: the file must land in `<workspace>/Downloads`, a second save of the same name
+must not overwrite the first, and a run with no workspace must be refused.
 If Electron starts as plain Node, `ELECTRON_RUN_AS_NODE` is leaking from the shell —
 `scripts/smoke.mjs` already strips it; run that instead of `electron .` directly.
 
@@ -87,8 +90,10 @@ rather than around it:
 
 - **Main owns the page.** Each tab is a `WebContentsView` (`sandbox: true`, no Node,
   `contextIsolation`) in a dedicated in-memory session where every permission request,
-  download, popup and non-web scheme is denied (`src/main/browser/session.ts`). The view
-  is painted on top of the window at the rectangle the renderer reports for its dock.
+  popup and non-web scheme is denied (`src/main/browser/session.ts`). A page download is
+  the one exception, and it is bounded: it lands in `<workspace>/Downloads`
+  (`src/main/browser/downloads.ts`) and nowhere else — no workspace means no download. The
+  view is painted on top of the window at the rectangle the renderer reports for its dock.
 - **The service owns the decision.** `evaluateBrowser(url, action)` runs before the host
   call and before the audit entry, so a denial never reaches main
   (`src/service/browser/controller.ts`). Note the default is *permissive, not deny-by-default*:

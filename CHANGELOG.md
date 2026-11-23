@@ -199,6 +199,20 @@ All notable changes to beeCode will be documented in this file.
   the tree and reports what landed. A name that already exists becomes `name (2).ext` instead
   of overwriting, a folder is copied recursively, and a path that cannot be copied is named
   without aborting the rest of the drop.
+- **The browser can download — into the workspace, and only there.** `will-download` used to
+  be cancelled outright, so a page the agent opened could hand nobody a file. Downloads now
+  land in `<workspace>/Downloads` (`src/main/browser/downloads.ts`): the folder is created on
+  demand, the page's filename is stripped of directory parts and Windows-reserved characters,
+  a taken name becomes `name (1).ext` instead of overwriting, and a download with no workspace
+  open is still refused. The dock shows a `↓ file` chip with the saved path as its tooltip, and
+  `browser_state` carries the last download so the agent can point at what it fetched.
+- **The session rail rolls up per workspace.** Sessions were one flat list even though each
+  one belongs to the folder it was opened in, so last week's project crowded the work in
+  front of you. The rail now groups them under a header per workspace — folder name, session
+  count, and badges for sessions that are still running or have unread output — with the open
+  workspace first and expanded and the others collapsed. A group is a button, its collapsed
+  state is remembered, and a session opened before this change keeps a stable workspace even
+  when its working directory is moved (`src/renderer/sessionGroups.ts`).
 
 ### Changed
 

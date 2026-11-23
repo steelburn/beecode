@@ -125,6 +125,21 @@ export interface BrowserState {
   cursor: { enabled: boolean; label?: string };
   /** Last action the agent ran, so the UI can say what is happening. */
   lastAction?: { action: BrowserAction; label?: string; at: string };
+  /**
+   * Last page download. Downloads land in `<workspace>/Downloads` and nowhere else, so this
+   * is how the UI — and the agent reading `browser_state` — finds the file that was written.
+   */
+  lastDownload?: BrowserDownloadInfo;
+}
+
+export interface BrowserDownloadInfo {
+  /** Name the page proposed. */
+  filename: string;
+  /** Absolute path actually written — absent when the download was refused or cancelled. */
+  path?: string;
+  /** `refused` means there was no workspace folder to write into. */
+  state: 'completed' | 'cancelled' | 'interrupted' | 'refused';
+  at: string;
 }
 
 /* ------------------------------------------------------------------ host RPC */

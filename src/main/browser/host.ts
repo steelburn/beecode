@@ -107,6 +107,7 @@ export class BrowserHost {
   private cursorOverride?: boolean;
   private sequence = 0;
   private lastAction?: BrowserState['lastAction'];
+  private lastDownload?: BrowserState['lastDownload'];
   private disposed = false;
 
   constructor(private readonly opts: BrowserHostOptions) {}
@@ -127,6 +128,7 @@ export class BrowserHost {
       activeTabId: this.activeId,
       cursor: { enabled: this.cursorOn(), label: this.lastAction?.label },
       lastAction: this.lastAction,
+      lastDownload: this.lastDownload,
     };
   }
 
@@ -538,6 +540,16 @@ export class BrowserHost {
         session: browserSession({
             persistSession: config.persistSession,
             workspace: this.opts.workspaceRoot?.(),
+            onDownload: (download) => {
+              this.lastDownload = download;
+              // A download is the only file a page can produce, so say where it landed (or
+              // why it was refused) instead of leaving the user hunting for it.
+              this.opts.log?.(
+                download.state === 'completed' ? 'info' : 'warn',
+                `browser download ${download.state}: ${download.path ?? download.filename}`,
+              );
+              this.emit();
+            },
           }),
         sandbox: true,
         contextIsolation: true,

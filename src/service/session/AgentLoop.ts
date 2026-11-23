@@ -21,6 +21,11 @@ export interface SessionState {
   id: string;
   title: string;
   cwd: string;
+  /**
+   * Workspace root the session was opened in. Kept beside `cwd` because the user may move a
+   * session's working directory; which workspace it belongs to does not change.
+   */
+  workspace?: string;
   mode: AgentMode;
   model: string;
   status: SessionStatus;
@@ -418,6 +423,7 @@ export function summarizeSession(session: SessionState): SessionSummary {
     id: session.id,
     title: session.title,
     cwd: session.cwd,
+    workspace: session.workspace ?? session.cwd,
     mode: session.mode,
     model: session.model,
     status: session.status,

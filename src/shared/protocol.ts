@@ -100,6 +100,11 @@ export interface SessionSummary {
   id: string;
   title: string;
   cwd: string;
+  /**
+   * Workspace root the session belongs to. Stable even when the session's working directory
+   * is moved inside it, and what the session rail rolls the list up by.
+   */
+  workspace?: string;
   mode: AgentMode;
   model: string;
   status: SessionStatus;

@@ -9,7 +9,8 @@
  *     agent never shares cookies with the user's own browsing and forgets the run;
  *   - every permission request denied — camera, microphone, geolocation, notifications,
  *     clipboard, MIDI, serial, HID, fullscreen — regardless of what the page asks;
- *   - downloads cancelled: a page the agent visits must not be able to write files;
+ *   - downloads confined to `<workspace>/Downloads`: a page may hand the user a file, but
+ *     only into the folder the user already let beeCode write to;
  *   - non-web schemes blocked at the network layer (`file:`, `chrome:`, custom protocol
  *     handlers installed by other apps), so a `file:///C:/...` URL cannot become an
  *     arbitrary-file-read primitive;
@@ -20,6 +21,8 @@
  */
 import { createHash } from 'node:crypto';
 import { session, type Session } from 'electron';
+import { reserveDownloadPath } from './downloads';
+import type { BrowserDownloadInfo } from '../../shared/browser';
 
 /** Schemes a page may load. Everything else is cancelled before it hits the network. */
 const ALLOWED_SCHEME = /^(https?|wss?|data|blob|about):/i;
@@ -34,7 +37,15 @@ export interface BrowserSessionOptions {
    * folder never sees the logins of another: persistence is per workspace, not per app.
    */
   workspace?: string;
+  /**
+   * Called once per page download. A download is the only way a page writes to the machine,
+   * so it is reported rather than performed silently, and the UI/agent can say where the file
+   * landed.
+   */
+  onDownload?: (download: BrowserDownloadInfo) => void;
 }
+
+
 
 /**
  * Partition name for a workspace: the root is hashed rather than embedded, which keeps the
@@ -52,18 +63,37 @@ export function browserSession(options: BrowserSessionOptions): Session {
   const ses = session.fromPartition(partition);
   if (hardened.has(partition)) return ses;
   hardened.add(partition);
-  harden(ses);
+  harden(ses, options);
   return ses;
 }
 
-function harden(ses: Session): void {
+function harden(ses: Session, options: BrowserSessionOptions): void {
   // Deny everything, silently: answering "no" is the whole policy, and the agent cannot
   // grant permissions on the user's behalf because there is no UI path to do so.
   ses.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
   ses.setPermissionCheckHandler(() => false);
 
-  // A download would be a file write performed by a page — out of scope by construction.
-  ses.on('will-download', (event) => event.preventDefault());
+  // A download is a file write performed by a page, so it is the one place the sandbox lets
+  // something out: it lands in `<workspace>/Downloads` and nowhere else. Without a workspace
+  // there is no folder the user agreed to write into, so the download is dropped.
+  ses.on('will-download', (event, item) => {
+    const filename = item.getFilename();
+    let target: string | undefined;
+    try {
+      target = reserveDownloadPath(options.workspace, filename);
+    } catch {
+      target = undefined;
+    }
+    if (!target) {
+      event.preventDefault();
+      options.onDownload?.({ filename, state: 'refused', at: new Date().toISOString() });
+      return;
+    }
+    item.setSavePath(target);
+    item.once('done', (_doneEvent, state) => {
+      options.onDownload?.({ filename, path: target, state, at: new Date().toISOString() });
+    });
+  });
 
   ses.webRequest.onBeforeRequest((details, callback) => {
     callback({ cancel: !ALLOWED_SCHEME.test(details.url) });

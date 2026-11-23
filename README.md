@@ -232,8 +232,10 @@ work. It is deliberately a *separate* surface from the desktop driver: nothing h
 reaches your OS, your files or another app.
 
 - The page is a sandboxed `WebContentsView` (`sandbox: true`, no Node,
-  `contextIsolation`) in a dedicated, in-memory session. Every permission request,
-  download, popup and non-web scheme is refused by the host before the page sees it.
+  `contextIsolation`) in a dedicated, in-memory session. Every permission request, popup
+  and non-web scheme is refused by the host before the page sees it. The one thing a page
+  may hand you is a download, and it goes into `<workspace>/Downloads` — never anywhere
+  else, and nowhere at all when no workspace folder is open.
 - Input is dispatched through the DevTools protocol (`Input.dispatchMouseEvent` /
   `insertText` / `dispatchKeyEvent`), not scripted into the page, so a site cannot
   observe or fake what the agent clicked.

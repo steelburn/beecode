@@ -70,7 +70,7 @@ export class SessionManager {
       ...this.snap(session),
       schemaVersion: 1,
       messages: session.messages,
-      workspace: session.cwd,
+      workspace: session.workspace ?? session.cwd,
     };
     if (immediate) void store.save(record);
     else store.saveSoon(record);
@@ -82,6 +82,9 @@ export class SessionManager {
       id: record.id,
       title: record.title,
       cwd: record.cwd || this.deps.defaultCwd(),
+      // Older records only stored the workspace alongside the working directory; fall back
+      // to that rather than inventing one the session never had.
+      workspace: record.workspace ?? record.cwd ?? this.deps.defaultCwd(),
       mode: record.mode,
       model: record.model,
       status: 'idle',
@@ -146,13 +149,24 @@ export class SessionManager {
 
   /* ------------------------------------------------------------------ CRUD */
 
-  create(opts: { title?: string; cwd?: string; mode?: AgentMode; model?: string; parentSessionId?: string; depth?: number } = {}): SessionState {
+  create(opts: {
+    title?: string;
+    cwd?: string;
+    /** Workspace the session belongs to; defaults to the folder the app has open. */
+    workspace?: string;
+    mode?: AgentMode;
+    model?: string;
+    parentSessionId?: string;
+    depth?: number;
+  } = {}): SessionState {
     const config = this.deps.config();
     const now = new Date().toISOString();
+    const cwd = opts.cwd || this.deps.defaultCwd();
     const session: SessionState = {
       id: `s_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`,
       title: opts.title?.trim() || 'New session',
-      cwd: opts.cwd || this.deps.defaultCwd(),
+      cwd,
+      workspace: opts.workspace ?? (this.deps.defaultCwd() || cwd),
       mode: opts.mode ?? config.agent.defaultMode,
       model: opts.model ?? config.defaultModelId,
       status: 'idle',

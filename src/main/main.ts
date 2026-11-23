@@ -1,6 +1,8 @@
 import { app, BrowserWindow, globalShortcut, Menu, nativeImage, net, protocol, shell, Tray } from 'electron';
-import { mkdir, writeFile } from 'node:fs/promises';
-import { dirname, join, relative, resolve, isAbsolute } from 'node:path';
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { basename, dirname, join, relative, resolve, isAbsolute } from 'node:path';
+import { createServer } from 'node:http';
+import { tmpdir } from 'node:os';
 import { pathToFileURL } from 'node:url';
 import type { BrowserExecParams, BrowserState } from '../shared/browser';
 import { defaultConfig } from '../shared/defaults';
@@ -316,6 +318,9 @@ async function runSmokeCheck(serviceReady: boolean): Promise<void> {
         return {
         bridge: typeof window.beeCode === 'object',
         sessions: document.querySelectorAll('.session-item').length,
+        // The rail rolls sessions up per workspace: two sample folders must produce two
+        // headers, the open one expanded and the other collapsed.
+        rail: window.__renderRailSample ? window.__renderRailSample() : { missing: true },
         status: document.getElementById('service-text')?.textContent ?? '',
         title: document.getElementById('session-title')?.textContent ?? '',
         composer: Boolean(document.getElementById('input')),
@@ -911,7 +916,73 @@ async function runSmokeCheck(serviceReady: boolean): Promise<void> {
           error: navigated.error ?? scrolled.error ?? shot.error,
         };
       })();
-      browser = { ...browser, silent };
+      // Downloads are the one path by which a page writes to the real machine, so the smoke
+      // drives a real one: a loopback server answers with `Content-Disposition: attachment`,
+      // the sandboxed session turns that into `will-download`, and the file must land in
+      // `<workspace>/Downloads` and nowhere else — no prompt, no overwrite of an earlier
+      // saving, and no workspace meaning no write at all. The workspace is swapped for a
+      // throwaway folder so the run never touches the user's own.
+      const download = await (async () => {
+        const host = browserHost!;
+        const root = await mkdtemp(join(tmpdir(), 'beecode-smoke-dl-'));
+        const downloads = join(root, 'Downloads');
+        const previous = browserWorkspace;
+        const server = createServer((_request, response) => {
+          response.writeHead(200, {
+            'content-type': 'application/octet-stream',
+            'content-disposition': 'attachment; filename="smoke download.txt"',
+          });
+          response.end('beeCode download');
+        });
+        const settle = async (
+          wanted: (info: NonNullable<BrowserState['lastDownload']>) => boolean,
+        ): Promise<BrowserState['lastDownload']> => {
+          for (let i = 0; i < 80; i += 1) {
+            const info = host.state().lastDownload;
+            if (info && wanted(info)) return info;
+            await new Promise((done) => setTimeout(done, 100));
+          }
+          return host.state().lastDownload;
+        };
+        try {
+          await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
+          const address = server.address();
+          const port = typeof address === 'object' && address ? address.port : 0;
+          const url = `http://127.0.0.1:${port}/file.txt`;
+          browserWorkspace = root;
+          await host.exec({ action: 'open', url });
+          const first = await settle((info) => info.state === 'completed');
+          const savedPath = first?.path ?? '';
+          const inside = Boolean(savedPath) && !relative(downloads, savedPath).startsWith('..');
+          const content = inside ? await readFile(savedPath, 'utf8') : '';
+
+          // The same page saving twice must not overwrite the first file.
+          await host.exec({ action: 'open', url });
+          const second = await settle(
+            (info) => info.state === 'completed' && info.path !== savedPath,
+          );
+
+          // With no workspace there is nowhere allowed to write, so the download is refused.
+          browserWorkspace = '';
+          await host.exec({ action: 'open', url });
+          const refused = await settle((info) => info.state === 'refused');
+
+          return {
+            state: first?.state ?? 'none',
+            savedPath,
+            inside,
+            content,
+            distinct: Boolean(second?.path) && second?.path !== savedPath,
+            refused: refused?.state === 'refused',
+            files: await readdir(downloads).catch(() => [] as string[]),
+          };
+        } finally {
+          browserWorkspace = previous;
+          await new Promise<void>((done) => server.close(() => done()));
+          await rm(root, { recursive: true, force: true });
+        }
+      })();
+      browser = { ...browser, silent, download };
     }
   } catch (err) {
     browser = { error: (err as Error).message };

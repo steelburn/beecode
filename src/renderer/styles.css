@@ -134,6 +134,44 @@ body.col-resizing, body.col-resizing * { cursor: col-resize !important; user-sel
 
 .session-list { flex: 1; overflow-y: auto; padding: 0 8px 8px; min-height: 0; }
 
+/* Sessions rolled up per workspace: one header per folder, the open workspace first. The
+   header is a button so a collapsed group is keyboard-reachable, and the count/badges keep
+   a collapsed group from hiding work that is still running. */
+.session-group + .session-group { margin-top: 6px; }
+.session-group-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 5px 8px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: none;
+  color: var(--text-faint);
+  font: inherit;
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+}
+.session-group-head:hover { background: #171e28; color: var(--text); }
+.session-group-head.current { color: var(--text-dim); }
+.session-group-head .sg-chevron { width: 10px; flex: none; font-size: 9px; }
+.session-group-head .sg-label {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-weight: 600; letter-spacing: .01em;
+}
+.session-group-head .sg-count {
+  flex: none; font-family: var(--mono); font-size: 10px; color: var(--text-faint);
+}
+.session-group-head .sg-tag {
+  flex: none; padding: 0 5px; border-radius: 999px; border: 1px solid var(--line);
+  font-size: 9px; text-transform: uppercase; letter-spacing: .06em; color: var(--text-faint);
+}
+.session-group-head .sg-tag.busy { color: var(--amber); border-color: var(--amber); }
+.session-group-head .sg-tag.unread { color: var(--green); border-color: var(--green); }
+.session-group-body { display: flex; flex-direction: column; }
+.session-group-body[hidden] { display: none; }
+
 .session-item {
   display: flex;
   align-items: center;
@@ -669,6 +707,15 @@ body.dragging-browser-dock { cursor: row-resize; user-select: none; }
 }
 .browser-tab-counter[hidden] { display: none; }
 .browser-actions { display: flex; align-items: center; gap: 6px; flex: 0 1 auto; min-width: 0; }
+/* "↓ page.pdf": a page download always lands in <workspace>/Downloads — the chip says which
+   file, the tooltip says where, and it fades out on its own so the bar stays short. */
+.browser-download-note {
+  flex: 0 1 auto; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  padding: 1px 6px; border-radius: 5px; border: 1px solid var(--line-soft);
+  background: var(--bg-inset); color: var(--text-dim); font-size: 11px; font-family: var(--mono);
+}
+.browser-download-note[hidden] { display: none; }
+.browser-download-note.bad { color: var(--red, #e06c75); border-color: var(--red, #e06c75); }
 .browser-url {
   width: 260px; flex: 0 1 260px; min-width: 110px; padding: 4px 8px;
   border: 1px solid var(--line-soft); border-radius: 6px;

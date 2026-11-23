@@ -28,6 +28,7 @@ import { clear, formatJsonForDisplay, h, renderMarkdown } from './dom';
 import { mountBrowserDock, type BrowserDock, type DockMode } from './browserDock';
 import { renderExplorer, type ExplorerState } from './explorer';
 import { mountMainArea, type MainArea } from './mainArea';
+import { groupSessions, workspaceKey } from './sessionGroups';
 import {
   BROWSER_TAB,
   CHAT_TAB,
@@ -59,6 +60,8 @@ declare global {
     beeCode: BeeCodeBridge;
     /** Smoke-check hook (see scripts/smoke.mjs): counts what a sample message rendered. */
     __renderMessageSample?: () => Record<string, number>;
+    /** Smoke-check hook: rolls the session rail up around two sample workspaces and reports it. */
+    __renderRailSample?: () => Record<string, number>;
     /** Screenshot-capture hook (see src/main/docsCapture.ts): renders a demo transcript. */
     __renderDocsSample?: () => void;
   }
@@ -1026,55 +1029,162 @@ function populateModels(): void {
   if (state.current) els.modelSelect.value = state.current.model;
 }
 
-function renderSessions(): void {
+/** Rail sections collapsed by the user: `{ workspaceKey: true }`, remembered across restarts. */
+const COLLAPSED_WORKSPACES_KEY = 'beecode.rail.collapsedWorkspaces';
+
+function collapsedGroups(): Record<string, boolean> {
+  try {
+    const raw = localStorage.getItem(COLLAPSED_WORKSPACES_KEY);
+    const parsed: unknown = raw ? JSON.parse(raw) : {};
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    const map: Record<string, boolean> = {};
+    for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+      if (typeof value === 'boolean') map[key] = value;
+    }
+    return map;
+  } catch {
+    return {};
+  }
+}
+
+function toggleWorkspaceGroup(key: string, collapsed: boolean): void {
+  const map = collapsedGroups();
+  map[key] = collapsed;
+  try {
+    localStorage.setItem(COLLAPSED_WORKSPACES_KEY, JSON.stringify(map));
+  } catch {
+    // A full or disabled store only costs the remembered collapse state.
+  }
+  renderSessions();
+}
+
+/** One row of the rail: title, workspace path, live status and its delete button. */
+function sessionItem(session: SessionSummary): HTMLElement {
+  // The live status wins over the one the list was loaded with: several sessions can run.
+  const live = state.statuses[session.id] ?? session.status;
+  const unread = state.unread.has(session.id) && session.id !== state.current?.id;
+  const item = h(
+    'div',
+    {
+      class: `session-item${session.id === state.current?.id ? ' active' : ''}${live === 'idle' ? '' : ' busy'}`,
+      on: { click: () => void openSession(session.id) },
+      title: session.cwd,
+    },
+    h('div', { class: 's-title', text: session.parentSessionId ? `↳ ${session.title}` : session.title }),
+    // A background session keeps working while another one is on screen; this badge is
+    // the only signal in the list that it is still running (and that there is new output).
+    live === 'idle' && !unread
+      ? null
+      : h(
+          'div',
+          { class: 's-badges' },
+          live === 'idle' ? null : h('span', { class: 's-badge run', text: live }),
+          unread ? h('span', { class: 's-badge unread', text: 'new output' }) : null,
+        ),
+    // The goal is the most useful subtitle a persisted session can carry.
+    h('div', {
+      class: 's-meta',
+      text: session.goal?.text || (session.status === 'idle' ? '' : session.status),
+      title: session.goal?.text ?? '',
+    }),
+    h('button', {
+      class: 's-del',
+      text: '✕',
+      title: 'Delete session',
+      on: {
+        click: (event: Event) => {
+          event.stopPropagation();
+          void deleteSession(session.id);
+        },
+      },
+    }),
+  );
+  return item;
+}
+
+/**
+ * The rail, rolled up per workspace: the folder the app has open comes first and expanded,
+ * the others stay collapsed — a session from another project is one click away but never in
+ * the way of the work in front of you.
+ */
+function renderSessions(currentRoot: string | undefined = state.workspace?.root): void {
   clear(els.sessionList);
   if (!state.sessions.length) {
     els.sessionList.append(h('div', { class: 'empty', text: 'No sessions yet' }));
     return;
   }
-  for (const session of state.sessions) {
-    // The live status wins over the one the list was loaded with: several sessions can run.
-    const live = state.statuses[session.id] ?? session.status;
-    const unread = state.unread.has(session.id) && session.id !== state.current?.id;
-    const item = h(
-      'div',
+  const collapsed = collapsedGroups();
+  for (const group of groupSessions(state.sessions, currentRoot)) {
+    const key = workspaceKey(group.root);
+    const isCollapsed = collapsed[key] ?? !group.current;
+    const busy = group.sessions.filter(
+      (session) => (state.statuses[session.id] ?? session.status) !== 'idle',
+    ).length;
+    const unread = group.sessions.filter((session) => state.unread.has(session.id)).length;
+    const head = h(
+      'button',
       {
-        class: `session-item${session.id === state.current?.id ? ' active' : ''}${live === 'idle' ? '' : ' busy'}`,
-        on: { click: () => void openSession(session.id) },
-        title: session.cwd,
+        class: `session-group-head${group.current ? ' current' : ''}`,
+        title: `${group.detail}\nClick to ${isCollapsed ? 'expand' : 'collapse'} these ${group.sessions.length} session(s)`,
+        on: { click: () => toggleWorkspaceGroup(key, !isCollapsed) },
       },
-      h('div', { class: 's-title', text: session.parentSessionId ? `↳ ${session.title}` : session.title }),
-      // A background session keeps working while another one is on screen; this badge is
-      // the only signal in the list that it is still running (and that there is new output).
-      live === 'idle' && !unread
-        ? null
-        : h(
-            'div',
-            { class: 's-badges' },
-            live === 'idle' ? null : h('span', { class: 's-badge run', text: live }),
-            unread ? h('span', { class: 's-badge unread', text: 'new output' }) : null,
-          ),
-      // The goal is the most useful subtitle a persisted session can carry.
-      h('div', {
-        class: 's-meta',
-        text: session.goal?.text || (session.status === 'idle' ? '' : session.status),
-        title: session.goal?.text ?? '',
-      }),
-      h('button', {
-        class: 's-del',
-        text: '✕',
-        title: 'Delete session',
-        on: {
-          click: (event: Event) => {
-            event.stopPropagation();
-            void deleteSession(session.id);
-          },
-        },
-      }),
+      h('span', { class: 'sg-chevron', text: isCollapsed ? '▸' : '▾' }),
+      h('span', { class: 'sg-label', text: group.label }),
+      group.current ? h('span', { class: 'sg-tag', text: 'open' }) : null,
+      busy ? h('span', { class: 'sg-tag busy', text: `${busy} busy` }) : null,
+      unread ? h('span', { class: 'sg-tag unread', text: '●' }) : null,
+      h('span', { class: 'sg-count', text: String(group.sessions.length) }),
     );
-    els.sessionList.append(item);
+    const body = h('div', { class: 'session-group-body' });
+    body.hidden = isCollapsed;
+    if (!isCollapsed) {
+      for (const session of group.sessions) body.append(sessionItem(session));
+    }
+    els.sessionList.append(h('div', { class: 'session-group' }, head, body));
   }
 }
+
+/**
+ * Smoke-check hook: roll the rail up around two sample workspaces, report what the grouping
+ * produced, then put the real list back. Keeps the rail's rules under the end-to-end check
+ * without pulling a UI testing framework into the renderer.
+ */
+window.__renderRailSample = (): Record<string, number> => {
+  const saved = state.sessions;
+  const at = new Date().toISOString();
+  const sample = (id: string, workspace: string): SessionSummary => ({
+    id,
+    title: id,
+    cwd: workspace,
+    workspace,
+    mode: 'act',
+    model: 'smoke',
+    status: 'idle',
+    createdAt: at,
+    updatedAt: at,
+    messageCount: 0,
+  });
+  state.sessions = [
+    sample('smoke-open-1', 'D:\\smoke\\open'),
+    sample('smoke-open-2', 'D:\\smoke\\open'),
+    sample('smoke-closed', 'D:\\smoke\\closed'),
+  ];
+  renderSessions('D:\\smoke\\open');
+  const groups = [...els.sessionList.querySelectorAll('.session-group')];
+  const heads = groups.map((group) => group.querySelector('.session-group-head'));
+  const result: Record<string, number> = {
+    groups: groups.length,
+    headers: heads.length,
+    currentHeaders: heads.filter((head) => head?.classList.contains('current')).length,
+    labels: heads.filter((head) => (head?.querySelector('.sg-label')?.textContent ?? '').length > 0).length,
+    // Only the open workspace's sessions are on screen; the other group is collapsed.
+    expandedItems: els.sessionList.querySelectorAll('.session-group-body:not([hidden]) .session-item').length,
+    collapsedBodies: els.sessionList.querySelectorAll('.session-group-body[hidden]').length,
+  };
+  state.sessions = saved;
+  renderSessions();
+  return result;
+};
 
 async function deleteSession(sessionId: string): Promise<void> {
   await api.invoke('session.delete', { sessionId });

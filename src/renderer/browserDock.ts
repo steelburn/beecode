@@ -83,25 +83,30 @@ export function mountBrowserDock(host: HTMLElement, api: BrowserPanelApi): Brows
   const surface = h('div', { class: 'browser-surface' });
   const tabCounter = h('span', { class: 'browser-tab-counter', title: 'Which of the agent tabs is on screen' });
   tabCounter.hidden = true;
+  // Downloads land in `<workspace>/Downloads`; this chip is how the user learns that, and where.
+  const downloadNote = h('span', { class: 'browser-download-note' });
+  downloadNote.hidden = true;
   const bar = h(
     'div',
     { class: 'browser-bar' },
     tabsEl,
     tabCounter,
-    h('div', { class: 'browser-actions' }, urlEl, cursorBtn, minBtn, maxBtn, closeBtn),
+    h('div', { class: 'browser-actions' }, downloadNote, urlEl, cursorBtn, minBtn, maxBtn, closeBtn),
   );
 
   clear(host);
   host.append(splitter, bar, surface);
 
   let current: BrowserState | null = null;
+  /** `at` of the last download already announced, so one download shows the chip once. */
+  let lastDownloadAt: string | undefined;
+  let downloadTimer: number | undefined;
   let shown = false;
   let pending = false;
   let mode: DockMode = 'normal';
   /** Height to restore when leaving minimize/maximize (0 = whatever the CSS says). */
   let normalHeight = 0;
   let lastActionAt: string | undefined;
-
   /** Report the reserved rectangle to main; only meaningful while the dock is on screen. */
   const sendBounds = (): void => {
     if (!shown) return;
@@ -206,8 +211,29 @@ export function mountBrowserDock(host: HTMLElement, api: BrowserPanelApi): Brows
     { passive: false },
   );
 
+  /** Announce a page download (it always lands in `<workspace>/Downloads`) for a few seconds. */
+  const showDownload = (download: BrowserState['lastDownload']): void => {
+    if (!download || download.at === lastDownloadAt) return;
+    lastDownloadAt = download.at;
+    const saved = download.state === 'completed' && download.path;
+    downloadNote.textContent =
+      download.state === 'refused'
+        ? '↓ blocked — no workspace'
+        : `↓ ${download.filename}${download.state === 'completed' ? '' : ` (${download.state})`}`;
+    downloadNote.title = saved
+      ? `Saved to ${download.path}`
+      : 'beeCode writes page downloads into <workspace>/Downloads only';
+    downloadNote.classList.toggle('bad', !saved);
+    downloadNote.hidden = false;
+    if (downloadTimer) window.clearTimeout(downloadTimer);
+    downloadTimer = window.setTimeout(() => {
+      downloadNote.hidden = true;
+    }, 8000);
+  };
+
   const render = (next: BrowserState): void => {
     current = next;
+    showDownload(next.lastDownload);
     const visible = next.visible && next.tabs.length > 0;
     if (visible !== shown) {
       shown = visible;
