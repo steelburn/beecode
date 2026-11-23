@@ -170,6 +170,14 @@ All notable changes to beeCode will be documented in this file.
   of overwriting, a folder is copied recursively, and a path that cannot be copied is named
   without aborting the rest of the drop.
 
+### Changed
+
+- **The chat composer gives its space back to the conversation.** *Attach* and *Send* are now
+  icon buttons floating inside the input box — a paperclip on the left, an arrow (plus a stop
+  square while a turn runs) on the right — instead of a labelled button row under it, and the
+  hint line only takes room when it has something to say. Both keep an `aria-label` and a
+  tooltip, so the icons stay labelable for assistive tech and on hover.
+
 ### Fixed
 
 - **The internal browser hid tabs past the first few.** The tabs shrank instead of the strip

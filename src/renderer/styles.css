@@ -319,14 +319,38 @@ html, body {
   border-top: 1px solid var(--line); padding: 12px 18px 16px; display: flex; flex-direction: column; gap: 8px;
   background: var(--bg);
 }
-.composer textarea {
-  width: 100%; resize: none; min-height: 44px; max-height: 220px;
+/* The input fills the box and the tools float inside its bottom strip, so the
+   attach / stop / send controls cost no extra row in the chat area. */
+.composer-box { position: relative; }
+.composer-box textarea {
+  display: block; width: 100%; resize: none; min-height: 62px; max-height: 220px;
   background: var(--bg-raised); color: var(--text); border: 1px solid var(--line);
-  border-radius: var(--radius); padding: 12px 14px; font-family: inherit; font-size: 14px; line-height: 1.5;
+  border-radius: var(--radius); padding: 10px 12px 34px; font-family: inherit; font-size: 14px; line-height: 1.5;
 }
-.composer textarea:focus { outline: none; border-color: var(--amber-dim); }
-.composer-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; }
-.hint { margin-right: auto; font-size: 11px; color: var(--text-faint); }
+.composer-box textarea:focus { outline: none; border-color: var(--amber-dim); }
+.composer-tools {
+  position: absolute; left: 7px; right: 7px; bottom: 6px;
+  display: flex; align-items: center; gap: 4px; pointer-events: none;
+}
+.composer-tools > * { pointer-events: auto; }
+.composer-tools .spacer { flex: 1; }
+.tool-btn {
+  width: 26px; height: 26px; padding: 0; display: inline-flex; align-items: center; justify-content: center;
+  background: transparent; color: var(--text-faint); border: 1px solid transparent; border-radius: 7px;
+  font-family: inherit; cursor: pointer; transition: background .12s ease, color .12s ease, border-color .12s;
+}
+.tool-btn svg {
+  width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.7;
+  stroke-linecap: round; stroke-linejoin: round;
+}
+.tool-btn:hover:not(:disabled) { background: #1b2330; color: var(--text); }
+.tool-btn:disabled { opacity: .4; cursor: not-allowed; }
+.tool-btn.primary { background: var(--amber); color: #1a1204; border-color: #c79100; }
+.tool-btn.primary:hover:not(:disabled) { background: #ffc21a; color: #1a1204; }
+.tool-btn.danger { color: #ff9a9a; }
+.tool-btn.danger:hover:not(:disabled) { background: #2a161a; color: #ffb3ba; }
+.hint { font-size: 11px; color: var(--text-faint); }
+.hint:empty { display: none; }
 
 .btn {
   border: 1px solid var(--line); background: var(--bg-raised); color: var(--text);

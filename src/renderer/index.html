@@ -84,17 +84,27 @@
         <form class="composer" id="composer">
           <!-- Attachments chips: filled by the renderer, one row per attached file. -->
           <div class="composer-attachments hidden" id="composer-attachments"></div>
-          <textarea
-            id="input"
-            rows="1"
-            placeholder="Describe what to do on the desktop…  (Enter to send, Shift+Enter for a new line)"
-          ></textarea>
-          <div class="composer-actions">
-            <button type="button" id="attach" class="btn ghost small" title="Attach files to this prompt">📎 Attach</button>
-            <span class="hint" id="composer-hint"></span>
-            <button type="button" id="stop" class="btn danger small hidden">Stop</button>
-            <button type="submit" id="send" class="btn primary">Send</button>
+          <!-- The controls float inside the input box: no extra row in the chat area. -->
+          <div class="composer-box">
+            <textarea
+              id="input"
+              rows="1"
+              placeholder="Describe what to do on the desktop…  (Enter to send, Shift+Enter for a new line)"
+            ></textarea>
+            <div class="composer-tools">
+              <button type="button" id="attach" class="tool-btn" title="Attach files to this prompt" aria-label="Attach files">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21.4 11.1 12.2 20.3a5.9 5.9 0 0 1-8.4-8.4l9.2-9.2a3.9 3.9 0 0 1 5.6 5.6l-9.2 9.2a2 2 0 0 1-2.8-2.8l8.5-8.5"/></svg>
+              </button>
+              <span class="spacer"></span>
+              <button type="button" id="stop" class="tool-btn danger hidden" title="Stop the running turn" aria-label="Stop">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1.6"/></svg>
+              </button>
+              <button type="submit" id="send" class="tool-btn primary" title="Send (Enter)" aria-label="Send">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5"/><path d="m5.5 11.5 6.5-6.5 6.5 6.5"/></svg>
+              </button>
+            </div>
           </div>
+          <span class="hint" id="composer-hint"></span>
         </form>
       </main>
 

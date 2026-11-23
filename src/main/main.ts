@@ -319,6 +319,21 @@ async function runSmokeCheck(serviceReady: boolean): Promise<void> {
         status: document.getElementById('service-text')?.textContent ?? '',
         title: document.getElementById('session-title')?.textContent ?? '',
         composer: Boolean(document.getElementById('input')),
+        // The chat controls are meant to be icons floating inside the input box: a text
+        // label or a stray empty hint row quietly gives the space back to the layout.
+        composerUi: (() => {
+          const tools = Array.from(document.querySelectorAll('.composer-tools .tool-btn'));
+          const hint = document.getElementById('composer-hint');
+          return {
+            ids: tools.map((b) => b.id),
+            insideBox: tools.length > 0 && tools.every((b) => Boolean(b.closest('.composer-box'))),
+            iconOnly:
+              tools.length > 0 &&
+              tools.every((b) => Boolean(b.querySelector('svg')) && (b.textContent || '').trim() === ''),
+            labelled: tools.every((b) => Boolean(b.getAttribute('aria-label'))),
+            hintRow: hint ? window.getComputedStyle(hint).display : 'missing',
+          };
+        })(),
         settings: await (async () => {
           const tab = document.querySelector('.tab[data-panel="settings"]');
           if (!tab) return { tab: false };

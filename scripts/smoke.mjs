@@ -98,6 +98,16 @@ const composerOk =
   composerVisibleOk(composerOf('maximized')) &&
   composerVisibleOk(composerOf('unmaximized'));
 
+// Attach and Send are icons inside the input box, not labelled buttons on an extra row.
+const composerUi = report.dom?.composerUi ?? {};
+const composerUiOk =
+  composerUi.iconOnly === true &&
+  composerUi.insideBox === true &&
+  composerUi.labelled === true &&
+  Array.isArray(composerUi.ids) &&
+  composerUi.ids.includes('attach') &&
+  composerUi.ids.includes('send');
+
 // Driving the browser must not force the dock on screen: after an explicit open and a
 // collapse, the dock stays hidden and navigation still works. The actions that need a surface
 // fail fast with an explanation (a detached view has none) instead of hanging the agent loop.
@@ -187,6 +197,7 @@ const ok =
   integrationsOk &&
   pluginsOk &&
   composerOk &&
+  composerUiOk &&
   silentOk &&
   previewOk &&
   mainAreaOk &&
@@ -208,6 +219,8 @@ if (!tabMenuOk) {
 if (!tabsFitOk)
   console.error(`[smoke] browser tab strip check failed: ${JSON.stringify(tabStrip)}`);
 if (!terminalOk) console.error(`[smoke] terminal check failed: ${JSON.stringify(terminal)}`);
+if (!composerUiOk)
+  console.error(`[smoke] composer icon check failed: ${JSON.stringify(composerUi)}`);
 if (!composerOk) {
   console.error(
     `[smoke] composer visibility check failed: ${JSON.stringify({
