@@ -61,8 +61,6 @@ export interface ServiceOptions {
   workspace?: string;
 }
 
-const SERVICE_VERSION = '0.1.0';
-
 /**
  * The background agent service.
  *
@@ -383,7 +381,7 @@ export class BeeCodeService {
   health(): ServiceHealth {
     return {
       ok: !this.stopping,
-      version: SERVICE_VERSION,
+      version: this.options.version,
       pid: process.pid,
       platform: process.platform,
       startedAt: this.startedAt,

@@ -1,6 +1,7 @@
 import { BeeCodeService } from './service';
 import { startHttpTransport } from './transports/http';
 import { startStdioTransport } from './transports/stdio';
+import { serviceVersion } from './version';
 
 interface Args {
   transport: 'stdio' | 'http';
@@ -29,7 +30,7 @@ async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   const service = await BeeCodeService.create({
     transport: args.transport,
-    version: process.env.npm_package_version ?? '0.1.0',
+    version: process.env.npm_package_version ?? serviceVersion(),
     workspace: args.workspace,
   });
 

@@ -1,10 +1,10 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import type { McpServerConfig } from '../../shared/protocol';
 import type { Logger } from '../logger';
+import { serviceVersion } from '../version';
 
 /** Protocol revision this client implements. */
 export const MCP_PROTOCOL_VERSION = '2024-11-05';
-const CLIENT_INFO = { name: 'beecode', version: '0.1.0' };
 const DEFAULT_TIMEOUT_MS = 30_000;
 const MAX_TOOL_PAGES = 20;
 
@@ -95,7 +95,7 @@ export class McpClient {
     }>('initialize', {
       protocolVersion: MCP_PROTOCOL_VERSION,
       capabilities: {},
-      clientInfo: CLIENT_INFO,
+      clientInfo: { name: 'beecode', version: serviceVersion() },
     });
 
     this.info = {
