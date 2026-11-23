@@ -1,6 +1,6 @@
-// Generates resources/icon.png (256x256) with no image dependencies:
+// Generates a placeholder resources/icon.png (256x256) with no image dependencies:
 // raw RGBA pixels -> PNG chunks (IHDR/IDAT/IEND) with zlib deflate and CRC32.
-import { writeFileSync, mkdirSync } from 'node:fs';
+import { existsSync, writeFileSync, mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { deflateSync } from 'node:zlib';
@@ -114,6 +114,12 @@ const png = Buffer.concat([
 ]);
 
 const out = resolve(root, 'resources', 'icon.png');
+// The shipped icon is real artwork rendered from its 2048px source, so this generator
+// would clobber it: only overwrite an existing icon when asked explicitly.
+if (existsSync(out) && !process.argv.includes('--force')) {
+  console.log(`[icon] ${out} already exists — pass --force to replace it with the placeholder`);
+  process.exit(0);
+}
 mkdirSync(dirname(out), { recursive: true });
 writeFileSync(out, png);
 console.log(`[icon] wrote ${out} (${png.length} bytes)`);

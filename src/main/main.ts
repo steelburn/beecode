@@ -1,5 +1,6 @@
 import { app, BrowserWindow, globalShortcut, Menu, nativeImage, net, protocol, shell, Tray } from 'electron';
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { basename, dirname, extname, join, relative, resolve, isAbsolute } from 'node:path';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
@@ -343,8 +344,16 @@ function createTray(): void {
   tray.on('click', () => (mainWindow?.isVisible() ? mainWindow.hide() : showWindow()));
 }
 
+/**
+ * The icon sits at `resources/icon.png` in the app root — beside `package.json` in a checkout
+ * (where `__dirname` is `dist/`) and inside the packaged `app.asar`. Looking only under
+ * `__dirname` produced an empty image, so the window and the tray silently fell back to the
+ * executable's own icon.
+ */
 function iconPath(): string {
-  return join(distDir, 'resources', 'icon.png');
+  const beside = join(distDir, 'resources', 'icon.png');
+  if (existsSync(beside)) return beside;
+  return join(app.getAppPath(), 'resources', 'icon.png');
 }
 
 /**
