@@ -11,6 +11,8 @@ import {
 import { installSecrets } from './secrets';
 import type {
   BeeCodeConfig,
+  Schedule,
+  ScheduleInput,
   SkillInfo,
   PolicyDocument,
   RpcMethod,
@@ -27,6 +29,8 @@ import { paths } from '../shared/tools';
 import { BUILTIN_PLUGINS } from '../plugins/builtin';
 import { PluginHost } from '../plugins/host';
 import { AuditLog } from './audit';
+import { SchedulerRunner } from './scheduler/runner';
+import { ScheduleStore } from './scheduler/store';
 import { BrowserController } from './browser/controller';
 import { DesktopController } from './desktop/controller';
 import { McpManager } from './mcp/manager';
@@ -90,6 +94,10 @@ export class BeeCodeService {
   private skills!: SkillStore;
   private mcp!: McpManager;
   private plugins!: PluginHost;
+  /** Schedules on disk — the same list the `schedule` tool and the Scheduler panel edit. */
+  private scheduler!: ScheduleStore;
+  /** The timer that turns a due schedule into a session. */
+  private scheduleRunner!: SchedulerRunner;
   private deps!: ToolDeps;
   private subagentRegistry!: ToolRegistry;
   private listeners = new Set<(event: ServiceEvent) => void>();
@@ -116,6 +124,15 @@ export class BeeCodeService {
     });
 
     this.sessionStore = new SessionStore(this.log);
+    this.scheduler = new ScheduleStore();
+    // The store is the list and the runner is stateless: every fire opens a fresh
+    // session, so a background run never interleaves with what the user is doing.
+    this.scheduleRunner = new SchedulerRunner({
+      store: this.scheduler,
+      log: this.log,
+      start: (schedule) => this.startScheduledSession(schedule),
+      notify: (schedules) => this.emit({ type: 'scheduler.changed', payload: { schedules } }),
+    });
     // The two stores are the single source of truth for the goal and the plan. A write from
     // a tool, an RPC or a restore lands here, and the renderer panel and the persisted
     // transcript both follow from the same notification — no polling, no second copy.
@@ -207,6 +224,11 @@ export class BeeCodeService {
       // Same contract as MCP: the thunk is re-read on every rebuildRegistries(), which
       // service.ts already runs after `plugins.reload()`.
       plugins: { toolDefinitions: (reserved) => this.plugins.toolDefinitions(reserved) },
+      scheduler: {
+        store: this.scheduler,
+        runner: this.scheduleRunner,
+        notify: (schedules) => this.emit({ type: 'scheduler.changed', payload: { schedules } }),
+      },
     };
     this.rebuildRegistries();
 
@@ -233,6 +255,9 @@ export class BeeCodeService {
       todos: this.todos,
       store: this.sessionStore,
     });
+
+    // Timers start last: a due schedule opens a session of its own.
+    this.scheduleRunner.start();
 
     // Rehydrate the newest transcripts so history and plans survive a restart. A missing,
     // empty or corrupt store restores nothing and never fails the startup.
@@ -498,6 +523,26 @@ export class BeeCodeService {
       case 'session.abort':
         return { aborted: this.sessions.abort(this.requireString(args, 'sessionId')) };
 
+      case 'scheduler.list':
+        return { schedules: await this.scheduler.list() };
+
+      case 'scheduler.save': {
+        const schedule = await this.scheduler.save(args as unknown as ScheduleInput);
+        const schedules = await this.scheduler.list();
+        this.emit({ type: 'scheduler.changed', payload: { schedules } });
+        return { schedule, schedules };
+      }
+
+      case 'scheduler.remove': {
+        await this.scheduler.remove(this.requireString(args, 'id'));
+        const schedules = await this.scheduler.list();
+        this.emit({ type: 'scheduler.changed', payload: { schedules } });
+        return { schedules };
+      }
+
+      case 'scheduler.run':
+        return { sessionId: await this.scheduleRunner.runNow(this.requireString(args, 'id')) };
+
       case 'mcp.list':
         return { servers: this.mcp.list() };
 
@@ -674,6 +719,21 @@ export class BeeCodeService {
     return this.audit.recent(50);
   }
 
+  /**
+   * A due schedule gets its own session: the user's chat is never touched, and the
+   * transcript of the background run stays in the rail afterwards, named after the
+   * schedule so it is obvious where it came from.
+   */
+  private startScheduledSession(schedule: Schedule): Promise<string> {
+    const session = this.sessions.create({
+      title: schedule.name,
+      cwd: schedule.cwd ?? this.config.agent.workingDir,
+      mode: schedule.mode,
+    });
+    this.sessions.prompt(session.id, schedule.prompt);
+    return Promise.resolve(session.id);
+  }
+
   async shutdown(): Promise<void> {
     this.stopping = true;
     for (const session of this.sessions.list()) {
@@ -681,6 +741,7 @@ export class BeeCodeService {
     }
     // Flush the debounced transcript writes: a closed window must not lose the last turn.
     await this.sessions.flush();
+    this.scheduleRunner?.stop();
     await this.mcp.stop();
     await this.audit.flush();
     this.log.info('service stopping');

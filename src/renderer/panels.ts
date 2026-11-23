@@ -12,12 +12,15 @@ import type {
   ModelPreset,
   PolicyDocument,
   ProviderId,
+  Schedule,
+  ScheduleInput,
   PluginInfo,
   SkillInfo,
   SkillInstallInput,
   SubagentRunInfo,
 } from '../shared/protocol';
 import { DESKTOP_ACTIONS } from '../shared/protocol';
+import { describeSchedule, formatMoment } from '../shared/schedule';
 import type { DirectoryPickerOptions } from '../shared/bridge';
 import { clear, h } from './dom';
 
@@ -33,6 +36,11 @@ export interface PanelCallbacks {
     apiKey?: string;
   }): Promise<{ models: string[]; warning?: string }>;
   pickDirectory?(options?: DirectoryPickerOptions): Promise<string | undefined>;
+  /** Create (no `id`) or update (with `id`) a schedule; `scheduler.changed` carries it back. */
+  saveSchedule?(input: ScheduleInput): Promise<void>;
+  removeSchedule?(id: string): Promise<void>;
+  /** Fire a schedule immediately, returning the session it started. */
+  runSchedule?(id: string): Promise<string>;
   cancelSubagent(runId: string): Promise<void>;
   refreshAudit(): Promise<void>;
   /** Re-read MCP servers and skills from the service after a reload. */
@@ -1809,4 +1817,241 @@ export function renderSettings(
   };
 
   paint();
+}
+/* ---------------------------------------------------------------- scheduler */
+
+/** The four modes a scheduled run can start in — the same set the composer offers. */
+const SCHEDULE_MODES: AgentMode[] = ['ask', 'plan', 'act', 'autonomous'];
+
+/** Weekday tokens the compact weekly rule uses, indexed like `Schedule.days`. */
+const SCHEDULE_DAYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+
+/** What the form starts with — a rule anyone can read at a glance. */
+const DEFAULT_WHEN = 'daily:09:00';
+
+/** Render a schedule back into the compact rule the form and the chat tool accept. */
+function whenRule(schedule: Schedule): string {
+  switch (schedule.kind) {
+    case 'once':
+      return `once:${schedule.at ?? ""}`;
+    case 'interval':
+      return `every:${schedule.everyMinutes ?? 60}m`;
+    case 'weekly':
+      return `weekly:${(schedule.days ?? []).map((day) => SCHEDULE_DAYS[day] ?? String(day)).join(",")}@${schedule.time ?? "09:00"}`;
+    case 'daily':
+    default:
+      return `daily:${schedule.time ?? "09:00"}`;
+  }
+}
+
+function scheduleError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * The Scheduler panel: the same list the `schedule` tool edits, so a schedule created
+ * in chat shows up here and one created here is visible to the model.
+ *
+ * One form above the list instead of a modal: a schedule is a prompt plus a rule, so
+ * editing in place keeps the whole set readable while one of them is open.
+ */
+export function renderScheduler(host: HTMLElement, schedules: Schedule[], cb: PanelCallbacks): void {
+  clear(host);
+
+  let editing: string | undefined;
+
+  const title = h('h4', { text: 'New schedule' });
+  const nameInput = h('input', {
+    class: 'settings-input',
+    type: 'text',
+    placeholder: 'Morning triage',
+  }) as HTMLInputElement;
+  const whenInput = h('input', {
+    class: 'settings-input',
+    type: 'text',
+    placeholder: 'daily:09:00',
+  }) as HTMLInputElement;
+  whenInput.value = DEFAULT_WHEN;
+  const promptInput = h('textarea', {
+    class: 'settings-input',
+    placeholder: 'Summarise my inbox and list what needs a reply',
+  }) as HTMLTextAreaElement;
+  promptInput.rows = 3;
+  const modeInput = h(
+    'select',
+    { class: 'settings-input' },
+    ...SCHEDULE_MODES.map((mode) => h('option', { value: mode, text: mode })),
+  ) as HTMLSelectElement;
+  modeInput.value = 'act';
+  const cwdInput = h('input', {
+    class: 'settings-input',
+    type: 'text',
+    placeholder: 'working folder (optional)',
+  }) as HTMLInputElement;
+  const feedback = h('div', { class: 'hint', text: '' });
+
+  const submit = h('button', { class: 'btn primary small', text: 'Add schedule' });
+  const cancel = h('button', { class: 'btn ghost small', text: 'Cancel edit' });
+  cancel.hidden = true;
+
+  function reset(): void {
+    editing = undefined;
+    title.textContent = 'New schedule';
+    submit.textContent = 'Add schedule';
+    cancel.hidden = true;
+    nameInput.value = '';
+    promptInput.value = '';
+    whenInput.value = DEFAULT_WHEN;
+    cwdInput.value = '';
+    modeInput.value = 'act';
+    feedback.textContent = '';
+  }
+
+  function beginEdit(schedule: Schedule): void {
+    editing = schedule.id;
+    title.textContent = `Edit “${schedule.name}”`;
+    submit.textContent = 'Save changes';
+    cancel.hidden = false;
+    nameInput.value = schedule.name;
+    promptInput.value = schedule.prompt;
+    whenInput.value = whenRule(schedule);
+    cwdInput.value = schedule.cwd ?? '';
+    modeInput.value = schedule.mode;
+    feedback.textContent = '';
+    nameInput.focus();
+  }
+
+  async function save(): Promise<void> {
+    const cwd = cwdInput.value.trim();
+    const input: ScheduleInput = {
+      ...(editing ? { id: editing } : {}),
+      name: nameInput.value.trim(),
+      prompt: promptInput.value.trim(),
+      when: whenInput.value.trim(),
+      mode: modeInput.value as AgentMode,
+      ...(cwd ? { cwd } : {}),
+    };
+    try {
+      await cb.saveSchedule?.(input);
+      reset();
+    } catch (error) {
+      feedback.textContent = scheduleError(error);
+    }
+  }
+
+  submit.addEventListener('click', () => void save());
+  cancel.addEventListener('click', () => reset());
+
+  const actionButton = (
+    label: string,
+    cls: string,
+    onClick: () => void | Promise<void>,
+  ): HTMLButtonElement => {
+    const button = h('button', { class: cls, text: label });
+    button.addEventListener('click', () => void onClick());
+    return button;
+  };
+
+  const row = (schedule: Schedule): HTMLElement => {
+    const actions = h(
+      'div',
+      { class: 'actions' },
+      actionButton('Run now', 'btn small', async () => {
+        try {
+          const sessionId = await cb.runSchedule?.(schedule.id);
+          feedback.textContent = sessionId ? `Started session ${sessionId}` : 'Started';
+        } catch (error) {
+          feedback.textContent = scheduleError(error);
+        }
+      }),
+      actionButton(schedule.enabled ? 'Pause' : 'Resume', 'btn ghost small', async () => {
+        try {
+          await cb.saveSchedule?.({ id: schedule.id, enabled: !schedule.enabled });
+        } catch (error) {
+          feedback.textContent = scheduleError(error);
+        }
+      }),
+      actionButton('Edit', 'btn ghost small', () => beginEdit(schedule)),
+      actionButton('Delete', 'btn danger small', async () => {
+        try {
+          await cb.removeSchedule?.(schedule.id);
+        } catch (error) {
+          feedback.textContent = scheduleError(error);
+        }
+      }),
+    );
+
+    const status = schedule.enabled
+      ? `next ${formatMoment(schedule.nextRunAt)}`
+      : 'paused';
+    const last = schedule.lastResult
+      ? `${schedule.runCount} run${schedule.runCount === 1 ? '' : 's'} · last ${schedule.lastResult}`
+      : 'never run';
+
+    return h(
+      'div',
+      { class: 'app-rule' },
+      h('div', { class: 'row' }, h('strong', { class: 'name', text: schedule.name }), h('span', { class: 'badge', text: schedule.kind })),
+      h('div', { class: 'sub', text: describeSchedule(schedule) }),
+      h('div', { class: 'sub', text: `${status} · ${last}` }),
+      schedule.prompt ? h('div', { class: 'sub mono', text: schedule.prompt }) : null,
+      actions,
+    );
+  };
+
+  host.append(
+    h(
+      'div',
+      { class: 'card' },
+      h('h4', { text: 'Scheduled runs' }),
+      h('p', {
+        class: 'hint',
+        text: 'Timed agent runs. Each fire opens its own session, so a background run never interrupts your chat.',
+      }),
+      schedules.length === 0
+        ? h('p', { class: 'hint', text: 'No schedules yet — add one below, or just ask in chat: “every weekday at 8, summarise my inbox”.' })
+        : h('div', { class: 'settings-row' }, ...schedules.map(row)),
+    ),
+    h(
+      'div',
+      { class: 'card' },
+      title,
+      h(
+        'div',
+        { class: 'settings-field' },
+        h('label', { text: 'Name' }),
+        nameInput,
+      ),
+      h(
+        'div',
+        { class: 'settings-field' },
+        h('label', { text: 'Prompt' }),
+        promptInput,
+      ),
+      h(
+        'div',
+        { class: 'settings-field' },
+        h('label', { text: 'When' }),
+        whenInput,
+        h('p', {
+          class: 'hint',
+          text: 'once:2025-04-01 09:00 · every:30m · daily:09:00 · weekly:mon,thu@17:30',
+        }),
+      ),
+      h(
+        'div',
+        { class: 'settings-field' },
+        h('label', { text: 'Mode' }),
+        modeInput,
+      ),
+      h(
+        'div',
+        { class: 'settings-field' },
+        h('label', { text: 'Working folder' }),
+        cwdInput,
+      ),
+      h('div', { class: 'actions' }, submit, cancel),
+      feedback,
+    ),
+  );
 }

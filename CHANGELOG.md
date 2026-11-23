@@ -6,6 +6,25 @@ All notable changes to beeCode will be documented in this file.
 
 ### Added
 
+- **Scheduled runs, from chat or from their own tab.** beeCode could only start a run when
+  you typed something. A **Scheduler** tab now lists every schedule with its next and last
+  run, and *Run now* · *Pause* · *Edit* · *Delete* are one click each; the new `schedule`
+  tool does the same from chat (`list`, `add`, `update`, `remove`, `run`, `pause`,
+  `resume`), so "every weekday at 8:15 summarise my inbox" is one sentence. Timing is
+  written as a compact rule — `once:2025-04-01 09:00`, `every:30m`, `daily:09:00`,
+  `weekly:mon,thu@17:30`, with `weekdays` accepted and intervals clamped to 5 minutes to 7
+  days. `daily`/`weekly` resolve on the **local** wall clock, because that is what "09:00"
+  means to a user, while `every` is anchored on the last run: a restart neither drifts nor
+  replays a backlog, and a run missed by more than an hour while the app was closed is
+  recorded as missed instead of firing late. Each fire starts a **fresh** session named
+  after the schedule, so a background run never interleaves with the chat you are having
+  and its transcript stays readable afterwards; `once` disables itself once it has fired.
+  Schedules are persisted in `scheduler.json` next to the other stores and every write is
+  re-broadcast as a `scheduler.changed` event (`scheduler.list` / `save` / `remove` /
+  `run`), so the tab, the tool and the service timer never disagree
+  (`src/shared/schedule.ts`, `src/service/scheduler/store.ts`,
+  `src/service/scheduler/runner.ts`, `src/service/tools/scheduler.ts`,
+  `src/renderer/panels.ts`).
 - **Model is a dropdown fed by the endpoint.** Picking a model meant typing an id from
   memory into a free-text field. **Settings → Model** is now an input backed by the models
   the endpoint advertises (`{Base URL}/models`, Ollama's `/api/tags`, Azure's

@@ -14,6 +14,7 @@ import { controlTools } from './control';
 import { desktopTools } from './desktop';
 import { fileTools } from './files';
 import { ToolRegistry } from './registry';
+import { schedulerTools, type SchedulerToolDeps } from './scheduler';
 import { shellTools } from './shell';
 import { skillTools } from './skills';
 
@@ -31,6 +32,8 @@ export interface ToolDeps {
   skills: SkillStore;
   /** Rescans the skill roots for a working directory (config-aware). */
   scanSkills: (cwd: string) => Promise<SkillInfo[]>;
+  /** Scheduler store + runner behind the `schedule` tool; absent when scheduling is off. */
+  scheduler?: SchedulerToolDeps;
   /** MCP servers; when present their tools join the catalogue. */
   mcp?: McpManager;
   /**
@@ -71,6 +74,7 @@ export function buildToolRegistry(deps: ToolDeps, options: { allowDelegation: bo
       goalTodoEnabled: deps.goalTodoEnabled,
     }),
     ...skillTools({ store: deps.skills, scan: deps.scanSkills }),
+    ...(deps.scheduler ? schedulerTools(deps.scheduler) : []),
     ...agentTools({ subagents: deps.subagents, allowDelegation: options.allowDelegation }),
     ...(deps.mcp ? deps.mcp.toolDefinitions() : []),
   );

@@ -125,7 +125,17 @@ export interface ToolInfo {
   /** Mutating tools are gated by the approval policy. */
   mutating: boolean;
   /** Which subsystem owns the tool — used for grouping in the UI. */
-  group: 'desktop' | 'browser' | 'files' | 'shell' | 'agents' | 'control' | 'mcp' | 'skills' | 'plugins';
+  group:
+    | 'desktop'
+    | 'browser'
+    | 'files'
+    | 'shell'
+    | 'agents'
+    | 'control'
+    | 'mcp'
+    | 'skills'
+    | 'scheduler'
+    | 'plugins';
   /** JSON Schema (draft-07 subset) for the tool arguments. */
   inputSchema: Record<string, unknown>;
 }
@@ -576,6 +586,61 @@ export interface SkillInstallResult {
   installed: string[];
 }
 
+/* ---------------------------------------------------------------- scheduler */
+
+/** How a schedule repeats. `once` fires at `at` and then disables itself. */
+export type ScheduleKind = 'once' | 'interval' | 'daily' | 'weekly';
+
+/**
+ * A user-defined agent run on a timer. The same shape backs the chat tool, the RPC
+ * surface and the Scheduler panel, so a schedule edited in either place stays one object.
+ */
+export interface Schedule {
+  id: string;
+  name: string;
+  /** Prompt enqueued as the first user message of the run's session. */
+  prompt: string;
+  kind: ScheduleKind;
+  /** ISO timestamp — `once` only. */
+  at?: string;
+  /** Minutes between runs — `interval` only. */
+  everyMinutes?: number;
+  /** Local wall-clock time `HH:MM` — `daily` and `weekly`. */
+  time?: string;
+  /** Weekdays 0 = Sunday … 6 = Saturday — `weekly` only. */
+  days?: number[];
+  /** Mode the scheduled session starts in. */
+  mode: AgentMode;
+  /** Working directory override; unset means the configured workspace. */
+  cwd?: string;
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+  lastRunAt?: string;
+  /** Forward-looking fire time; undefined once a `once` schedule has fired. */
+  nextRunAt?: string;
+  runCount: number;
+  /** Short outcome of the last run ("started session …", "error: …", "missed"). */
+  lastResult?: string;
+}
+
+/** Create/update payload: an `id` means update, no `id` means create. */
+export interface ScheduleInput {
+  id?: string;
+  /** Required on create. */
+  name?: string;
+  /** Required on create. */
+  prompt?: string;
+  /**
+   * Timing rule — `once:2025-04-01 09:00`, `every:30m`, `daily:09:00` or
+   * `weekly:mon,thu@17:30`. Required on create; omit on update to keep the current rule.
+   */
+  when?: string;
+  mode?: AgentMode;
+  cwd?: string;
+  enabled?: boolean;
+}
+
 /* ---------------------------------------------------------------- RPC types */
 
 export interface ServiceHealth {
@@ -663,6 +728,13 @@ export interface RpcRequests {
   'subagent.list': { params: Record<string, never>; result: SubagentRunInfo[] };
   'subagent.cancel': { params: { runId: string }; result: { cancelled: boolean } };
   'tools.list': { params: Record<string, never>; result: ToolInfo[] };
+  'scheduler.list': { params: Record<string, never>; result: { schedules: Schedule[] } };
+  'scheduler.save': {
+    params: ScheduleInput;
+    result: { schedule: Schedule; schedules: Schedule[] };
+  };
+  'scheduler.remove': { params: { id: string }; result: { schedules: Schedule[] } };
+  'scheduler.run': { params: { id: string }; result: { sessionId: string } };
 }
 
 export type RpcMethod = keyof RpcRequests;
@@ -684,6 +756,7 @@ export type ServiceEvent =
   | { type: 'subagent.update'; payload: SubagentRunInfo }
   | { type: 'session.goal'; payload: { sessionId: string; goal?: SessionGoal } }
   | { type: 'session.todos'; payload: { sessionId: string; todos: TodoItem[] } }
+  | { type: 'scheduler.changed'; payload: { schedules: Schedule[] } }
   | { type: 'desktop.activity'; payload: AuditEntry }
   | { type: 'service.health'; payload: ServiceHealth }
   | { type: 'log'; payload: { level: 'debug' | 'info' | 'warn' | 'error'; message: string; at: string } }

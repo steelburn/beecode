@@ -6,6 +6,8 @@ import type {
   BeeCodeConfig,
   CliAgentEntry,
   PolicyDocument,
+  Schedule,
+  ScheduleInput,
   SessionGoal,
   SessionSnapshot,
   SessionStatus,
@@ -40,7 +42,14 @@ import {
 import type { TerminalState } from '../shared/terminal';
 import { renderTerminal } from './terminal';
 import type { FileView } from './preview';
-import { renderActivity, renderIntegrations, renderPermissions, renderSettings, renderSubagents } from './panels';
+import {
+  renderActivity,
+  renderIntegrations,
+  renderPermissions,
+  renderScheduler,
+  renderSettings,
+  renderSubagents,
+} from './panels';
 import { renderPlan, renderWorkspaceGate, type WorkspaceActions } from './plan';
 
 declare global {
@@ -155,7 +164,15 @@ window.__renderDocsSample = () => {
 window.addEventListener('error', (event) => rendererErrors.push(String(event.message)));
 window.addEventListener('unhandledrejection', (event) => rendererErrors.push(String((event as PromiseRejectionEvent).reason)));
 
-type PanelTab = 'permissions' | 'subagents' | 'integrations' | 'activity' | 'settings' | 'explorer' | 'terminal';
+type PanelTab =
+  | 'permissions'
+  | 'subagents'
+  | 'integrations'
+  | 'activity'
+  | 'scheduler'
+  | 'settings'
+  | 'explorer'
+  | 'terminal';
 
 interface State {
   info?: AppInfo;
@@ -180,6 +197,8 @@ interface State {
   workspace?: WorkspaceState;
   audit: AuditEntry[];
   subagents: SubagentRunInfo[];
+  /** Timed agent runs — the same list the `schedule` tool edits. */
+  schedules: Schedule[];
   agents: AgentInfo[];
   /** Probed CLI catalogue (Settings → external agents); includes presets that are not configured. */
   detectedAgents: AgentInfo[];
@@ -214,6 +233,7 @@ const state: State = {
   todos: [],
   audit: [],
   subagents: [],
+  schedules: [],
   agents: [],
   detectedAgents: [],
   tools: [],
@@ -337,13 +357,27 @@ async function loadAll(): Promise<void> {
   if (loadingAll) return;
   loadingAll = true;
   try {
-    const [sessions, config, policy, audit, subagents, agents, tools, mcp, skills, plugins, workspace] =
+    const [
+      sessions,
+      config,
+      policy,
+      audit,
+      subagents,
+      schedules,
+      agents,
+      tools,
+      mcp,
+      skills,
+      plugins,
+      workspace,
+    ] =
       await Promise.all([
       api.invoke('session.list', {}),
       api.getConfig(),
       api.getPolicy(),
       api.invoke('audit.list', { limit: 80 }),
       api.invoke('subagent.list', {}),
+      api.invoke('scheduler.list', {}),
       api.invoke('agents.list', {}),
       api.invoke('tools.list', {}),
       api.invoke('mcp.list', {}),
@@ -355,6 +389,7 @@ async function loadAll(): Promise<void> {
     state.policy = policy;
     state.audit = audit;
     state.subagents = subagents;
+    state.schedules = schedules.schedules;
     state.agents = agents;
     // The Settings agent card toggles *external CLI* agents, so it needs the probe
     // catalogue. This used to hold `agents.list` (the registered agent types), which has no
@@ -682,6 +717,11 @@ function handleEvent(event: import('../shared/protocol').ServiceEvent): void {
       state.approval = undefined;
       renderApproval();
       renderBusy();
+      break;
+
+    case 'scheduler.changed':
+      state.schedules = event.payload.schedules;
+      if (state.panel === 'scheduler') renderPanelBody();
       break;
 
     case 'subagent.update': {
@@ -1247,6 +1287,20 @@ function renderPanelBody(): void {
       state.explorer = { ...state.explorer, file: undefined, view: undefined };
       renderPanelBody();
     },
+    saveSchedule: async (input: ScheduleInput) => {
+      const saved = await api.invoke('scheduler.save', input);
+      state.schedules = saved.schedules;
+      renderPanelBody();
+    },
+    removeSchedule: async (id: string) => {
+      const removed = await api.invoke('scheduler.remove', { id });
+      state.schedules = removed.schedules;
+      renderPanelBody();
+    },
+    runSchedule: async (id: string) => {
+      const started = await api.invoke('scheduler.run', { id });
+      return started.sessionId;
+    },
     setView: (view: FileView) => {
       state.explorer = { ...state.explorer, view };
       renderPanelBody();
@@ -1282,6 +1336,8 @@ function renderPanelBody(): void {
       // Pushed updates only arrive once a command has run, so the first visit fetches.
       if (state.terminal) renderTerminalPanel(state.terminal);
       else void api.terminal.state().then(applyTerminal);
+    } else if (state.panel === 'scheduler') {
+      renderScheduler(els.panelBody, state.schedules, callbacks);
     } else renderActivity(els.panelBody, state.audit, callbacks);
 }
 
