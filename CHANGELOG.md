@@ -6,6 +6,16 @@ All notable changes to beeCode will be documented in this file.
 
 ### Added
 
+- **The file tools can also delete, move and create directories.** The toolset was read/
+  write only: `fs_write` created missing parent folders as a side effect, and nothing could
+  remove a stale file, rename one or make an empty directory. `fs_mkdir`, `fs_delete` and
+  `fs_move` close that gap. All three are checked by the filesystem policy like a write,
+  confirmed outside `autonomous` mode and audited as `dir-create`, `file-delete` and
+  `file-move`. `fs_delete` refuses the workspace root itself and needs an explicit
+  `recursive: true` before it removes a directory; `fs_move` refuses an existing
+  destination and creates the destination's missing parents. A move is checked twice — the
+  source counts as a write, because after the move it is gone from its old path.
+
 - **Every tool can be switched off, not just gated.** All 44 registered tools used to be
   offered to the model unconditionally: the policy and `agent.autoApproveTools` decided
   whether a call needed a click, never whether the tool existed. **Settings → Tools** now lists

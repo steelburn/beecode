@@ -129,7 +129,7 @@ A loopback Base URL (Ollama, LM Studio) may still run keyless.
 | See the desktop | `desktop_list_windows`, `desktop_ui_tree`, `desktop_screenshot` |
 | Start and focus apps | `desktop_launch`, `desktop_focus`, `desktop_close` |
 | Drive a UI | `desktop_invoke`, `desktop_set_value`, `desktop_type`, `desktop_hotkey` |
-| Work with files | `fs_list`, `fs_read`, `fs_write`, `fs_search` |
+| Work with files | `fs_list`, `fs_read`, `fs_write`, `fs_search`, `fs_mkdir`, `fs_delete`, `fs_move` |
 | Run allow-listed commands | `shell_run` |
 | Browse the web (sandboxed, AI cursor) | `browser_open`, `browser_snapshot`, `browser_click`, `browser_type`, `browser_key`, `browser_scroll`, `browser_wait`, `browser_tabs`, `browser_screenshot`, `browser_close` |
 | Delegate | `subagent_delegate`, `agents_list`, `subagent_list`, `subagent_cancel` |

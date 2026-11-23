@@ -1,5 +1,5 @@
-import { readdir, readFile, stat, writeFile } from 'node:fs/promises';
-import { mkdir } from 'node:fs/promises';
+import type { Stats } from 'node:fs';
+import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import type { ToolDefinition } from '../../shared/tools';
 import type { AuditLog } from '../audit';
@@ -35,6 +35,26 @@ function allowPath(
     return { ok: false as const, abs, decision };
   }
   return { ok: true as const, abs, decision };
+}
+
+/** Comparison key for a path that is used as a workspace root (case-insensitive on Windows). */
+function rootKey(abs: string): string {
+  const trimmed = resolve(abs).replace(/[\\/]+$/, '');
+  return process.platform === 'win32' ? trimmed.toLowerCase() : trimmed;
+}
+
+/** True when the path *is* the session cwd or one of the workspace roots. */
+function isWorkspaceRoot(abs: string, ctx: { cwd: string; workspaceRoots: string[] }): boolean {
+  const key = rootKey(abs);
+  return [ctx.cwd, ...ctx.workspaceRoots].filter(Boolean).some((root) => rootKey(root) === key);
+}
+
+async function statOrNull(target: string): Promise<Stats | undefined> {
+  try {
+    return await stat(target);
+  } catch {
+    return undefined;
+  }
 }
 
 export function fileTools(deps: FileToolDeps): ToolDefinition[] {
@@ -196,6 +216,186 @@ export function fileTools(deps: FileToolDeps): ToolDefinition[] {
         };
         await walk(checked.abs, 0);
         return jsonResult({ pattern: String(args.pattern), hits, truncated: hits.length >= limit });
+      },
+    },
+    {
+      name: 'fs_mkdir',
+      description: 'Create a directory inside the workspace (parent directories included).',
+      mutating: true,
+      group: 'files',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'Directory to create.' },
+        },
+        required: ['path'],
+        additionalProperties: false,
+      },
+      preview: (args) => ({
+        requiresApproval: true,
+        summary: 'Create directory ' + String(args.path ?? ''),
+        reason: 'creating directories modifies the workspace',
+      }),
+      async handler(args, ctx) {
+        const abs = resolve(ctx.cwd, requireStr(args, 'path'));
+        const checked = allowPath(policy, abs, true, ctx, audit);
+        if (!checked.ok) return errorResult(checked.decision.reason, { denied: true });
+        const created = await mkdir(checked.abs, { recursive: true });
+        // mkdir returns the first directory it actually created, or undefined when it existed.
+        audit.record({
+          sessionId: ctx.sessionId,
+          tool: 'fs_mkdir',
+          action: 'dir-create',
+          target: checked.abs,
+          outcome: 'allowed',
+          detail: created ? 'created' : 'already existed',
+        });
+        return jsonResult({ ok: true, path: checked.abs, created: Boolean(created) });
+      },
+    },
+    {
+      name: 'fs_delete',
+      description:
+        'Delete a file, or a directory when recursive is true, inside the workspace. This cannot be undone.',
+      mutating: true,
+      group: 'files',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'File or directory to delete.' },
+          recursive: {
+            type: 'boolean',
+            description: 'Required to delete a directory and everything below it.',
+          },
+        },
+        required: ['path'],
+        additionalProperties: false,
+      },
+      preview: (args) => ({
+        requiresApproval: true,
+        summary:
+          'Delete ' +
+          String(args.path ?? '') +
+          (args.recursive === true ? ' and everything below it' : ''),
+        reason: 'deletes cannot be undone from the chat',
+      }),
+      async handler(args, ctx) {
+        const abs = resolve(ctx.cwd, requireStr(args, 'path'));
+        const checked = allowPath(policy, abs, true, ctx, audit);
+        if (!checked.ok) return errorResult(checked.decision.reason, { denied: true });
+        if (isWorkspaceRoot(checked.abs, ctx)) {
+          audit.record({
+            sessionId: ctx.sessionId,
+            tool: 'fs_delete',
+            action: 'file-delete',
+            target: checked.abs,
+            outcome: 'denied',
+            detail: 'workspace root',
+          });
+          return errorResult('refusing to delete the workspace root ' + checked.abs, { denied: true });
+        }
+        const info = await statOrNull(checked.abs);
+        if (!info) return errorResult('"' + abs + '" does not exist');
+        const recursive = args.recursive === true;
+        if (info.isDirectory() && !recursive) {
+          return errorResult(
+            '"' + abs + '" is a directory; pass recursive: true to delete it and its contents',
+          );
+        }
+        await rm(checked.abs, { recursive, force: false });
+        audit.record({
+          sessionId: ctx.sessionId,
+          tool: 'fs_delete',
+          action: 'file-delete',
+          target: checked.abs,
+          outcome: 'allowed',
+          detail: info.isDirectory() ? 'directory (recursive)' : 'file',
+        });
+        return jsonResult({
+          ok: true,
+          path: checked.abs,
+          kind: info.isDirectory() ? 'directory' : 'file',
+        });
+      },
+    },
+    {
+      name: 'fs_move',
+      description:
+        'Move or rename a file or directory inside the workspace. Missing parent directories of the destination are created.',
+      mutating: true,
+      group: 'files',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          from: { type: 'string', description: 'Existing path to move.' },
+          to: { type: 'string', description: 'Destination path.' },
+        },
+        required: ['from', 'to'],
+        additionalProperties: false,
+      },
+      preview: (args) => ({
+        requiresApproval: true,
+        summary: 'Move ' + String(args.from ?? '') + ' -> ' + String(args.to ?? ''),
+        reason: 'moves change the workspace layout',
+      }),
+      async handler(args, ctx) {
+        const fromAbs = resolve(ctx.cwd, requireStr(args, 'from'));
+        const toAbs = resolve(ctx.cwd, requireStr(args, 'to'));
+        // The source is a write too: after the move it is gone from its old path.
+        const fromChecked = allowPath(policy, fromAbs, true, ctx, audit);
+        if (!fromChecked.ok) return errorResult(fromChecked.decision.reason, { denied: true });
+        const toChecked = allowPath(policy, toAbs, true, ctx, audit);
+        if (!toChecked.ok) return errorResult(toChecked.decision.reason, { denied: true });
+        if (isWorkspaceRoot(fromChecked.abs, ctx) || isWorkspaceRoot(toChecked.abs, ctx)) {
+          audit.record({
+            sessionId: ctx.sessionId,
+            tool: 'fs_move',
+            action: 'file-move',
+            target: fromChecked.abs,
+            outcome: 'denied',
+            detail: 'workspace root',
+          });
+          return errorResult('refusing to move the workspace root', { denied: true });
+        }
+        if (fromChecked.abs === toChecked.abs) {
+          return errorResult('source and destination are the same path');
+        }
+        const info = await statOrNull(fromChecked.abs);
+        if (!info) return errorResult('"' + fromAbs + '" does not exist');
+        if (await statOrNull(toChecked.abs)) {
+          return errorResult('"' + toAbs + '" already exists');
+        }
+        await mkdir(dirname(toChecked.abs), { recursive: true });
+        try {
+          await rename(fromChecked.abs, toChecked.abs);
+        } catch (err) {
+          const code = (err as NodeJS.ErrnoException).code;
+          if (code === 'EXDEV') {
+            return errorResult(
+              'cannot move "' +
+                fromAbs +
+                '" to "' +
+                toAbs +
+                '" across drives; write the file at the destination and delete the original instead',
+              { code },
+            );
+          }
+          throw err;
+        }
+        audit.record({
+          sessionId: ctx.sessionId,
+          tool: 'fs_move',
+          action: 'file-move',
+          target: fromChecked.abs,
+          outcome: 'allowed',
+          detail: toChecked.abs,
+        });
+        return jsonResult({
+          ok: true,
+          from: fromChecked.abs,
+          to: toChecked.abs,
+          kind: info.isDirectory() ? 'directory' : 'file',
+        });
       },
     },
   ];

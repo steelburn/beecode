@@ -187,6 +187,12 @@ action to be allowed for that app, exactly like `click` and `invoke`.
 (`agent.workingDir`) plus `allowedRoots`. `writable: false` blocks all writes. Paths are
 resolved before comparison, so `..` escapes are rejected.
 
+The mutating file tools are `fs_write`, `fs_mkdir`, `fs_delete` and `fs_move`. A move is
+evaluated twice — both the source and the destination must pass as writes — and neither end
+may be the workspace root. `fs_delete` refuses the workspace root too and needs
+`recursive: true` before it removes a directory, so a delete of `.` cannot wipe the
+workspace by accident.
+
 ## Audit trail
 
 Every decision — allowed, denied, approved, denied-by-user, failed — is appended to
