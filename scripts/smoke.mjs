@@ -212,7 +212,17 @@ const columnsOk =
   columns.panelShown === true &&
   columns.railDragged === true &&
   columns.railStored === true &&
-  columns.railReset === true;
+  columns.railReset === true &&
+  columns.handlesIdle === true &&
+  columns.railHandleShown === true &&
+  columns.railHandleHidden === true &&
+  columns.panelHandleShown === true &&
+  columns.panelHandleHidden === true &&
+  columns.railToggleLabel === 'Show the navigation column' &&
+  columns.panelToggleLabel === 'Show the side panel' &&
+  columns.collapsedReach?.togglePanel === true &&
+  columns.collapsedReach?.settings === true &&
+  columns.collapsedReach?.terminal === true;
 
 const ok =
   report.serviceReady === true &&

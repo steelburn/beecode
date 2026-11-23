@@ -45,6 +45,9 @@ export interface ColumnElements {
   panelResizer: HTMLElement;
   toggleRail: HTMLButtonElement;
   togglePanel: HTMLButtonElement;
+  /** Edge handles that bring a collapsed column back; wired only if present. */
+  revealRail?: HTMLButtonElement;
+  revealPanel?: HTMLButtonElement;
 }
 
 /**
@@ -115,6 +118,44 @@ export function initColumns(els: ColumnElements): ColumnState {
     els.panelResizer.hidden = state.panelHidden;
     els.toggleRail.setAttribute('aria-pressed', String(!state.railHidden));
     els.togglePanel.setAttribute('aria-pressed', String(!state.panelHidden));
+
+    // The toggle says what the click will do and which way the column travels — the
+    // chevron points at the window edge the column lives on, so a collapsed column
+    // never reads as a one-way trip.
+    setToggle(els.toggleRail, state.railHidden, true, 'navigation column');
+    setToggle(els.togglePanel, state.panelHidden, false, 'side panel');
+    // And a collapsed column leaves a handle on the edge it left from, where the user
+    // still is: the toggle above just moved out from under the pointer.
+    reveal(els.revealRail, state.railHidden, 'Show the navigation column');
+    reveal(els.revealPanel, state.panelHidden, 'Show the side panel');
+  }
+
+  /** Chevron plus label for a column toggle, in the direction the click moves it. */
+  function setToggle(
+    button: HTMLButtonElement,
+    hidden: boolean,
+    left: boolean,
+    name: string,
+  ): void {
+    const outward = left ? '\u00ab' : '\u00bb';
+    const inward = left ? '\u00bb' : '\u00ab';
+    button.textContent = hidden ? inward : outward;
+    button.title = hidden ? `Show the ${name}` : `Hide the ${name}`;
+    button.setAttribute('aria-label', button.title);
+  }
+
+  function reveal(button: HTMLButtonElement | undefined, hidden: boolean, label: string): void {
+    if (!button) return;
+    button.hidden = !hidden;
+    button.title = label;
+    button.setAttribute('aria-label', label);
+  }
+
+  function setHidden(side: 'rail' | 'panel', hidden: boolean): void {
+    if (side === 'rail') state.railHidden = hidden;
+    else state.panelHidden = hidden;
+    apply();
+    remember();
   }
 
   function remember(): void {
@@ -196,17 +237,10 @@ export function initColumns(els: ColumnElements): ColumnState {
     });
   }
 
-  els.toggleRail.addEventListener('click', () => {
-    state.railHidden = !state.railHidden;
-    apply();
-    remember();
-  });
-
-  els.togglePanel.addEventListener('click', () => {
-    state.panelHidden = !state.panelHidden;
-    apply();
-    remember();
-  });
+  els.toggleRail.addEventListener('click', () => setHidden('rail', !state.railHidden));
+  els.togglePanel.addEventListener('click', () => setHidden('panel', !state.panelHidden));
+  els.revealRail?.addEventListener('click', () => setHidden('rail', false));
+  els.revealPanel?.addEventListener('click', () => setHidden('panel', false));
 
   // A narrower window must not squeeze the conversation out of existence; the stored width
   // is kept, so growing the window again gives the column its room back.

@@ -6,12 +6,16 @@ All notable changes to beeCode will be documented in this file.
 
 ### Added
 
-- **Both side columns size and hide on their own.** The rail and the side panel each have
-  a drag grip on their inner edge — double-click restores the shipped width, arrow keys
-  work while the grip has focus — and both collapse away: the rail from its own button in
-  the topbar, the panel from the ☰ that was already there. Widths and collapsed flags are
-  window preferences in localStorage, so they survive a restart, and the conversation
-  column never drops below 360px however far a drag pushes.
+- **Both side columns size and hide on their own — and come back.** The rail and the side
+  panel each have a drag grip on their inner edge — double-click restores the shipped
+  width, arrow keys work while the grip has focus — and each collapses from a chevron in
+  the topbar that names its target and points the way the column will go (`«` / `»`).
+  A collapsed column leaves a handle on the window edge it vacated, so the way back is
+  always on screen: the topbar toggle itself slides away with the column, which is what
+  made a collapsed panel look permanent. The handle does not cover the topbar's other
+  controls. Widths and collapsed flags are window preferences in localStorage, so they
+  survive a restart, and the conversation column never drops below 360px however far a
+  drag pushes.
 - **Scheduled runs, from chat or from the settings dialog.** beeCode could only start a run when
   you typed something. **Settings → Scheduled runs** lists every schedule with its next and last
   run, and *Run now* · *Pause* · *Edit* · *Delete* are one click each; the new `schedule`

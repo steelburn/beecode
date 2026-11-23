@@ -553,14 +553,43 @@ async function runSmokeCheck(serviceReady: boolean): Promise<void> {
           if (!toggleRail || !togglePanel || !grip) return { missing: true };
           out.rail = widthOf('#rail');
           out.panel = widthOf('#panel');
+          // Coming back is what a collapsed column has to make easy. The toggle itself
+          // travels with the column, so what the user can still reach is the edge
+          // handle: this is the gate for "collapsed the panel and could not get it back".
+          const revealRail = document.getElementById('reveal-rail');
+          const revealPanel = document.getElementById('reveal-panel');
+          if (!revealRail || !revealPanel) return { ...out, error: 'reveal handles missing' };
+          const shown = (el) => !el.hidden && window.getComputedStyle(el).display !== 'none';
+          out.handlesIdle = revealRail.hidden && revealPanel.hidden;
           toggleRail.click();
           out.railHidden = await waitFor(() => widthOf('#rail') === 0, 20000);
-          toggleRail.click();
+          out.railHandleShown = shown(revealRail);
+          out.railToggleLabel = toggleRail.getAttribute('aria-label');
+          revealRail.click();
           out.railShown = await waitFor(() => widthOf('#rail') === out.rail, 20000);
+          out.railHandleHidden = await waitFor(() => revealRail.hidden, 20000);
           togglePanel.click();
           out.panelHidden = await waitFor(() => widthOf('#panel') === 0, 20000);
-          togglePanel.click();
+          out.panelHandleShown = shown(revealPanel);
+          out.panelToggleLabel = togglePanel.getAttribute('aria-label');
+          // The handle is pinned to the window edge, which is where the topbar's last
+          // controls live. Restoring the panel must not cost the user the gear or the
+          // terminal button, so hit-test the centre of each one while the panel is away.
+          const reachable = (id) => {
+            const el = document.getElementById(id);
+            if (!el) return 'missing';
+            const r = el.getBoundingClientRect();
+            const top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+            return !!top && (top === el || el.contains(top) || top.contains(el));
+          };
+          out.collapsedReach = {
+            togglePanel: reachable('toggle-panel'),
+            settings: reachable('open-settings'),
+            terminal: reachable('toggle-terminal'),
+          };
+          revealPanel.click();
           out.panelShown = await waitFor(() => widthOf('#panel') === out.panel, 20000);
+          out.panelHandleHidden = await waitFor(() => revealPanel.hidden, 20000);
           // A synthetic drag: press the grip, move 60px right, release.
           const before = widthOf('#rail');
           const x = Math.round(grip.getBoundingClientRect().left) + 4;

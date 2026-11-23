@@ -490,7 +490,37 @@ export async function runDocsCapture(opts: CaptureOptions): Promise<CaptureRepor
         .executeJavaScript(`document.querySelectorAll('#drawer-body .term-line').length`)
         .catch(() => 0),
     );
-    await shoot('terminal-drawer.png');  } finally {
+    await shoot('terminal-drawer.png');
+
+    // A collapsed side column must leave its way back on screen: the topbar toggle
+    // travels with the column, so the shot proves the edge handle exists where the
+    // column used to be. The drawer is already folded away, so this is the bare shell.
+    await opts.window.webContents
+      .executeJavaScript(`(() => { document.getElementById('toggle-panel')?.click(); return true; })()`)
+      .catch(() => undefined);
+    const collapsed = await poll(
+      `document.getElementById('app')?.classList.contains('panel-hidden') ? 1 : 0`,
+      (n) => n > 0,
+    );
+    if (!collapsed) errors.push('the side panel did not collapse');
+    surfaces['columns.handle'] = Number(
+      await opts.window.webContents
+        .executeJavaScript(
+          `(() => { const el = document.getElementById('reveal-panel'); return !!el && !el.hidden && getComputedStyle(el).display !== 'none' ? 1 : 0; })()`,
+        )
+        .catch(() => 0),
+    );
+    if (!surfaces['columns.handle']) errors.push('no edge handle to restore the collapsed panel');
+    await shoot('panel-collapsed.png');
+    // Leave the shell open again for whatever runs next.
+    await opts.window.webContents
+      .executeJavaScript(`(() => { document.getElementById('reveal-panel')?.click(); return true; })()`)
+      .catch(() => undefined);
+    await poll(
+      `document.getElementById('app')?.classList.contains('panel-hidden') ? 0 : 1`,
+      (n) => n > 0,
+    );
+  } finally {
     server.close();
   }
 

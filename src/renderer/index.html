@@ -16,6 +16,13 @@
            grid items of their own (see renderer/columns.ts). -->
       <div class="col-resizer resizer-rail" id="resizer-rail" role="separator" tabindex="0"
            aria-orientation="vertical" aria-label="Resize the navigation column"></div>
+      <!-- The way back when a side column is collapsed: a slim handle pinned to the
+           window edge, so it does not move when the column it belongs to disappears. -->
+      <button type="button" class="col-reveal reveal-rail" id="reveal-rail" hidden
+              title="Show the navigation column" aria-label="Show the navigation column">&raquo;</button>
+      <button type="button" class="col-reveal reveal-panel" id="reveal-panel" hidden
+              title="Show the side panel" aria-label="Show the side panel">&laquo;</button>
+
       <aside class="rail" id="rail">
         <div class="rail-head">
           <div class="brand">
@@ -64,9 +71,9 @@
               <select id="model-select"></select>
             </label>
             <button type="button" id="toggle-rail" class="btn ghost small" aria-pressed="true"
-                    title="Show or hide the navigation column">◧</button>
+                    title="Hide the navigation column">&laquo;</button>
             <button type="button" id="toggle-panel" class="btn ghost small" aria-pressed="true"
-                    title="Show or hide the side panel">☰</button>
+                    title="Hide the side panel">&raquo;</button>
             <button type="button" id="toggle-terminal" class="btn ghost small" aria-pressed="false"
                     title="Show or hide the workspace terminal (Ctrl+&#96;)">&gt;_</button>
             <button type="button" id="open-settings" class="btn ghost small"

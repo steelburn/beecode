@@ -297,6 +297,8 @@ const els = {
   drawerBody: document.getElementById('drawer-body') as HTMLElement,
   toggleTerminal: document.getElementById('toggle-terminal') as HTMLButtonElement,
   toggleRail: document.getElementById('toggle-rail') as HTMLButtonElement,
+  revealRail: document.getElementById('reveal-rail') as HTMLButtonElement,
+  revealPanel: document.getElementById('reveal-panel') as HTMLButtonElement,
   railResizer: document.getElementById('resizer-rail') as HTMLElement,
   panelResizer: document.getElementById('resizer-panel') as HTMLElement,
 };
@@ -514,6 +516,8 @@ function bindUi(): void {
     panelResizer: els.panelResizer,
     toggleRail: els.toggleRail,
     togglePanel: els.togglePanel,
+    revealRail: els.revealRail,
+    revealPanel: els.revealPanel,
   });
 
   for (const tab of document.querySelectorAll<HTMLButtonElement>('.panel-tabs .tab')) {

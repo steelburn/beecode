@@ -274,6 +274,20 @@ A preview is arbitrary workspace content, so the HTML is sanitised instead of tr
 wrapper are dropped, while styles, tables, images and links survive. Markdown is rendered
 by the same code the chat transcript uses.
 
+## The side columns
+
+The rail and the side panel are yours to size: drag the grip on the inner edge of either
+one, double-click it to return to the shipped width, or use the arrow keys while it has
+focus. Both collapse from their topbar chevron — `«` sends the rail away, `»` the panel,
+and both flip direction once the column is gone.
+
+A collapsed column leaves a handle on the window edge it vacated. That handle is the
+point: the toggle in the topbar slides right along with the panel it just hid, so the
+handle is the one control that stays where you are looking. Click it — or the topbar
+chevron — to bring the column back; both remember their width across restarts.
+
+![The side panel collapsed, with the edge handle that brings it back](docs/images/panel-collapsed.png)
+
 ## The workspace terminal
 
 The **Terminal** drawer — the `>_` button in the topbar, or ``Ctrl+` `` — runs
