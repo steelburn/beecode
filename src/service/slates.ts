@@ -2,6 +2,7 @@ import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { SLATE_LIMITS } from '../shared/protocol';
 import { canSlateGoLive, normaliseSlateOrigins } from '../shared/slateSandbox';
+import { normaliseSlateRecipe, type SlateRecipeStep } from '../shared/slateRecipe';
 
 /**
  * A slate is a document the agent writes for the app to render in its own tab, next to
@@ -30,6 +31,8 @@ export interface SlateVersion {
   file: string;
   bytes: number;
   createdAt: string;
+  /** What the version was built from — references only, no payloads. */
+  recipe?: SlateRecipeStep[];
 }
 
 export interface SlateMeta {
@@ -389,6 +392,35 @@ export class SlateStore {
     await mkdir(dirname(target), { recursive: true });
     await writeFile(target, slate.content, 'utf8');
     return { path: target, version: slate.version.n };
+  }
+
+  /**
+   * Records what a version was built from, after the version file was written.
+   *
+   * The recipe belongs to the file it produced, so it is attached to the current version
+   * and refused when that version has moved on: a recipe on the wrong version would claim
+   * sources the document was not built from. References only — nothing is copied in.
+   */
+  async recordRecipe(
+    input: SlateLocation & { id: string; version?: number; recipe: SlateRecipeStep[] },
+  ): Promise<SlateMeta> {
+    const meta = await this.meta(input);
+    const n = input.version ?? meta.current;
+    const version = meta.versions.find((candidate) => candidate.n === n);
+    if (!version) throw new Error(`slate "${meta.id}" has no version ${n}`);
+    if (n !== meta.current) {
+      throw new Error(
+        `slate "${meta.id}" has moved on to version ${meta.current} — a recipe records the version it produced, so only the current one can take it`,
+      );
+    }
+    const steps = normaliseSlateRecipe(input.recipe);
+    if (!steps.length) {
+      throw new Error('recipe is empty — omit it rather than recording nothing');
+    }
+    version.recipe = steps;
+    meta.updatedAt = new Date().toISOString();
+    await this.writeMeta(this.slateDir(input), meta);
+    return meta;
   }
 
   private async writeMeta(dir: string, meta: SlateMeta): Promise<void> {

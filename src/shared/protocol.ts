@@ -1,4 +1,5 @@
 import type { SlateDiff } from './slateDiff';
+import type { SlateRecipeStep } from './slateRecipe';
 
 /**
  * Wire protocol shared by the renderer, the Electron main process and the background
@@ -838,6 +839,11 @@ export interface SlateVersionInfo {
   createdAt: string;
   /** Absolute path of the version file, so the UI can open it as a document tab. */
   path: string;
+  /**
+   * What this version was built from, as references only (no payloads). Absent when the
+   * version was written without one — slates promoted from a fenced block have none.
+   */
+  recipe?: SlateRecipeStep[];
 }
 
 /** What the transcript card and the slate gallery need: identity plus the version list. */

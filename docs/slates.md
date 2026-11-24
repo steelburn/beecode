@@ -1,6 +1,7 @@
 # Slates
 
-> **Status: phases 1–3 and Tier B (live slates) implemented** — the store, the three slate tools,
+> **Status: phases 1–3, Tier B (live slates) and references-only recipes implemented** — the store,
+> the four slate tools,
 > the transcript card, the SLATE_TAB gallery, the Slates panel, promote, the document tab's
 > Copy / Download / Preview ⇄ Code, and the pipeline: a long fenced `html` / `svg` block is
 > auto-promoted out of the transcript (`src/shared/slateFence.ts`, `src/service/slatePromote.ts`),
@@ -338,7 +339,7 @@ ways to live with that, cheapest first:
 | Pattern | Cost | Phase |
 | --- | --- | --- |
 | Someone asks again ("update the sales slate") → v4 | free, human in the loop by default | 1 |
-| `meta.json` stores the **recipe** and `refresh_slate` replays it | small, still explicit | 1.5 — recommended |
+| `meta.json` stores the **recipe** and `refresh_slate` replays it | small, still explicit | 1.5 — implemented |
 | `schedule` (`src/service/tools/scheduler.ts:63`) starts a fresh session with a prompt on a timer → one new version per run | prompt-shaped authoring; no dependency on the slate layer | 2 |
 | The document subscribes to the source itself | Tier B + `connect-src` allowlist + per-slate consent + audit trail | 3 |
 
@@ -514,9 +515,8 @@ Kept here so the next reader does not re-inherit them:
 
 ## Open decisions
 
-1. **Does a slate get a `recipe`?** Recommended yes (§ *Data sources*): it is what makes a
-   snapshot replayable and is the honest answer to "can it stay current". Costs a little
-   phase-1 scope.
+None. The last one — whether a version records a `recipe` — was resolved and implemented
+(*Data sources*), and is recorded below with the rest.
 
 **Resolved during review** (recorded so they are not reopened):
 * *CSV / chart in v1* — yes for CSV, and Markdown with `chart` fences, because
@@ -545,3 +545,15 @@ Kept here so the next reader does not re-inherit them:
   "partial tool-JSON plumbing buys little" argument assumed tool JSON was the only route —
   promoting fenced blocks directly means the streamed text is never parsed back out of a
   half-written tool call.
+* *A version records a `recipe`* — yes, and **references only**. `SlateVersion.recipe`
+  holds `{ tool, args, at }` per source (`src/shared/slateRecipe.ts`), so nothing is copied
+  beside the version and the caps in `SLATE_LIMITS` stay true. It lives on the version, not
+  the slate: v3 may be built from different data than v2, and a version file is immutable,
+  so replay always appends. `SlateStore.recordRecipe` attaches a recipe to the current
+  version only — attaching one to `v1` after `v2` exists would claim sources that file may
+  not have been built from. `refresh_slate` writes nothing: it re-authorises every recorded
+  step (policy for reads, the slate's origin allowlist for network ones) and hands the list
+  back, refusing the whole refresh on a single denial rather than rebuilding from half the
+  sources. Replay is then explicit — `update_slate` with the same recipe — never a side
+  effect of opening a slate tab. A refused or absent recipe never fails the write that
+  produced the document: the file is the artefact, provenance is the annotation.

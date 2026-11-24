@@ -226,3 +226,95 @@ test('promote_slate refuses a target outside the workspace and obeys a read-only
     await rm(cwd, { recursive: true, force: true });
   }
 });
+
+test('create_slate records the recipe and refresh_slate hands it back re-authorised', async () => {
+  const cwd = await workspace();
+  try {
+    const { call } = harness(cwd);
+    const created = await call('create_slate', {
+      title: 'Sales Q3',
+      kind: 'markdown',
+      content: '# Sales Q3\n',
+      recipe: [{ tool: 'fs_read', args: { path: 'data/sales.csv' } }],
+    });
+    assert.equal(created.failed, undefined);
+
+    const dir = join(cwd, '.beecode', 'slates', 'session-1', 'sales-q3');
+    const meta = JSON.parse(await readFile(join(dir, 'meta.json'), 'utf8')) as {
+      versions: { recipe?: unknown }[];
+    };
+    assert.deepEqual(meta.versions[0].recipe, [
+      { tool: 'fs_read', args: { path: 'data/sales.csv' } },
+    ]);
+
+    const refreshed = await call('refresh_slate', { id: 'sales-q3' });
+    assert.equal(refreshed.failed, undefined);
+    const payload = JSON.parse(refreshed.content) as {
+      action: string;
+      version: number;
+      steps: { tool: string; kind: string; target?: string; allowed: boolean }[];
+      recipe: unknown[];
+    };
+    assert.equal(payload.action, 'refresh');
+    assert.equal(payload.version, 1);
+    assert.deepEqual(payload.steps, [
+      { tool: 'fs_read', kind: 'read', target: 'data/sales.csv', allowed: true },
+    ]);
+    // The recipe comes back with the plan so the rebuilt version names the same sources.
+    assert.deepEqual(payload.recipe, [{ tool: 'fs_read', args: { path: 'data/sales.csv' } }]);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test('refresh_slate refuses a source the policy now denies', async () => {
+  const cwd = await workspace();
+  try {
+    const { call } = harness(cwd);
+    await call('create_slate', {
+      title: 'Sales Q3',
+      kind: 'markdown',
+      content: '# Sales Q3\n',
+      recipe: [{ tool: 'fs_read', args: { path: '../../outside.csv' } }],
+    });
+
+    // A recorded step is untrusted at replay time: the path was allowed when the recipe was
+    // written, and the answer has to come from the policy again, not from the record.
+    const refreshed = await call('refresh_slate', { id: 'sales-q3' });
+    assert.match(String(refreshed.content), /which the policy now denies/);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test('refresh_slate refuses a network source outside the slate allowlist', async () => {
+  const cwd = await workspace();
+  try {
+    const { call } = harness(cwd);
+    await call('create_slate', {
+      title: 'Dashboard',
+      kind: 'html',
+      content: '<html><body>hi</body></html>\n',
+      origins: ['https://api.example.com'],
+      recipe: [{ tool: 'fetch', args: { url: 'https://tracker.evil.com/collect' } }],
+    });
+
+    const refreshed = await call('refresh_slate', { id: 'dashboard' });
+    assert.match(String(refreshed.content), /not on this slate's allowlist/);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test('refresh_slate says so when a version records no recipe', async () => {
+  const cwd = await workspace();
+  try {
+    const { call } = harness(cwd);
+    await call('create_slate', { title: 'Sales Q3', kind: 'markdown', content: '# Sales Q3\n' });
+
+    const refreshed = await call('refresh_slate', { id: 'sales-q3' });
+    assert.match(String(refreshed.content), /records no recipe/);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});

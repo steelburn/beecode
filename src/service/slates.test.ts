@@ -506,3 +506,98 @@ test('setLive refuses a non-html slate and a wildcard', async () => {
     /wildcard/,
   );
 });
+
+test('a version records what it was built from, and keeps it across a re-read', async () => {
+  const cwd = await workspace();
+  try {
+    const store = new SlateStore();
+    const created = await store.create({
+      cwd,
+      sessionId: 'session-recipe',
+      title: 'Sales',
+      kind: 'markdown',
+      content: '# Sales\n',
+    });
+
+    const recorded = await store.recordRecipe({
+      cwd,
+      sessionId: 'session-recipe',
+      id: created.id,
+      recipe: [{ tool: 'fs_read', args: { path: 'data/sales.csv' } }],
+    });
+    assert.deepEqual(recorded.versions[0].recipe, [
+      { tool: 'fs_read', args: { path: 'data/sales.csv' } },
+    ]);
+
+    // It is stored beside the version it belongs to, so a restart still knows the sources.
+    const meta = JSON.parse(
+      await readFile(join(cwd, '.beecode', 'slates', 'session-recipe', created.id, 'meta.json'), 'utf8'),
+    ) as { versions: { recipe?: unknown }[] };
+    assert.deepEqual(meta.versions[0].recipe, [
+      { tool: 'fs_read', args: { path: 'data/sales.csv' } },
+    ]);
+    const reloaded = await store.meta({ cwd, sessionId: 'session-recipe', id: created.id });
+    assert.deepEqual(reloaded.versions[0].recipe, [
+      { tool: 'fs_read', args: { path: 'data/sales.csv' } },
+    ]);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test('a recipe cannot be attached to a version that is no longer current', async () => {
+  const cwd = await workspace();
+  try {
+    const store = new SlateStore();
+    const created = await store.create({
+      cwd,
+      sessionId: 'session-stale',
+      title: 'Sales',
+      kind: 'markdown',
+      content: 'one\n',
+    });
+    await store.update({ cwd, sessionId: 'session-stale', id: created.id, content: 'two\n' });
+
+    // v1 is history now: recording sources against it later would claim a build that may
+    // not have happened, and the file can never be rewritten to match.
+    await assert.rejects(
+      store.recordRecipe({
+        cwd,
+        sessionId: 'session-stale',
+        id: created.id,
+        version: 1,
+        recipe: [{ tool: 'fs_read', args: { path: 'other.csv' } }],
+      }),
+      /moved on to version 2/,
+    );
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test('a recipe that replays a write, or records nothing, is refused', async () => {
+  const cwd = await workspace();
+  try {
+    const store = new SlateStore();
+    const created = await store.create({
+      cwd,
+      sessionId: 'session-recipe-refuse',
+      title: 'Sales',
+      kind: 'markdown',
+      content: '# Sales\n',
+    });
+    const location = { cwd, sessionId: 'session-recipe-refuse', id: created.id };
+
+    await assert.rejects(
+      store.recordRecipe({ ...location, recipe: [{ tool: 'shell', args: { command: 'ls' } }] }),
+      /which writes/,
+    );
+    await assert.rejects(store.recordRecipe({ ...location, recipe: [] }), /empty/);
+
+    // Nothing half-written survives a refusal.
+    const meta = await store.meta(location);
+    assert.equal(meta.versions[0].recipe, undefined);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});

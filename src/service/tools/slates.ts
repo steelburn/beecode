@@ -1,7 +1,15 @@
 import { resolve } from 'node:path';
-import type { ToolDefinition, ToolResult } from '../../shared/tools';
+import type { ToolContext, ToolDefinition, ToolResult } from '../../shared/tools';
 import type { PolicyEngine } from '../policy';
 import { SLATE_KINDS, type SlateMeta, type SlateStore } from '../slates';
+import { isSlateOriginAllowed } from '../../shared/slateSandbox';
+import {
+  normaliseSlateRecipe,
+  recipeStepKind,
+  recipeStepPath,
+  recipeStepUrl,
+  type SlateRecipeStep,
+} from '../../shared/slateRecipe';
 import { errorResult, jsonResult, requireStr, str } from './registry';
 
 interface SlateToolDeps {
@@ -92,6 +100,20 @@ export function slateTools(deps: SlateToolDeps): ToolDefinition[] {
             description:
               'Only for html slates: the origins the document may call (e.g. "https://api.example.com"). A wildcard is never allowed.',
           },
+          recipe: {
+            type: 'array',
+            description:
+              'What the document was built from, as references only: [{ tool: "fs_read", args: { path: "data/sales.csv" } }]. Never the data itself — refresh_slate replays the references, it does not store a copy.',
+            items: {
+              type: 'object',
+              properties: {
+                tool: { type: 'string' },
+                args: { type: 'object' },
+                at: { type: 'string' },
+              },
+              required: ['tool'],
+            },
+          },
         },
         required: ['title', 'kind', 'content'],
       },
@@ -108,7 +130,13 @@ export function slateTools(deps: SlateToolDeps): ToolDefinition[] {
             content: requireStr(args, 'content'),
             origins,
           });
-          return slateResult(meta, 'created');
+          const attached = await attachRecipe(store, ctx, meta.id, normaliseSlateRecipe(args.recipe));
+          if (attached.error) {
+            return errorResult(
+              `slate "${meta.id}" was created, but its recipe was not recorded: ${attached.error}`,
+            );
+          }
+          return slateResult(attached.meta ?? meta, 'created');
         } catch (err) {
           return errorResult(message(err));
         }
@@ -130,6 +158,20 @@ export function slateTools(deps: SlateToolDeps): ToolDefinition[] {
         properties: {
           id: { type: 'string', description: 'Slate id returned by create_slate, e.g. "sales-q3".' },
           content: { type: 'string', description: 'The complete new document.' },
+          recipe: {
+            type: 'array',
+            description:
+              'What the new version was built from, as references only. Carry the recipe forward when refreshing a slate, so every version names the same sources.',
+            items: {
+              type: 'object',
+              properties: {
+                tool: { type: 'string' },
+                args: { type: 'object' },
+                at: { type: 'string' },
+              },
+              required: ['tool'],
+            },
+          },
         },
         required: ['id', 'content'],
       },
@@ -141,7 +183,13 @@ export function slateTools(deps: SlateToolDeps): ToolDefinition[] {
             id: requireStr(args, 'id'),
             content: requireStr(args, 'content'),
           });
-          return slateResult(meta, 'updated');
+          const attached = await attachRecipe(store, ctx, meta.id, normaliseSlateRecipe(args.recipe));
+          if (attached.error) {
+            return errorResult(
+              `slate "${meta.id}" v${meta.current} was written, but its recipe was not recorded: ${attached.error}`,
+            );
+          }
+          return slateResult(attached.meta ?? meta, 'updated');
         } catch (err) {
           return errorResult(message(err));
         }
@@ -201,5 +249,126 @@ export function slateTools(deps: SlateToolDeps): ToolDefinition[] {
         }
       },
     },
+    {
+      name: 'refresh_slate',
+      description:
+        'Re-authorise the recipe of a slate version and hand it back for replay. Writes nothing and fetches nothing: it returns the recorded steps, each re-checked against the current policy and the slate allowlist, so you can re-read the sources and then call update_slate with the same recipe. Replay writes a new version; it never edits the old one.',
+      mutating: false,
+      group: 'slate',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          id: {
+            type: 'string',
+            description: 'Slate id returned by create_slate or update_slate, e.g. "sales-q3".',
+          },
+          version: {
+            type: 'number',
+            description: 'Version whose recipe to replay. Defaults to the current version.',
+          },
+        },
+        required: ['id'],
+      },
+      handler: async (args, ctx) => {
+        try {
+          const id = requireStr(args, 'id');
+          const meta = await store.meta({ cwd: ctx.cwd, sessionId: ctx.sessionId, id });
+          const n = typeof args.version === 'number' ? args.version : meta.current;
+          const version = meta.versions.find((candidate) => candidate.n === n);
+          if (!version) throw new Error(`slate "${meta.id}" has no version ${n}`);
+          const recipe = version.recipe ?? [];
+          if (!recipe.length) {
+            throw new Error(
+              `slate "${meta.id}" v${n} records no recipe, so there is nothing to replay — read the sources and call update_slate with a recipe to make it refreshable`,
+            );
+          }
+
+          // Every step is untrusted here: it was recorded in an earlier session and both
+          // the policy and the allowlist may have tightened since. One denial refuses the
+          // whole refresh, because replaying a subset would rebuild the document from
+          // half of its sources and say nothing about the rest.
+          const steps = recipe.map((step, index) => {
+            const where = `recipe step ${index + 1} ("${step.tool}")`;
+            const kind = recipeStepKind(step.tool);
+            if (kind === 'write') {
+              throw new Error(
+                `${where} replays a write; a recipe records the sources a version was built from`,
+              );
+            }
+            if (kind === 'read') {
+              const relative = recipeStepPath(step);
+              if (!relative) return { tool: step.tool, kind, allowed: true };
+              const target = resolve(ctx.cwd, relative);
+              const decision = deps.policy.evaluateFile(target, false, ctx.workspaceRoots ?? []);
+              if (!decision.allowed) {
+                throw new Error(
+                  `${where} reads ${relative}, which the policy now denies: ${decision.reason}`,
+                );
+              }
+              return { tool: step.tool, kind, target: relative, allowed: true };
+            }
+            if (kind === 'network') {
+              const url = recipeStepUrl(step);
+              if (!url) throw new Error(`${where} names no url`);
+              const origin = originOf(url);
+              if (!origin) throw new Error(`${where} has an unreadable url: ${url}`);
+              if (meta.origins?.length && !isSlateOriginAllowed(origin, meta.origins)) {
+                throw new Error(
+                  `${where} reads ${origin}, which is not on this slate's allowlist (${meta.origins.join(', ')}) — grant it from the gallery first`,
+                );
+              }
+              return { tool: step.tool, kind, target: origin, allowed: true };
+            }
+            return { tool: step.tool, kind, allowed: true };
+          });
+
+          return jsonResult({
+            action: 'refresh',
+            id: meta.id,
+            version: n,
+            steps,
+            recipe,
+            note:
+              'Replay these steps yourself, then call update_slate with the same recipe and the rebuilt document. Replay appends v' +
+              (meta.versions.length + 1) +
+              '; it does not edit the version it came from.',
+          });
+        } catch (err) {
+          return errorResult(message(err));
+        }
+      },
+    },
   ];
+}
+
+/**
+ * Records a proposed recipe on the version that was just written.
+ *
+ * A refused recipe never turns a successful write into a reported failure: the document is
+ * the artefact and it is already on disk, so the caller gets the slate back either way and
+ * only the provenance is missing — which the result says out loud.
+ */
+async function attachRecipe(
+  store: SlateStore,
+  ctx: Pick<ToolContext, 'cwd' | 'sessionId'>,
+  id: string,
+  recipe: SlateRecipeStep[],
+): Promise<{ meta?: SlateMeta; error?: string }> {
+  if (!recipe.length) return {};
+  try {
+    return { meta: await store.recordRecipe({ cwd: ctx.cwd, sessionId: ctx.sessionId, id, recipe }) };
+  } catch (err) {
+    return { error: message(err) };
+  }
+}
+
+/** Origin of an http(s) url, or undefined when it is neither readable nor http(s). */
+function originOf(url: string): string | undefined {
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return undefined;
+    return parsed.origin;
+  } catch {
+    return undefined;
+  }
 }

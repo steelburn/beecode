@@ -4,6 +4,21 @@ All notable changes to beeCode will be documented in this file.
 
 ## [Unreleased]
 
+- **A slate version can record what it was built from, and be refreshed (slates, recipes).**
+  `SlateVersion.recipe` holds `{ tool, args, at }` per source — **references only**, never a
+  payload, so a slate's own 2 MB/version cap stays honest and nothing is duplicated beside the
+  file (`src/shared/slateRecipe.ts`). The recipe lives on the version, not the slate, because v3
+  may be built from different data than v2; `create_slate` and `update_slate` accept one, and
+  `SlateStore.recordRecipe` attaches it only to the version that was just written — a recipe can
+  never be added to a version that has since become history. A recipe that replays a write
+  (`shell`, `fs_write`, …) is refused outright: a recipe records sources, not actions. The new
+  `refresh_slate` tool writes nothing and fetches nothing — it re-authorises every recorded step
+  against the current policy (reads) and the slate's origin allowlist (network steps), then hands
+  the list back so the agent rebuilds the document and appends a version with the same recipe;
+  one denial refuses the whole refresh rather than rebuilding from half the sources. A malformed
+  recipe never turns a successful write into a reported failure — the document is the artefact,
+  provenance is the annotation, and the result says when it was not recorded.
+
 - **A live slate now runs — in a sandbox of its own (slates, Tier B part 2).**
   `src/main/slate/host.ts` owns one `WebContentsView` on a per-slate *in-memory* partition
   (`slate-live:<id>`) with `sandbox: true`, `contextIsolation` and **no preload**, so the page
