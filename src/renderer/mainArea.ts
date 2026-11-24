@@ -37,6 +37,8 @@ export interface MainAreaHandlers {
   /** Open one version of a slate as a document tab; without a version, the current one. */
   openSlate(id: string, version?: number): void;
   removeSlate(id: string): void;
+  /** Write one slate version into the workspace tree as a real file. */
+  promoteSlate(id: string, version: number, path: string): void;
 }
 
 /** Everything below the strip needs besides the tab state itself. */

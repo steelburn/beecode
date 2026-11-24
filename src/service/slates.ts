@@ -1,5 +1,6 @@
 import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { SLATE_LIMITS } from '../shared/protocol';
 
 /**
  * A slate is a document the agent writes for the app to render in its own tab, next to
@@ -63,8 +64,14 @@ export interface SlateContent {
   content: string;
 }
 
-/** One version may not exceed this: a slate is a document, not an archive. */
-export const MAX_SLATE_BYTES = 512 * 1024;
+/**
+ * The three hard caps (`SLATE_LIMITS`): a slate is a document, not an archive, a log or a
+ * database. They are refusals, never pruning — nothing the agent was told to keep vanishes
+ * silently, and the refusal says which slate to remove.
+ */
+export const MAX_SLATE_BYTES = SLATE_LIMITS.versionBytes;
+export const MAX_SLATE_VERSIONS = SLATE_LIMITS.versions;
+export const MAX_SLATES_PER_SESSION = SLATE_LIMITS.slates;
 
 const MAX_ID_LENGTH = 64;
 
@@ -118,11 +125,17 @@ function normaliseKind(kind: string): SlateKind {
   throw new Error(`unsupported slate kind "${kind}" — use ${SLATE_KINDS.join(', ')}`);
 }
 
+function formatBytes(bytes: number): string {
+  return bytes >= 1024 * 1024
+    ? `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+    : `${Math.max(1, Math.round(bytes / 1024))} KB`;
+}
+
 function assertSize(content: string): void {
   const bytes = Buffer.byteLength(content, 'utf8');
   if (bytes > MAX_SLATE_BYTES) {
     throw new Error(
-      `slate content is ${Math.round(bytes / 1024)} KB — the limit is ${MAX_SLATE_BYTES / 1024} KB per version`,
+      `slate content is ${formatBytes(bytes)} — the limit is ${formatBytes(MAX_SLATE_BYTES)} per version; split it or trim it`,
     );
   }
 }
@@ -152,6 +165,15 @@ export class SlateStore {
     return dir;
   }
 
+  /**
+   * Slates are folders, so the cap is a directory count: parsing every meta.json would make
+   * creating the hundredth slate read the other ninety-nine first.
+   */
+  private async countSlates(sessionRoot: string): Promise<number> {
+    const entries = await readdir(sessionRoot, { withFileTypes: true }).catch(() => []);
+    return entries.filter((entry) => entry.isDirectory()).length;
+  }
+
   /** Creates the slate and its first version, `001-<id>.<ext>`. */
   async create(
     input: SlateLocation & { title: string; kind: string; content: string; origins?: string[] },
@@ -161,6 +183,12 @@ export class SlateStore {
     const title = input.title.trim() || 'Untitled slate';
     const sessionRoot = this.sessionRoot(input);
     await mkdir(sessionRoot, { recursive: true });
+    const existing = await this.countSlates(sessionRoot);
+    if (existing >= MAX_SLATES_PER_SESSION) {
+      throw new Error(
+        `this session already holds ${existing} slates — the limit is ${MAX_SLATES_PER_SESSION}; remove one with slate.remove before creating another`,
+      );
+    }
     const id = await this.freeId(sessionRoot, slateIdFrom(title));
     const dir = join(sessionRoot, id);
     await mkdir(dir, { recursive: true });
@@ -189,6 +217,11 @@ export class SlateStore {
   async update(input: SlateLocation & { id: string; content: string }): Promise<SlateMeta> {
     assertSize(input.content);
     const meta = await this.meta(input);
+    if (meta.versions.length >= MAX_SLATE_VERSIONS) {
+      throw new Error(
+        `slate "${meta.id}" already has ${meta.versions.length} versions — the limit is ${MAX_SLATE_VERSIONS}; create a new slate for a fresh document`,
+      );
+    }
     const dir = this.slateDir(input);
     const now = new Date().toISOString();
     const n = meta.versions.reduce((max, version) => Math.max(max, version.n), 0) + 1;
@@ -270,6 +303,32 @@ export class SlateStore {
       if (!taken.has(candidate)) return candidate;
     }
     throw new Error(`too many slates named "${base}" in this session`);
+  }
+
+  /**
+   * Drops one version file — the escape hatch for the version cap. Survivors keep their
+   * numbers and `current` moves to the newest of them; the next append takes max+1, so it can
+   * only reuse the number of a version removed from the top. The last version cannot be
+   * dropped: that document is the slate.
+   */
+  async removeVersion(
+    location: SlateLocation & { id: string; version: number },
+  ): Promise<SlateMeta> {
+    const meta = await this.meta(location);
+    const version = meta.versions.find((candidate) => candidate.n === location.version);
+    if (!version) throw new Error(`slate "${meta.id}" has no version ${location.version}`);
+    if (meta.versions.length === 1) {
+      throw new Error(`slate "${meta.id}" has one version left — remove the slate instead`);
+    }
+    const dir = this.slateDir(location);
+    await rm(join(dir, version.file), { force: true });
+    meta.versions = meta.versions.filter((candidate) => candidate.n !== version.n);
+    if (meta.current === version.n) {
+      meta.current = meta.versions.reduce((max, candidate) => Math.max(max, candidate.n), 0);
+    }
+    meta.updatedAt = new Date().toISOString();
+    await this.writeMeta(dir, meta);
+    return meta;
   }
 
   /**

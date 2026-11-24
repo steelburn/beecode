@@ -339,6 +339,7 @@ async function boot(): Promise<void> {
       activate: activateMainTab,
       openSlate: (id, version) => void openSlate(id, version),
       removeSlate: (id) => void removeSlate(id),
+      promoteSlate: (id, version, path) => void promoteSlate(id, version, path),
       close: closeDocTab,
       setView: setDocTabView,
       toggleTheme: toggleDocTheme,
@@ -736,6 +737,23 @@ async function openSlate(id: string, version?: number): Promise<void> {
 }
 
 /** Delete a slate and close any tab that was showing one of its versions. */
+/**
+ * Write one slate version into the workspace tree as an ordinary file. The copy is what the
+ * user commits or keeps editing; the slate folder stays the source of truth and keeps its
+ * history. The service applies the same file policy a tool write would.
+ */
+async function promoteSlate(id: string, version: number, path: string): Promise<void> {
+  const sessionId = state.current?.id;
+  if (!sessionId) return;
+  try {
+    const promoted = await api.invoke('slate.promote', { id, sessionId, version, path });
+    const title = state.slates.find((candidate) => candidate.id === id)?.title ?? id;
+    setHint(`Promoted ${title} v${promoted.version} to ${promoted.path} — open it from the file tree.`);
+  } catch (error) {
+    setHint(`Could not promote the slate: ${(error as Error).message}`);
+  }
+}
+
 async function removeSlate(id: string): Promise<void> {
   const sessionId = state.current?.id;
   if (!sessionId) return;
@@ -1781,7 +1799,8 @@ function renderPanels(): void {
     },
     createKnowledgeFolder: (path: string) => void createKnowledgeSubfolder(path),
     openSlate: (id: string, version?: number) => void openSlate(id, version),
-    removeSlate: (id: string) => removeSlate(id),
+    removeSlate: (id: string) => void removeSlate(id),
+    promoteSlate: (id: string, version: number, path: string) => void promoteSlate(id, version, path),
     copyToKnowledge: (path: string) => void copyFileToKnowledge(path),
     close: () => {
       state.explorer = { ...state.explorer, file: undefined, view: undefined };

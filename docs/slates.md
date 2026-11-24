@@ -1,9 +1,11 @@
 # Slates
 
-> **Status: phase 1 implemented, phase 2 outstanding.** The store (/src/service/slates.ts),
-> the `create_slate` / `update_slate` / `promote_slate` tools, the transcript card, the
-> SLATE_TAB gallery and the Slates panel are in the tree; what is still proposal-only is
-> called out per section below. The file references name where the change landed.
+> **Status: phase 1 implemented; the caps and the promote action of phase 2 are in.**
+> The store (/src/service/slates.ts), the `create_slate` / `update_slate` / `promote_slate`
+> tools, the transcript card, the SLATE_TAB gallery and the Slates panel are in the tree, and
+> so are the three caps (*Size and retention caps*) and the promote form in both panes. What
+> is still proposal-only is called out per section below. The file references name where the
+> change landed.
 
 A **slate** is a self-contained document the agent generates inside a conversation and
 beeCode renders **in the app** — in its own tab, next to the chat, instead of as a wall of
@@ -118,6 +120,12 @@ makes a snapshot refreshable while the document itself never holds a connection
 
 Refusals, never silent truncation: an over-limit write returns `{ error: ... }` like any
 other tool failure, because a silently truncated document is worse than a rejected edit.
+The numbers are one constant — `SLATE_LIMITS` in `src/shared/protocol.ts` — enforced in
+`src/service/slates.ts` (`assertSize`, `update`, `create`), so the renderer can never show
+a limit the store does not refuse on. `slate.remove { version }` drops one version file and
+is the escape hatch the table names; the panel and the gallery still remove whole slates,
+because deleting one version of a document someone is reading belongs beside the version
+picker rather than behind a click that looks like the other one.
 
 | Limit | Value | On breach |
 | --- | --- | --- |
@@ -480,24 +488,9 @@ Kept here so the next reader does not re-inherit them:
 
 ## Open decisions
 
-1. **How is the transcript card produced? — OPEN, and the only real blocker left.**
-   The visible payoff is that a 400-line document collapses to one line in the conversation
-   (`sales-q3.html · v3 · Open`), but *where that card comes from* is still an assumption.
-   Three candidate mechanisms, none verified:
-   a. message metadata — the tool result carries a `meta` payload (`ToolResult.meta` exists
-      and is documented as "structured extras for the UI, not sent to the model") and the
-      transcript renders a card from it;
-   b. a renderer decoration of the tool-call row itself, with no protocol change;
-   c. no transcript card in v1 — the slate opens in its tab, the tool result stays a
-      one-line text summary.
-   Resolve by reading how the transcript renders tool results *before* writing renderer
-   code. (c) is an acceptable v1 fallback if neither (a) nor (b) is cheap.
-2. **Is `slate.promote` phase 1 or phase 2?** *Protocol* lists four RPC keys, but
-   `promote_slate` is change-list row 18 (phase 2). Either mark the key phase 2 in the
-   protocol table or move the tool into phase 1 — as written the two sections disagree.
-3. **Streaming in v1?** Default: no — show the slate when the tool call completes. Partial
+1. **Streaming in v1?** Default: no — show the slate when the tool call completes. Partial
    tool-JSON plumbing buys little for documents this size.
-4. **Does a slate get a `recipe`?** Recommended yes (§ *Data sources*): it is what makes a
+2. **Does a slate get a `recipe`?** Recommended yes (§ *Data sources*): it is what makes a
    snapshot replayable and is the honest answer to "can it stay current". Costs a little
    phase-1 scope.
 
@@ -510,7 +503,14 @@ Kept here so the next reader does not re-inherit them:
 * *id vs slug* — the slug **is** the id; immutable folder, free-form title (*Identity*).
 * *kind immutability* — fixed at creation, extension derived from it (*Identity*).
 * *Size and retention* — three hard refusals, no automatic pruning
-  (*Size and retention caps*).
+  (*Size and retention caps*). Implemented as `SLATE_LIMITS` (`src/shared/protocol.ts`), with
+  `slate.remove { version }` as the single escape hatch.
+* *The transcript card* — mechanism (a): the tool result carries `meta.slate`, and the card
+  is built from it (`src/renderer/slateRef.ts`), falling back to the plain tool row when the
+  payload is malformed.
+* *`slate.promote` phase* — phase 1. The **Promote…** form in the panel and the gallery
+  needs the RPC, and the RPC answers to `policy.evaluateFile` exactly as the tool does, so
+  the UI cannot save a file a read-only workspace refuses.
 * *Subagents* — no slate read or write access in v1 (*Subagent visibility*).
 * *Settings → Tools* — per-tool switches are free; no group-level flag
   (*Settings → Tools registration*).

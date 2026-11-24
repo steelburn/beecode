@@ -1301,6 +1301,23 @@ body.dragging-browser-dock { cursor: row-resize; user-select: none; }
   font-size: 12px;
 }
 .slate-row-version { font-size: 12px; }
+/* Promote asks for its target in place — the panel grows instead of opening a dialog. */
+.slate-row-promote,
+.slate-promote {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+.slate-row-promote input,
+.slate-promote input {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 12px;
+}
+.slate-promote-version { font-size: 12px; }
 
 /* ------------------------------------------------------------ document pane */
 

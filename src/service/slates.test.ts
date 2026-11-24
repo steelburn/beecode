@@ -3,7 +3,14 @@ import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { assertSlateId, MAX_SLATE_BYTES, SlateStore, slateIdFrom } from './slates';
+import {
+  assertSlateId,
+  MAX_SLATE_BYTES,
+  MAX_SLATE_VERSIONS,
+  MAX_SLATES_PER_SESSION,
+  SlateStore,
+  slateIdFrom,
+} from './slates';
 
 async function workspace(): Promise<string> {
   return mkdtemp(join(tmpdir(), 'beecode-slate-'));
@@ -197,12 +204,143 @@ test('oversized content and unknown kinds are refused', async () => {
           kind: 'markdown',
           content: 'x'.repeat(MAX_SLATE_BYTES + 1),
         }),
-      /limit is 512 KB/,
+      /limit is 2\.0 MB per version/,
     );
     await assert.rejects(
       () => store.create({ ...location, title: 'Weird', kind: 'pdf', content: 'x' }),
       /unsupported slate kind/,
     );
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test('the version cap refuses the 51st version and keeps all 50 on disk', async () => {
+  const cwd = await workspace();
+  try {
+    const store = new SlateStore();
+    const location = { cwd, sessionId: 'session-many-versions' };
+    await store.create({ ...location, title: 'Log', kind: 'markdown', content: 'v1' });
+    for (let n = 2; n <= MAX_SLATE_VERSIONS; n += 1) {
+      await store.update({ ...location, id: 'log', content: `v${n}` });
+    }
+
+    // The refusal is a refusal, not a prune: nothing the user pinned may disappear.
+    await assert.rejects(
+      () => store.update({ ...location, id: 'log', content: 'one too many' }),
+      /already has 50 versions — the limit is 50/,
+    );
+    const meta = await store.meta({ ...location, id: 'log' });
+    assert.equal(meta.versions.length, MAX_SLATE_VERSIONS);
+    assert.equal(meta.current, MAX_SLATE_VERSIONS);
+    const files = (await readdir(join(cwd, '.beecode', 'slates', 'session-many-versions', 'log'))).filter(
+      (name) => name.endsWith('.md'),
+    );
+    assert.equal(files.length, MAX_SLATE_VERSIONS);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test('dropping a version moves the pointer and never renumbers the survivors', async () => {
+  const cwd = await workspace();
+  try {
+    const store = new SlateStore();
+    const location = { cwd, sessionId: 'session-drop' };
+    await store.create({ ...location, title: 'Doc', kind: 'markdown', content: 'v1' });
+    await store.update({ ...location, id: 'doc', content: 'v2' });
+    await store.update({ ...location, id: 'doc', content: 'v3' });
+
+    // v3 was current, so the pointer falls back to the newest survivor.
+    const meta = await store.removeVersion({ ...location, id: 'doc', version: 3 });
+    assert.equal(meta.current, 2);
+    assert.deepEqual(
+      meta.versions.map((version) => version.n),
+      [1, 2],
+    );
+    assert.deepEqual(await readdir(join(cwd, '.beecode', 'slates', 'session-drop', 'doc')), [
+      '001-doc.md',
+      '002-doc.md',
+      'meta.json',
+    ]);
+
+    // The next append takes max+1, which reuses 3: the file it names is gone, so no tab or
+    // card can be pointing at content that still exists under that number.
+    const next = await store.update({ ...location, id: 'doc', content: 'v3 again' });
+    assert.deepEqual(
+      next.versions.map((version) => version.n),
+      [1, 2, 3],
+    );
+    // Dropping from the middle never renumbers what survives.
+    const trimmed = await store.removeVersion({ ...location, id: 'doc', version: 2 });
+    assert.deepEqual(
+      trimmed.versions.map((version) => version.n),
+      [1, 3],
+    );
+    const after = await store.update({ ...location, id: 'doc', content: 'v4' });
+    assert.deepEqual(
+      after.versions.map((version) => version.n),
+      [1, 3, 4],
+    );
+
+    await assert.rejects(
+      () => store.removeVersion({ ...location, id: 'doc', version: 9 }),
+      /has no version 9/,
+    );
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test('dropping a version is the way back under the version cap', async () => {
+  const cwd = await workspace();
+  try {
+    const store = new SlateStore();
+    const location = { cwd, sessionId: 'session-unblock' };
+    await store.create({ ...location, title: 'Log', kind: 'markdown', content: 'v1' });
+    for (let n = 2; n <= MAX_SLATE_VERSIONS; n += 1) {
+      await store.update({ ...location, id: 'log', content: `v${n}` });
+    }
+    await assert.rejects(() => store.update({ ...location, id: 'log', content: 'blocked' }));
+
+    await store.removeVersion({ ...location, id: 'log', version: 1 });
+    const next = await store.update({ ...location, id: 'log', content: 'unblocked' });
+    assert.equal(next.versions.length, MAX_SLATE_VERSIONS);
+    assert.equal(next.current, MAX_SLATE_VERSIONS + 1);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test('the last version of a slate cannot be dropped — that is the slate', async () => {
+  const cwd = await workspace();
+  try {
+    const store = new SlateStore();
+    const location = { cwd, sessionId: 'session-last' };
+    await store.create({ ...location, title: 'Only', kind: 'markdown', content: 'v1' });
+    await assert.rejects(
+      () => store.removeVersion({ ...location, id: 'only', version: 1 }),
+      /has one version left — remove the slate instead/,
+    );
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test('the session cap counts slates and refuses the next create', async () => {
+  const cwd = await workspace();
+  try {
+    const store = new SlateStore();
+    const location = { cwd, sessionId: 'session-many-slates' };
+    for (let n = 1; n <= MAX_SLATES_PER_SESSION; n += 1) {
+      await store.create({ ...location, title: `Doc ${n}`, kind: 'markdown', content: 'x' });
+    }
+
+    await assert.rejects(
+      () => store.create({ ...location, title: 'One too many', kind: 'markdown', content: 'x' }),
+      /already holds 100 slates — the limit is 100/,
+    );
+    assert.equal((await store.list(location)).length, MAX_SLATES_PER_SESSION);
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }

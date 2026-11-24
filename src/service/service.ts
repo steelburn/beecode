@@ -657,13 +657,29 @@ export class BeeCodeService {
       case 'slate.remove': {
         const id = this.requireString(args, 'id');
         const location = this.slateLocation(args);
+        // A version number drops that one version; without it the whole slate goes.
+        if (typeof args.version === 'number') {
+          const meta = await this.slates.removeVersion({ ...location, id, version: args.version });
+          return {
+            slates: [this.slateSummary(location, meta)],
+            removedVersion: args.version,
+          };
+        }
         const metas = await this.slates.remove({ ...location, id });
-        return { slates: metas.map((meta) => this.slateSummary(location, meta)) };
+        return { slates: metas.map((meta) => this.slateSummary(location, meta)), removedSlate: true };
       }
 
       case 'slate.promote': {
+        const location = this.slateLocation(args);
+        // A promote writes into the real tree, so the RPC answers to the same policy as the
+        // tool: the UI must not be able to save a file a read-only workspace refuses.
+        const target = resolve(location.cwd, this.requireString(args, 'path'));
+        const decision = this.policy.evaluateFile(target, true, this.workspaceRoots());
+        if (!decision.allowed) {
+          throw new Error(decision.reason ?? `policy refuses to write ${target}`);
+        }
         const promoted = await this.slates.promote({
-          ...this.slateLocation(args),
+          ...location,
           id: this.requireString(args, 'id'),
           path: this.requireString(args, 'path'),
           version: typeof args.version === 'number' ? args.version : undefined,

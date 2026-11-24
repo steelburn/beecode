@@ -41,6 +41,12 @@ All notable changes to beeCode will be documented in this file.
   path-guarded (no separators, no `..`, no absolute paths), so nothing the model names can
   escape its folder. Tests: `src/service/slates.test.ts`, `src/service/tools/slates.test.ts`,
   `src/renderer/slateRef.test.ts`, plus a slate probe in the Electron smoke check.
+  The caps and the promote action from phase 2 landed on top: the store enforces its three
+  hard limits (`SLATE_LIMITS` in `src/shared/protocol.ts` — 2 MiB per version, 50 versions
+  per slate, 100 slates per session) as refusals rather than pruning, `slate.remove` with a
+  `version` drops a single version as the escape hatch, and the gallery and the panel each
+  gained a **Promote…** form that writes one version into the workspace tree through the
+  same file policy a tool write passes.
 
 - **Knowledge folders — shared, read-only shelves a workspace can read.** A workspace may
   now reference one or more knowledge folders beside its root (Files panel → **Knowledge

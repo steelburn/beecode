@@ -1,5 +1,6 @@
 import type { SlateSummary } from '../shared/protocol';
 import { clear, h } from './dom';
+import { defaultSlatePath } from './slateTarget';
 
 /**
  * The SLATE_TAB pane: every slate the agent wrote in this session, newest last, each with
@@ -14,6 +15,8 @@ export interface SlateGalleryHandlers {
   /** Open one version in a tab; without a version the current one is opened. */
   openSlate(id: string, version?: number): void;
   removeSlate(id: string): void;
+  /** Write one version into the workspace tree as a real file (`slate.promote`). */
+  promoteSlate(id: string, version: number, path: string): void;
 }
 
 export interface SlateGalleryView {
@@ -98,6 +101,42 @@ function slateTile(slate: SlateSummary, handlers: SlateGalleryHandlers): HTMLEle
   remove.addEventListener('click', () => handlers.removeSlate(slate.id));
   actions.append(remove);
 
+  /**
+   * Promote is the only action that writes outside the slate folder, so it asks for the
+   * path in place — the gallery never picks a target on the user's behalf.
+   */
+  const promote = h('button', {
+    type: 'button',
+    class: 'btn ghost small',
+    text: 'Promote…',
+    title: 'Write one version into the workspace tree as a real file',
+  });
+  const promoteForm = h('div', { class: 'slate-promote hidden' });
+  const which = h('select', {
+    class: 'slate-promote-version',
+    title: 'Which version to write',
+  }) as HTMLSelectElement;
+  for (const version of [...slate.versions].reverse()) {
+    which.append(
+      h('option', {
+        value: String(version.n),
+        text: version.n === slate.current ? `v${version.n} (current)` : `v${version.n}`,
+      }),
+    );
+  }
+  which.value = String(slate.current);
+  const target = h('input', { type: 'text', placeholder: 'docs/plan.md' }) as HTMLInputElement;
+  target.value = defaultSlatePath(slate);
+  target.setAttribute('aria-label', `File to write ${slate.title} to`);
+  const write = h('button', { type: 'button', class: 'btn small', text: 'Write file' });
+  write.addEventListener('click', () => {
+    const path = target.value.trim();
+    if (path) handlers.promoteSlate(slate.id, Number(which.value), path);
+  });
+  promote.addEventListener('click', () => promoteForm.classList.toggle('hidden'));
+  promoteForm.append(which, target, write);
+  actions.append(promote);
+
   return h(
     'article',
     { class: 'slate-tile', dataset: { slateId: slate.id } },
@@ -112,6 +151,7 @@ function slateTile(slate: SlateSummary, handlers: SlateGalleryHandlers): HTMLEle
       text: `v${slate.current} of ${versions} · ${current ? formatBytes(current.bytes) : 'empty'} · updated ${formatWhen(slate.updatedAt)}`,
     }),
     actions,
+    promoteForm,
   );
 }
 

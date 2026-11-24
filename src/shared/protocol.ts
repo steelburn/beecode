@@ -784,6 +784,19 @@ export interface DelegateArgs {
  */
 export type SlateKind = 'markdown' | 'html' | 'csv';
 
+/**
+ * The store's hard limits, shared so the renderer can show how close a slate is: these
+ * are refuse-not-prune caps, so the UI has to warn before the agent hits one.
+ */
+export const SLATE_LIMITS = {
+  /** Bytes in one version file. */
+  versionBytes: 2 * 1024 * 1024,
+  /** Versions one slate may hold. */
+  versions: 50,
+  /** Slates one session may hold. */
+  slates: 100,
+} as const;
+
 /** One append-only version file of a slate. `n` is 1-based and matches the NNN prefix. */
 export interface SlateVersionInfo {
   n: number;
@@ -902,9 +915,10 @@ export interface RpcRequests {
     params: { id: string; version?: number; cwd?: string; sessionId?: string };
     result: Slate;
   };
+  /** Without `version` the whole slate goes; with one, just that version file. */
   'slate.remove': {
-    params: { id: string; cwd?: string; sessionId?: string };
-    result: { slates: SlateSummary[] };
+    params: { id: string; version?: number; cwd?: string; sessionId?: string };
+    result: { slates: SlateSummary[]; removedSlate?: boolean; removedVersion?: number };
   };
   'slate.promote': {
     params: { id: string; path: string; version?: number; cwd?: string; sessionId?: string };

@@ -26,6 +26,7 @@ import { DESKTOP_ACTIONS } from '../shared/protocol';
 import { describeSchedule, formatMoment } from '../shared/schedule';
 import type { DirectoryPickerOptions } from '../shared/bridge';
 import { clear, h } from './dom';
+import { defaultSlatePath } from './slateTarget';
 
 export interface PanelCallbacks {
   savePolicy(next: PolicyDocument): Promise<void>;
@@ -66,6 +67,8 @@ export interface PanelCallbacks {
   openSlate?(id: string, version?: number): void;
   /** Delete a slate and everything it versions (`slate.remove`). */
   removeSlate?(id: string): Promise<void>;
+  /** Write one version into the workspace tree as a real file (`slate.promote`). */
+  promoteSlate?(id: string, version: number, path: string): Promise<void>;
   /** Drop a folder from the recents, or clear the active root (`workspace.forget`). */
   forgetWorkspace?(path: string): Promise<void>;
 }
@@ -2410,7 +2413,30 @@ export function renderSlates(
         remove.addEventListener('click', () => void callbacks.removeSlate?.(slate.id));
         row.append(remove);
       }
+      // Promote asks for its target in place: the panel never guesses where a file goes.
+      let promoteForm: HTMLElement | undefined;
+      if (callbacks.promoteSlate) {
+        const promote = h('button', {
+          type: 'button',
+          class: 'btn ghost small',
+          text: 'Promote…',
+          title: 'Write the selected version into the workspace tree as a real file',
+        });
+        promoteForm = h('div', { class: 'slate-row-promote hidden' });
+        const target = h('input', { type: 'text', placeholder: 'docs/plan.md' }) as HTMLInputElement;
+        target.value = defaultSlatePath(slate);
+        target.setAttribute('aria-label', `File to write ${slate.title} to`);
+        const write = h('button', { type: 'button', class: 'btn small', text: 'Write file' });
+        write.addEventListener('click', () => {
+          const path = target.value.trim();
+          if (path) void callbacks.promoteSlate?.(slate.id, Number(picker.value), path);
+        });
+        promote.addEventListener('click', () => promoteForm?.classList.toggle('hidden'));
+        promoteForm.append(target, write);
+        row.append(promote);
+      }
       list.append(row);
+      if (promoteForm) list.append(promoteForm);
     }
     section.append(list);
   }
