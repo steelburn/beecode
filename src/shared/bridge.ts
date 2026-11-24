@@ -1,4 +1,5 @@
 import type { BrowserPanelApi } from './browser';
+import type { SlateLiveBounds, SlateLiveState } from './slateSandbox';
 import type { TerminalApi } from './terminal';
 import type {
   BeeCodeConfig,
@@ -147,6 +148,23 @@ export const RENDERER_METHODS: RpcMethod[] = [
  * `contextIsolation` is on and there is no Node integration in the window, so this
  * contextBridge surface is the only capability the UI has.
  */
+/**
+ * The live slate surface. Every call is fire-and-forget: the host is the only thing that
+ * knows whether the page actually attached, so the answer arrives through `onState`.
+ */
+export interface SlateLiveApi {
+  show(request: {
+    sessionId: string;
+    id: string;
+    version?: number;
+    cwd?: string;
+    bounds: SlateLiveBounds;
+  }): void;
+  setBounds(bounds: SlateLiveBounds): void;
+  hide(): void;
+  onState(listener: (state: SlateLiveState) => void): () => void;
+}
+
 export interface BeeCodeBridge {
   appInfo(): Promise<AppInfo>;
   serviceStatus(): Promise<ServiceStatusPayload>;
@@ -171,6 +189,12 @@ export interface BeeCodeBridge {
    * process, so the renderer only reserves space for it and mirrors its state.
    */
   browser: BrowserPanelApi;
+
+  /**
+   * A live slate: a sandboxed page the main process serves from memory under the slate's
+   * own allowlist. One at a time; the renderer reports the rectangle to fill.
+   */
+  slateLive: SlateLiveApi;
 
   /**
    * The workspace terminal. Unlike the browser view it lives entirely in the main process

@@ -18,6 +18,13 @@
 export const SLATE_LIVE_SCHEME = 'slate';
 export const SLATE_LIVE_HOST = 'live';
 
+/**
+ * One partition per slate, and *in memory*: a live slate keeps no cookies, no storage and
+ * no cache past the end of its run, so two slates never share state and a re-run starts
+ * from nothing.
+ */
+export const SLATE_LIVE_PARTITION_PREFIX = 'slate-live:';
+
 export const SLATE_LIVE_LIMITS = {
   /** Origins one slate may call. */
   origins: 8,
@@ -133,6 +140,55 @@ export function parseSlateLiveUrl(raw: string): SlateLiveTarget | undefined {
 }
 
 /** Is this URL inside the slate's allowlist? Used to police anything script tries to open. */
+/** The rectangle the renderer reserves for the live view, in window coordinates. */
+export interface SlateLiveBounds {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * What the renderer asks the host to do. The renderer never holds a handle to the view: it
+ * shows one slate at a time by id and keeps the rectangle current.
+ */
+export type SlateLiveCommand =
+  | {
+      kind: 'show';
+      sessionId: string;
+      id: string;
+      version?: number;
+      /** Where to look when the session is not one the service still knows (a smoke run). */
+      cwd?: string;
+      bounds: SlateLiveBounds;
+    }
+  | { kind: 'bounds'; bounds: SlateLiveBounds }
+  | { kind: 'hide' };
+
+/** One version, read through the service, ready to serve. */
+export interface SlateLiveDocument {
+  text: string;
+  /** The version actually read — the store's current one when none was asked for. */
+  version: number;
+  /** The allowlist as persisted. Empty means the slate may not run. */
+  origins: string[];
+  live: boolean;
+}
+
+/**
+ * What the host reports back. `error` is user-facing and means nothing was attached, so a
+ * refusal never leaves a blank rectangle where the page should be.
+ */
+export interface SlateLiveState {
+  visible: boolean;
+  sessionId?: string;
+  slateId?: string;
+  version?: number;
+  url?: string;
+  origins?: string[];
+  error?: string;
+}
+
 export function isSlateOriginAllowed(raw: string, origins: readonly string[]): boolean {
   let url: URL;
   try {

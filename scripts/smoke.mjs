@@ -71,6 +71,19 @@ const panelTabs = report.dom?.panelTabs ?? {};
 // The slate probe seeds one slate with two versions in the workspace: the RPC list and read
 // must agree with it, and the panel that lists slates must open.
 const slates = report.dom?.slates ?? {};
+
+// A *live* slate is a real page: it must attach under its own allowlist on the slate scheme,
+// detach on demand, and a slate without consent must be refused instead of rendering blank.
+const liveSlate = report.dom?.slateLive ?? {};
+const liveSlateOk =
+  liveSlate.attached === true &&
+  liveSlate.scheme === 'slate' &&
+  liveSlate.version === 1 &&
+  Array.isArray(liveSlate.origins) &&
+  liveSlate.origins.includes('https://api.example.com') &&
+  liveSlate.hidden === true &&
+  typeof liveSlate.refused === 'string' &&
+  liveSlate.refused.length > 0;
 const slatesOk =
   slates.listed === 1 &&
   slates.title === 'Smoke slate' &&
@@ -310,6 +323,7 @@ const ok =
   columnsOk &&
   panelTabsOk &&
   slatesOk &&
+  liveSlateOk &&
   toolsOk &&
   permissionsOk &&
   integrationsOk &&
@@ -328,6 +342,7 @@ const ok =
   terminalOk;
 if (!columnsOk) console.error(`[smoke] side column check failed: ${JSON.stringify(columns)}`);
 if (!slatesOk) console.error(`[smoke] slate check failed: ${JSON.stringify(slates)}`);
+if (!liveSlateOk) console.error(`[smoke] live slate check failed: ${JSON.stringify(liveSlate)}`);
 if (!panelTabsOk)
   console.error(`[smoke] panel tab strip check failed: ${JSON.stringify(panelTabs)}`);
 if (!markdownOk) console.error(`[smoke] markdown/chart render check failed: ${JSON.stringify(rendered)}`);

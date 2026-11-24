@@ -7,6 +7,7 @@ import type {
   ServiceStatusPayload,
 } from '../shared/bridge';
 import type { TerminalState } from '../shared/terminal';
+import type { SlateLiveState } from '../shared/slateSandbox';
 import type { RpcMethod, RpcRequests, ServiceEvent } from '../shared/protocol';
 
 /**
@@ -83,7 +84,23 @@ const bridge: BeeCodeBridge = {
     },
   },
 
-  // The terminal is a main-process command runner: fire a command, then follow the state
+  // A live slate is a sandboxed page, not part of this document: the renderer asks for
+  // it, keeps its rectangle current, and reads back whether it is actually on screen.
+  slateLive: {
+    show: (request) => ipcRenderer.send('beecode:slate-live', { kind: 'show', ...request }),
+
+    setBounds: (bounds) => ipcRenderer.send('beecode:slate-live', { kind: 'bounds', bounds }),
+
+    hide: () => ipcRenderer.send('beecode:slate-live', { kind: 'hide' }),
+
+    onState: (listener: (state: SlateLiveState) => void) => {
+      const handler = (_e: unknown, state: SlateLiveState) => listener(state);
+      ipcRenderer.on('beecode:slate-live-state', handler);
+      return () => ipcRenderer.removeListener('beecode:slate-live-state', handler);
+    },
+  },
+
+  // The terminal is a main-process command runner  // The terminal is a main-process command runner: fire a command, then follow the state
   // it pushes back. Nothing is spawned from here — the renderer is sandboxed.
   terminal: {
     state: () => ipcRenderer.invoke('beecode:terminal-state'),

@@ -9,14 +9,22 @@
 > `src/renderer/slateDiffView.ts`). The store itself (/src/service/slates.ts), the three caps
 > (*Size and retention caps*) and the promote form in both panes are in the tree too.
 >
-> **Tier B, part 1 — the consent model — is implemented**: an `html` slate can carry an origin
-> allowlist that is validated rather than trusted (`src/shared/slateSandbox.ts`: http(s) origins
-> only, no wildcard, no paths, no credentials, at most 8), it is stored in `meta.json` beside the
-> versions, printed on the create approval card, and changed afterwards only by the user through
-> `slate.live`, which writes an audit entry for both edges. Part 2 — the sandboxed
-> `WebContentsView`, its `slate://` CSP header and the in-app viewer — is **not** in the tree yet:
-> nothing in the app renders a live slate today, so an allowlist grants nothing on its own. What
-> is still proposal-only is called out per section below.
+> **Tier B, part 2 — the sandbox — is implemented too**: a live slate runs in its own
+> `WebContentsView` (`src/main/slate/host.ts`) on a per-slate *in-memory* partition with
+> `sandbox: true` and **no preload**, so the page has no bridge to the app, no filesystem reach
+> and no cookies that outlive the run. The document is served from memory over
+> `slate://live/<session>/<id>/v<N>`, never from disk — main fetches it through `slate.read`, so
+> the store's path guard stays the single source of truth — and the allowlist lands as a
+> `content-security-policy` **response header**, not a meta tag the document could rewrite.
+> Permission requests, downloads, popups, webviews, redirects and any navigation other than the
+> exact hosted version are denied, and the `slate://` handler 404s every address that is not the
+> version it is currently showing. The gallery tile carries the consent checkbox, the origins box
+> and Run/Stop; the host reports what actually attached over `beecode:slate-live-state`, so the
+> UI paints reality rather than the click. Giving an allowlist is still the user's answer alone:
+> the agent may propose origins at creation (the approval card prints them) and cannot widen them
+> afterwards. A slate without consent is refused with a message instead of a blank rectangle, and
+> the live view only exists while the gallery pane is the view on screen. What remains
+> proposal-only is called out per section below.
 
 A **slate** is a self-contained document the agent generates inside a conversation and
 beeCode renders **in the app** — in its own tab, next to the chat, instead of as a wall of

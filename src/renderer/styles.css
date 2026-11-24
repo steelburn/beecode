@@ -2003,3 +2003,24 @@ body.dragging-browser-dock { cursor: row-resize; user-select: none; }
 .slate-diff-version {
   max-width: 130px;
 }
+
+/* Consent and Run/Stop for a live slate: the one place the user answers "may this document
+   run, and what may it reach". The page itself is a native view painted over the pane, so
+   everything here is chrome around a rectangle the renderer only reserves. */
+.slate-live-controls {
+  display: flex; flex-direction: column; gap: 6px;
+  margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line);
+}
+.slate-live-consent {
+  display: flex; align-items: center; gap: 6px;
+  color: var(--text-dim); font-size: 12px;
+}
+.slate-live-origins {
+  font-family: var(--mono); font-size: 11px; line-height: 1.5;
+  color: var(--text); background: #10151d;
+  border: 1px solid var(--line); border-radius: 7px;
+  padding: 5px 7px; resize: vertical; min-height: 30px;
+}
+.slate-live-origins:disabled { opacity: 0.5; }
+.slate-live-actions { display: flex; align-items: center; gap: 8px; }
+.slate-live-error { color: var(--danger); font-size: 12px; }

@@ -4,6 +4,23 @@ All notable changes to beeCode will be documented in this file.
 
 ## [Unreleased]
 
+- **A live slate now runs — in a sandbox of its own (slates, Tier B part 2).**
+  `src/main/slate/host.ts` owns one `WebContentsView` on a per-slate *in-memory* partition
+  (`slate-live:<id>`) with `sandbox: true`, `contextIsolation` and **no preload**, so the page
+  has no bridge, no filesystem reach and no cookies that outlive the run. The document is served
+  from memory over `slate://live/<session>/<id>/v<N>` — main fetches it through `slate.read`,
+  never from disk — and the slate's allowlist is delivered as a `content-security-policy`
+  **response header** rather than a meta tag the document could rewrite. Every permission
+  request, download, popup, webview, redirect and navigation other than the exact hosted URL is
+  denied, and the `slate://` handler 404s any other address instead of serving it. The gallery
+  tile gained the consent checkbox, the origins box and Run/Stop, talking to the host over
+  `beecode:slate-live`; the host answers on `beecode:slate-live-state` so the UI shows what
+  attached rather than what was clicked. A slate without consent, or one that could not be read,
+  is refused with a message instead of a blank rectangle, and the view is hidden the moment the
+  gallery pane stops being the view on screen. Electron smoke: the run attaches a seeded live
+  slate on the `slate` scheme under its own allowlist, detaches it, and refuses a slate that has
+  no consent.
+
 - **A slate can carry a consented origin allowlist (slates, Tier B part 1).** A live
   slate is a network-capable document, so the permission now exists before the host that uses
   it: `src/shared/slateSandbox.ts` validates an origin (http(s) only, no wildcard, no path, no

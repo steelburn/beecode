@@ -4,6 +4,7 @@ import { renderSlateDiff, renderSlateDiffError } from './slateDiffView';
 import { liveSlateLabel } from './slateLive';
 import { clear, h } from './dom';
 import { defaultSlatePath } from './slateTarget';
+import type { SlateLiveBounds, SlateLiveState } from '../shared/slateSandbox';
 
 /**
  * The SLATE_TAB pane: every slate the agent wrote in this session, newest last, each with
@@ -14,6 +15,9 @@ import { defaultSlatePath } from './slateTarget';
  * is why a slate needs no renderer of its own.
  */
 
+/** The bounds observer of the live page, re-created on every render. */
+let paneObserver: ResizeObserver | null = null;
+
 export interface SlateGalleryHandlers {
   /** Compare two versions; the gallery renders the result in its own panel. */
   diffSlate(id: string, from: number, to: number): Promise<SlateDiff>;
@@ -22,9 +26,18 @@ export interface SlateGalleryHandlers {
   removeSlate(id: string): void;
   /** Write one version into the workspace tree as a real file (`slate.promote`). */
   promoteSlate(id: string, version: number, path: string): void;
+  /** Grant or withdraw execution for a slate, and set the origins it may call. */
+  setSlateLive(id: string, enabled: boolean, origins: string[]): Promise<void>;
+  /** Run one version in the sandboxed view that covers this pane. */
+  runSlateLive(id: string, version: number, bounds: SlateLiveBounds): void;
+  /** Keep the sandboxed view aligned with the pane it covers. */
+  boundsSlateLive(bounds: SlateLiveBounds): void;
+  stopSlateLive(): void;
 }
 
 export interface SlateGalleryView {
+  /** What the sandboxed page is doing, when one is on screen. */
+  liveView?: SlateLiveState;
   /** Blocks still streaming in, shown above the finished slates. */
   live?: SlateDelta[];
   slates: SlateSummary[];
@@ -62,7 +75,27 @@ export function renderSlateGallery(
       }
     },
   };
-  for (const slate of view.slates) list.append(slateTile(slate, tileHandlers));
+  // The live page is painted over the whole pane, so the rectangle it fills is the pane's.
+  const paneBounds = (): SlateLiveBounds => {
+    const rect = pane.getBoundingClientRect();
+    return {
+      x: Math.round(rect.left),
+      y: Math.round(rect.top),
+      width: Math.round(rect.width),
+      height: Math.round(rect.height),
+    };
+  };
+  for (const slate of view.slates) {
+    const tile = slateTile(slate, tileHandlers);
+    if (slate.kind === 'html') tile.append(liveControls(slate, tileHandlers, view.liveView, paneBounds));
+    list.append(tile);
+  }
+  paneObserver?.disconnect();
+  paneObserver = null;
+  if (view.liveView?.visible) {
+    paneObserver = new ResizeObserver(() => handlers.boundsSlateLive(paneBounds()));
+    paneObserver.observe(pane);
+  }
   renderLiveTiles(live, view.live ?? []);
 
   pane.append(
@@ -288,4 +321,77 @@ export function applyLiveSlates(pane: HTMLElement, deltas: SlateDelta[]): void {
     if (!seen.has(tile.dataset.entryId ?? '')) tile.remove();
   }
   container.hidden = deltas.length === 0;
+}
+
+
+/**
+ * Consent and the Run/Stop switch for one HTML slate.
+ *
+ * Both halves sit on the tile because both answer the same question — "may this document
+ * run, and what may it reach" — and the agent can answer neither: it may only *propose*
+ * origins when it creates the slate, and the approval card prints them there.
+ */
+function liveControls(
+  slate: SlateSummary,
+  handlers: SlateGalleryHandlers,
+  liveView: SlateLiveState | undefined,
+  bounds: () => SlateLiveBounds,
+): HTMLElement {
+  const running = liveView?.visible === true && liveView.slateId === slate.id;
+  const allowed = slate.live === true;
+
+  const origins = document.createElement('textarea');
+  origins.className = 'slate-live-origins';
+  origins.rows = 2;
+  origins.spellcheck = false;
+  origins.value = (slate.origins ?? []).join('\n');
+  origins.placeholder = 'https://api.example.com';
+  origins.disabled = !allowed;
+  origins.setAttribute('aria-label', 'Origins ' + slate.title + ' may call');
+
+  const consent = document.createElement('input');
+  consent.type = 'checkbox';
+  consent.checked = allowed;
+
+  const save = (): void => {
+    void handlers
+      .setSlateLive(slate.id, consent.checked, parseOrigins(origins.value))
+      .catch(() => undefined);
+  };
+  consent.addEventListener('change', () => {
+    origins.disabled = !consent.checked;
+    save();
+  });
+  origins.addEventListener('change', save);
+
+  const run = h('button', {
+    type: 'button',
+    class: 'btn small',
+    text: running ? 'Stop' : 'Run v' + slate.current,
+  });
+  run.addEventListener('click', () => {
+    if (running) handlers.stopSlateLive();
+    else handlers.runSlateLive(slate.id, slate.current, bounds());
+  });
+
+  const error =
+    liveView?.error && liveView.slateId === slate.id
+      ? h('span', { class: 'slate-live-error', text: liveView.error })
+      : undefined;
+
+  return h(
+    'div',
+    { class: 'slate-live-controls' },
+    h('label', { class: 'slate-live-consent' }, consent, h('span', { text: 'Allow scripts (live)' })),
+    origins,
+    h('div', { class: 'slate-live-actions' }, run, error),
+  );
+}
+
+/** One origin per line or comma-separated — whoever types it should not have to care. */
+function parseOrigins(value: string): string[] {
+  return value
+    .split(/[\s,]+/)
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
 }

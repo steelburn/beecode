@@ -14,6 +14,7 @@ import {
 import { canSwitchView, type FileView } from './preview';
 import { slateDocFromPath, slateExportName, type SlateDocRef } from './slateDoc';
 import { renderSlateGallery, type SlateGalleryView } from './slateGallery';
+import type { SlateLiveBounds } from '../shared/slateSandbox';
 import type { SlateDiff } from '../shared/slateDiff';
 
 /**
@@ -41,6 +42,12 @@ export interface MainAreaHandlers {
   removeSlate(id: string): void;
   /** Compare two versions of a slate; the gallery renders the result. */
 diffSlate(id: string, from: number, to: number): Promise<SlateDiff>;
+  /** Grant or withdraw execution for a slate, and set the origins it may call. */
+  setSlateLive(id: string, enabled: boolean, origins: string[]): Promise<void>;
+  /** Run one version in the sandboxed view that covers the gallery pane. */
+  runSlateLive(id: string, version: number, bounds: SlateLiveBounds): void;
+  boundsSlateLive(bounds: SlateLiveBounds): void;
+  stopSlateLive(): void;
   /** Write one slate version into the workspace tree as a real file. */
   promoteSlate(id: string, version: number, path: string): void;
   /** Put a document tab's text on the clipboard. */

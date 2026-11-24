@@ -33,6 +33,8 @@ import type { SlateDiff } from '../shared/slateDiff';
 import { slateDocFromPath, slateExportName } from './slateDoc';
 import { copyText } from './clipboard';
 import type { DocTab } from './docTabs';
+import { SLATE_TAB } from './docTabs';
+import type { SlateLiveState } from '../shared/slateSandbox';
 import { initColumns } from './columns';
 import { clear, formatJsonForDisplay, h, renderMarkdown } from './dom';
 import { mountBrowserDock, type BrowserDock, type DockMode } from './browserDock';
@@ -235,6 +237,8 @@ interface State {
   explorer: ExplorerState;
   /** Main-area tabs: the open documents, the active view and the rendered theme. */
   docs: DocTabsState;
+  /** What the sandboxed live view is doing, pushed by the main process. */
+  slateLive: SlateLiveState;
   /** Slates of the current session, as the SLATE_TAB gallery lists them. */
   slates: SlateSummary[];
   /** Slates still streaming in, keyed by the transcript entry writing them. */
@@ -256,6 +260,8 @@ interface PendingQuestion {
 
 const state: State = {
   status: 'starting',
+  // No sandboxed page is attached until the host says one is.
+  slateLive: { visible: false },
   sessions: [],
   entries: [],
   attachments: [],
@@ -351,6 +357,27 @@ async function boot(): Promise<void> {
       diffSlate,
       removeSlate: (id) => void removeSlate(id),
       promoteSlate: (id, version, path) => void promoteSlate(id, version, path),
+      setSlateLive: async (id, enabled, origins) => {
+        const sessionId = state.current?.id;
+        if (!sessionId) return;
+        // The agent can never widen this: only the user's own answer arrives here.
+        await api.invoke('slate.live', { id, enabled, origins, sessionId });
+        await loadSlates(sessionId);
+      },
+      runSlateLive: (id, version, bounds) => {
+        const sessionId = state.current?.id;
+        if (!sessionId) return;
+        const cwd = state.current?.cwd;
+        api.slateLive.show({ sessionId, id, version, ...(cwd ? { cwd } : {}), bounds });
+      },
+      boundsSlateLive: (bounds) => {
+        if (state.slateLive.visible) api.slateLive.setBounds(bounds);
+      },
+      stopSlateLive: () => {
+        api.slateLive.hide();
+        state.slateLive = { visible: false };
+        renderMainArea();
+      },
       close: closeDocTab,
       setView: setDocTabView,
       copyDoc: (path) => void copyDocToClipboard(path),
@@ -364,6 +391,12 @@ async function boot(): Promise<void> {
     // A browser the host closed cannot stay the active tab: go back to the chat.
     if (!next.visible && state.docs.active === BROWSER_TAB) state.docs = activateTab(state.docs, CHAT_TAB);
     dock?.render(next);
+    renderMainArea();
+  });
+  // The host is the only thing that knows whether the sandboxed page actually attached, so
+  // the gallery paints from its report rather than from the click that asked for it.
+  api.slateLive.onState((next) => {
+    state.slateLive = next;
     renderMainArea();
   });
   api.terminal.onState(applyTerminal);
@@ -2205,6 +2238,9 @@ function writeDocTheme(theme: DocTheme): void {
 }
 
 function renderMainArea(): void {
+  // A live slate is a page painted over the gallery pane, so it may only exist while that
+  // pane is the view on screen.
+  if (state.slateLive.visible && state.docs.active !== SLATE_TAB) api.slateLive.hide();
   mainArea?.render(state.docs, {
     browserVisible: browserShown,
     slates: state.slates,

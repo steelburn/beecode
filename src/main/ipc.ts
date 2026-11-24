@@ -1,6 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
 import { writeFile } from 'node:fs/promises';
 import type { BrowserPanelCommand } from '../shared/browser';
+import type { SlateLiveCommand, SlateLiveState } from '../shared/slateSandbox';
 import {
   RENDERER_METHODS,
   type AppInfo,
@@ -24,6 +25,11 @@ export interface IpcDeps {
   restartService: () => Promise<{ ok: boolean }>;
   /** Panel geometry and chrome commands for the internal browser view. */
   browserCommand: (command: BrowserPanelCommand) => void;
+  /**
+   * The live slate view: a sandboxed page shown on request. The renderer never holds a
+   * handle to it, only the rectangle to fill and the state pushed back.
+   */
+  slateLive: (command: SlateLiveCommand) => Promise<SlateLiveState>;
   /** Called with the new config after a successful save, so the host can re-read the sandbox settings. */
   configChanged?: (config: BeeCodeConfig) => void;
 }
@@ -64,6 +70,14 @@ export function registerIpc(deps: IpcDeps): void {
 
   // Fire-and-forget: the renderer reports where the browser surface sits and which tab the
   // user picked. State flows back on 'beecode:browser-state'.
+  // A live slate runs a stranger's script, so only the app's top-level frame may drive it
+  // — never a frame a page could embed. The answer arrives on 'beecode:slate-live-state'.
+  ipcMain.on('beecode:slate-live', (event, command: SlateLiveCommand) => {
+    if (event.senderFrame?.parent) return;
+    if (!command || typeof command.kind !== 'string') return;
+    void deps.slateLive(command).catch(() => undefined);
+  });
+
   ipcMain.on('beecode:browser-command', (_event, command: BrowserPanelCommand) => {
     if (!command || typeof command.kind !== 'string') return;
     deps.browserCommand(command);
@@ -137,7 +151,7 @@ export function registerIpc(deps: IpcDeps): void {
 }
 
 /** Forward service events to the renderer, dropping them when the window is gone. */
-export function pipeServiceEvents(deps: IpcDeps): void {
+export function pipeServiceEvents(deps: Omit<IpcDeps, 'slateLive'>): void {
   deps.supervisor.on('event', (event) => {
     const win = deps.getWindow();
     if (win && !win.isDestroyed()) win.webContents.send('beecode:event', event);

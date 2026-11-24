@@ -11,6 +11,8 @@ import type { BrowserConfig } from '../shared/protocol';
 import { beeCodeHome } from '../shared/tools';
 import { BrowserHost } from './browser/host';
 import { pipeServiceEvents, registerIpc } from './ipc';
+import { SLATE_LIVE_SCHEME_PRIVILEGES, SlateLiveHost, serveSlateLive } from './slate/host';
+import type { SlateLiveDocument } from '../shared/slateSandbox';
 import { WorkspaceTerminal } from './terminal';
 import { createPluginHostBridge, type PluginHostBridge } from './pluginHost';
 import { ServiceSupervisor } from './serviceSupervisor';
@@ -30,9 +32,14 @@ const rendererDir = join(distDir, 'renderer');
 // CSP ('self') in index.html actually applies — something file:// can never provide.
 protocol.registerSchemesAsPrivileged([
   { scheme: 'app', privileges: { standard: true, secure: true, supportFetchAPI: true } },
+  // A live slate is served from memory over its own privileged scheme, so it has a real
+  // origin for its CSP to apply to and no filesystem reachability.
+  SLATE_LIVE_SCHEME_PRIVILEGES,
 ]);
 
 let mainWindow: BrowserWindow | null = null;
+/** The sandboxed page a *live* slate runs in — the only web contents a slate owns. */
+let slateLiveHost: SlateLiveHost | null = null;
 let tray: Tray | null = null;
 let quitting = false;
 let supervisor: ServiceSupervisor;
@@ -108,12 +115,43 @@ async function bootstrap(): Promise<void> {
     throw new Error(`unsupported host request: ${method}`);
   });
 
+  // The document itself is fetched through the service, so the store's path guard stays
+  // the single source of truth for what a slate is and which version is current.
+  slateLiveHost = new SlateLiveHost({
+    readSlate: async ({ sessionId, id, version, cwd }) => {
+      const read = await supervisor.request('slate.read', {
+        sessionId,
+        id,
+        ...(typeof version === 'number' ? { version } : {}),
+        ...(cwd ? { cwd } : {}),
+      });
+      const doc: SlateLiveDocument = {
+        text: read.content,
+        version: read.version.n,
+        origins: read.origins ?? [],
+        live: read.live === true,
+      };
+      return doc;
+    },
+    getWindow: () => mainWindow,
+    onState: (state) => {
+      const win = mainWindow;
+      if (win && !win.isDestroyed()) win.webContents.send('beecode:slate-live-state', state);
+    },
+  });
+  serveSlateLive(slateLiveHost);
+
   registerIpc({
     supervisor,
     getWindow: () => mainWindow,
     workspace,
     terminal,
     browserCommand: (command) => browserHost?.command(command),
+    slateLive: (command) => {
+      const host = slateLiveHost;
+      if (!host) return Promise.resolve({ visible: false, error: 'the live slate host is not ready' });
+      return host.run(command);
+    },
     configChanged: () => {
       void refreshBrowserConfig();
     },
@@ -425,6 +463,36 @@ async function runSmokeCheck(serviceReady: boolean): Promise<void> {
     ).catch(() => undefined);
   }
 
+  // A *live* slate adds the one thing a Tier A version never has: a page that runs. Seeded
+  // in its own session folder, with the on-disk shape the consent switch persists, so the
+  // probe below drives the real IPC channel, host, protocol handler and WebContentsView.
+  if (smokeSlateRoot) {
+    const sessionDir = join(smokeSlateRoot, '.beecode', 'slates', 'smoke-live');
+    const page = '<!doctype html><html><head><title>Smoke live</title></head><body><h1>Live</h1></body></html>\n';
+    const stamp = new Date().toISOString();
+    const seedOne = async (id: string, title: string, live: boolean): Promise<void> => {
+      const dir = join(sessionDir, id);
+      await mkdir(dir, { recursive: true }).catch(() => undefined);
+      await writeFile(join(dir, `001-${id}.html`), page, 'utf8').catch(() => undefined);
+      const meta = {
+        id,
+        title,
+        kind: 'html',
+        current: 1,
+        versions: [{ n: 1, file: `001-${id}.html`, bytes: page.length, createdAt: stamp }],
+        origins: live ? ['https://api.example.com'] : [],
+        live,
+        createdAt: stamp,
+        updatedAt: stamp,
+      };
+      await writeFile(join(dir, 'meta.json'), `${JSON.stringify(meta, null, 2)}\n`, 'utf8').catch(
+        () => undefined,
+      );
+    };
+    await seedOne('smoke-demo', 'Smoke live', true);
+    await seedOne('smoke-inert', 'Smoke inert', false);
+  }
+
   let dom: Record<string, unknown> = { error: 'window unavailable' };
   try {
     dom = (await win?.webContents.executeJavaScript(
@@ -469,6 +537,36 @@ async function runSmokeCheck(serviceReady: boolean): Promise<void> {
           // Slates: list and read the seeded slate through the service, then open the panel
           // that lists them. The gallery in the main area lists the same RPC result, so this
           // covers the path the transcript card and the SLATE_TAB both take.
+        })(),
+        slateLive: await (async () => {
+          try {
+            const states = [];
+            const off = window.beeCode.slateLive.onState((s) => states.push(s));
+            const waitState = async (fn, ms = 8000) => { const end = Date.now() + ms; while (Date.now() < end) { const hit = states.find(fn); if (hit) return hit; await sleep(100); } return undefined; };
+            const bounds = { x: 0, y: 0, width: 420, height: 320 };
+            // A consented slate: the host must attach a page of its own on the slate scheme.
+            const wsRoot = (await window.beeCode.invoke('config.get', {})).workspace.root;
+            window.beeCode.slateLive.show({ sessionId: 'smoke-live', id: 'smoke-demo', cwd: wsRoot, bounds });
+            const shown = await waitState((s) => s.visible === true || typeof s.error === 'string');
+            window.beeCode.slateLive.hide();
+            const hidden = await waitState((s) => s.visible === false);
+            // Without consent there is no page to show, and it must say so rather than go blank.
+            window.beeCode.slateLive.show({ sessionId: 'smoke-live', id: 'smoke-inert', cwd: wsRoot, bounds });
+            const refused = await waitState((s) => s.slateId === 'smoke-inert' && typeof s.error === 'string');
+            window.beeCode.slateLive.hide();
+            off();
+            const url = String((shown && shown.url) || '');
+            return {
+              attached: !!(shown && shown.visible === true),
+              version: (shown && shown.version) || 0,
+              origins: (shown && shown.origins) || [],
+              scheme: url.indexOf(':') > 0 ? url.slice(0, url.indexOf(':')) : '',
+              hidden: !!hidden,
+              refused: String((refused && refused.error) || ''),
+            };
+          } catch (err) {
+            return { error: String((err && err.message) || err) };
+          }
         })(),
         slates: await (async () => {
             try {
