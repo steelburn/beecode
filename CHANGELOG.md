@@ -4,6 +4,19 @@ All notable changes to beeCode will be documented in this file.
 
 ## [Unreleased]
 
+- **A slate can carry a consented origin allowlist (slates, Tier B part 1).** A live
+  slate is a network-capable document, so the permission now exists before the host that uses
+  it: `src/shared/slateSandbox.ts` validates an origin (http(s) only, no wildcard, no path, no
+  credentials, at most 8 entries), normalises it to scheme + host + port and builds the page CSP
+  from exactly that list, with `connect-src 'none'` when it is empty. The allowlist lives in
+  `meta.json` next to the versions, is refused at creation for a `markdown` / `csv` slate (there
+  is no script to run), and is printed on the create approval card — the only place an agent can
+  ask for it. Changing it afterwards is the user's own switch, `slate.live`, which turns
+  execution on or off without rewriting the list and writes an audit entry (`slate-live`) for
+  both edges. Nothing renders a live slate yet: part 2 is the sandboxed `WebContentsView`.
+  Tests: `src/shared/slateSandbox.test.ts`, `src/service/slates.test.ts` (allowlist storage,
+  the `markdown` refusal, the wildcard refusal, both `setLive` edges, clearing the list).
+
 - **A bundled Python runtime — with venv and pip — and one executable resolver for the whole
   app.** beeCode no longer reports "Python is not installed": `scripts/fetch-python.mjs`
   vendors a full CPython build into `resources/python` (42 MB, pip 25 + `venv` + `ensurepip`,

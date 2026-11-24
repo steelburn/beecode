@@ -1,15 +1,22 @@
 # Slates
 
-> **Status: phases 1–3 implemented** — the store, the three slate tools, the transcript card,
-> the SLATE_TAB gallery, the Slates panel, promote, the document tab's Copy / Download /
-> Preview ⇄ Code, and the pipeline: a long fenced `html` / `svg` block is auto-promoted out of
-> the transcript (`src/shared/slateFence.ts`, `src/service/slatePromote.ts`), a block that is
-> still streaming reaches the gallery as `slate.delta` and is patched in place, and two
-> versions can be compared (`src/shared/slateDiff.ts`, `slate.diff`,
+> **Status: phases 1–3 implemented; Tier B started** — the store, the three slate tools,
+> the transcript card, the SLATE_TAB gallery, the Slates panel, promote, the document tab's
+> Copy / Download / Preview ⇄ Code, and the pipeline: a long fenced `html` / `svg` block is
+> auto-promoted out of the transcript (`src/shared/slateFence.ts`, `src/service/slatePromote.ts`),
+> a block that is still streaming reaches the gallery as `slate.delta` and is patched in place,
+> and two versions can be compared (`src/shared/slateDiff.ts`, `slate.diff`,
 > `src/renderer/slateDiffView.ts`). The store itself (/src/service/slates.ts), the three caps
-> (*Size and retention caps*) and the promote form in both panes are in the tree too. What
-> is still proposal-only is called out per section below. The file references name where the
-> change landed.
+> (*Size and retention caps*) and the promote form in both panes are in the tree too.
+>
+> **Tier B, part 1 — the consent model — is implemented**: an `html` slate can carry an origin
+> allowlist that is validated rather than trusted (`src/shared/slateSandbox.ts`: http(s) origins
+> only, no wildcard, no paths, no credentials, at most 8), it is stored in `meta.json` beside the
+> versions, printed on the create approval card, and changed afterwards only by the user through
+> `slate.live`, which writes an audit entry for both edges. Part 2 — the sandboxed
+> `WebContentsView`, its `slate://` CSP header and the in-app viewer — is **not** in the tree yet:
+> nothing in the app renders a live slate today, so an allowlist grants nothing on its own. What
+> is still proposal-only is called out per section below.
 
 A **slate** is a self-contained document the agent generates inside a conversation and
 beeCode renders **in the app** — in its own tab, next to the chat, instead of as a wall of
