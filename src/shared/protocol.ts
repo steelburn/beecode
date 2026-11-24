@@ -314,7 +314,8 @@ export interface AuditEntry {
     | 'launch'
     | 'subagent'
     | 'browser'
-    | 'plugin';
+    | 'plugin'
+    | 'slate-live';
   app?: string;
   target?: string;
   outcome: 'allowed' | 'denied' | 'approved' | 'denied-by-user' | 'cancelled' | 'failed';
@@ -850,6 +851,8 @@ export interface SlateSummary {
   updatedAt: string;
   /** Origins an `html` slate may reach. Never a wildcard. */
   origins?: string[];
+  /** True when the sandboxed live host may run this slate's own scripts (Tier B). */
+  live?: boolean;
 }
 
 /** One rendered version, as `slate.read` returns it. */
@@ -946,6 +949,15 @@ export interface RpcRequests {
   'slate.diff': {
     params: { id: string; from?: number; to?: number; cwd?: string; sessionId?: string };
     result: SlateDiff;
+  };
+  /**
+   * The user's own consent switch for a live slate: run its scripts in the sandboxed host or
+   * not, and which origins those scripts may call. The agent cannot reach this RPC — it may
+   * only *propose* origins when it creates a slate, where the approval card prints them.
+   */
+  'slate.live': {
+    params: { id: string; enabled: boolean; origins?: string[]; cwd?: string; sessionId?: string };
+    result: { slate: SlateSummary };
   };
   'slate.read': {
     params: { id: string; version?: number; cwd?: string; sessionId?: string };

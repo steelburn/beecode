@@ -1,6 +1,7 @@
 import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { SLATE_LIMITS } from '../shared/protocol';
+import { canSlateGoLive, normaliseSlateOrigins } from '../shared/slateSandbox';
 
 /**
  * A slate is a document the agent writes for the app to render in its own tab, next to
@@ -42,6 +43,8 @@ export interface SlateMeta {
   updatedAt: string;
   /** Origins an `html` slate may reach. Never a wildcard. */
   origins?: string[];
+  /** True when the live host may run this slate's scripts; html only. */
+  live?: boolean;
 }
 
 export interface SlateLocation {
@@ -204,8 +207,11 @@ export class SlateStore {
       createdAt: now,
       updatedAt: now,
     };
-    const origins = (input.origins ?? []).map((origin) => origin.trim()).filter(Boolean);
-    if (origins.length) meta.origins = origins;
+    const origins = this.originsForCreate(kind, input.origins);
+    if (origins.length) {
+      meta.origins = origins;
+      meta.live = true;
+    }
     await this.writeMeta(dir, meta);
     return meta;
   }
@@ -231,6 +237,42 @@ export class SlateStore {
     meta.current = n;
     meta.updatedAt = now;
     await this.writeMeta(dir, meta);
+    return meta;
+  }
+
+  /**
+   * The allowlist a create may carry. Origins arrive from the model, and they are the one
+   * thing about a slate that can widen what it reaches, so they are validated here instead
+   * of being trusted from the tool arguments — and refused outright for a kind with no script.
+   */
+  private originsForCreate(kind: SlateKind, origins: readonly string[] | undefined): string[] {
+    const list = normaliseSlateOrigins(origins);
+    if (list.length && !canSlateGoLive(kind)) {
+      throw new Error(`a ${kind} slate cannot go live — there is no script in it to run`);
+    }
+    return list;
+  }
+
+  /**
+   * Turn the sandboxed live host on or off for one slate and set what it may call.
+   *
+   * This is the *user's* consent switch, which is why it is a store method reached over RPC
+   * and not a tool: an agent may propose origins when it creates a slate — the approval card
+   * prints them — but only the user widens or withdraws them afterwards.
+   */
+  async setLive(
+    input: SlateLocation & { id: string; enabled: boolean; origins?: readonly string[] },
+  ): Promise<SlateMeta> {
+    const meta = await this.meta(input);
+    const origins = normaliseSlateOrigins(input.origins ?? meta.origins);
+    if ((input.enabled || origins.length) && !canSlateGoLive(meta.kind)) {
+      throw new Error(`a ${meta.kind} slate cannot go live — there is no script in it to run`);
+    }
+    meta.live = input.enabled;
+    if (origins.length) meta.origins = origins;
+    else delete meta.origins;
+    meta.updatedAt = new Date().toISOString();
+    await this.writeMeta(this.slateDir(input), meta);
     return meta;
   }
 

@@ -351,3 +351,158 @@ test('slateIdFrom slugifies a title and falls back to "slate"', () => {
   assert.equal(slateIdFrom('  ...  '), 'slate');
   assert.equal(slateIdFrom('Ärger über Öl'), 'arger-uber-ol');
 });
+
+test('create stores a validated allowlist and marks the slate live', async () => {
+  const cwd = await workspace();
+  const store = new SlateStore();
+  const meta = await store.create({
+    cwd,
+    sessionId: 'session-live',
+    title: 'Live chart',
+    kind: 'html',
+    content: '<html><script>fetch("https://api.example.com/x")</script></html>',
+    origins: ['https://api.example.com/', 'https://api.example.com', 'http://localhost:3000'],
+  });
+  assert.equal(meta.live, true);
+  assert.deepEqual(meta.origins, ['https://api.example.com', 'http://localhost:3000']);
+  const onDisk = JSON.parse(
+    await readFile(join(cwd, '.beecode', 'slates', 'session-live', meta.id, 'meta.json'), 'utf8'),
+  );
+  assert.deepEqual(onDisk.origins, ['https://api.example.com', 'http://localhost:3000']);
+  assert.equal(onDisk.live, true);
+});
+
+test('an html slate without origins is not live', async () => {
+  const cwd = await workspace();
+  const store = new SlateStore();
+  const meta = await store.create({
+    cwd,
+    sessionId: 'session-inert',
+    title: 'Static page',
+    kind: 'html',
+    content: '<html><body>hi</body></html>',
+  });
+  assert.equal(meta.live, undefined);
+  assert.equal(meta.origins, undefined);
+});
+
+test('a markdown slate cannot ask to be live', async () => {
+  const cwd = await workspace();
+  const store = new SlateStore();
+  await assert.rejects(
+    store.create({
+      cwd,
+      sessionId: 'session-md',
+      title: 'Notes',
+      kind: 'markdown',
+      content: '# notes',
+      origins: ['https://api.example.com'],
+    }),
+    /cannot go live/,
+  );
+});
+
+test('a wildcard origin is refused at creation, before anything is written', async () => {
+  const cwd = await workspace();
+  const store = new SlateStore();
+  await assert.rejects(
+    store.create({
+      cwd,
+      sessionId: 'session-star',
+      title: 'Anything',
+      kind: 'html',
+      content: '<html></html>',
+      origins: ['*'],
+    }),
+    /wildcard/,
+  );
+  assert.deepEqual(await store.list({ cwd, sessionId: 'session-star' }), []);
+});
+
+test('setLive is the user switch and persists both edges', async () => {
+  const cwd = await workspace();
+  const store = new SlateStore();
+  const created = await store.create({
+    cwd,
+    sessionId: 'session-switch',
+    title: 'Interactive',
+    kind: 'html',
+    content: '<html><script>/* none */</script></html>',
+  });
+
+  const on = await store.setLive({
+    cwd,
+    sessionId: 'session-switch',
+    id: created.id,
+    enabled: true,
+    origins: ['https://api.example.com'],
+  });
+  assert.equal(on.live, true);
+  assert.deepEqual(on.origins, ['https://api.example.com']);
+  assert.notEqual(on.updatedAt, created.updatedAt);
+
+  // Turning scripts off keeps the allowlist: the user withdrew execution, not the list.
+  const off = await store.setLive({ cwd, sessionId: 'session-switch', id: created.id, enabled: false });
+  assert.equal(off.live, false);
+  assert.deepEqual(off.origins, ['https://api.example.com']);
+
+  const reread = await store.list({ cwd, sessionId: 'session-switch' });
+  assert.equal(reread[0].live, false);
+  assert.deepEqual(reread[0].origins, ['https://api.example.com']);
+});
+
+test('an explicit empty allowlist clears the origins', async () => {
+  const cwd = await workspace();
+  const store = new SlateStore();
+  const created = await store.create({
+    cwd,
+    sessionId: 'session-clear',
+    title: 'Calls something',
+    kind: 'html',
+    content: '<html></html>',
+    origins: ['https://api.example.com'],
+  });
+  const cleared = await store.setLive({
+    cwd,
+    sessionId: 'session-clear',
+    id: created.id,
+    enabled: true,
+    origins: [],
+  });
+  assert.equal(cleared.live, true);
+  assert.equal(cleared.origins, undefined);
+});
+
+test('setLive refuses a non-html slate and a wildcard', async () => {
+  const cwd = await workspace();
+  const store = new SlateStore();
+  const notes = await store.create({
+    cwd,
+    sessionId: 'session-refuse',
+    title: 'Notes',
+    kind: 'markdown',
+    content: '# notes',
+  });
+  await assert.rejects(
+    store.setLive({ cwd, sessionId: 'session-refuse', id: notes.id, enabled: true }),
+    /cannot go live/,
+  );
+
+  const page = await store.create({
+    cwd,
+    sessionId: 'session-refuse',
+    title: 'Page',
+    kind: 'html',
+    content: '<html></html>',
+  });
+  await assert.rejects(
+    store.setLive({
+      cwd,
+      sessionId: 'session-refuse',
+      id: page.id,
+      enabled: true,
+      origins: ['https://*.example.com'],
+    }),
+    /wildcard/,
+  );
+});

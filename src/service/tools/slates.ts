@@ -45,6 +45,16 @@ function slateResult(meta: SlateMeta, action: 'created' | 'updated'): ToolResult
   );
 }
 
+/**
+ * The origins a create asks to call, spelled out on the approval card. A live slate is a
+ * network-capable document, so the one place that permission can be granted is the card the
+ * user actually reads — it is not something to discover later in the gallery.
+ */
+function liveLabel(args: Record<string, unknown>): string {
+  const origins = Array.isArray(args.origins) ? args.origins.map((o) => String(o)) : [];
+  return origins.length ? `, live, may call ${origins.join(', ')}` : '';
+}
+
 export function slateTools(deps: SlateToolDeps): ToolDefinition[] {
   const { store } = deps;
   return [
@@ -56,7 +66,7 @@ export function slateTools(deps: SlateToolDeps): ToolDefinition[] {
       group: 'slate',
       preview: (args) => ({
         requiresApproval: true,
-        summary: `Create slate "${str(args, 'title') ?? ''}"`,
+        summary: `Create slate "${str(args, 'title') ?? ''}"${liveLabel(args)}`,
         reason: 'writes a new slate into .beecode/slates — one card per slate, later edits are free',
       }),
       inputSchema: {
@@ -74,7 +84,7 @@ export function slateTools(deps: SlateToolDeps): ToolDefinition[] {
           },
           content: {
             type: 'string',
-            description: 'The complete document, as it should be rendered. The limit is 512 KB per version.',
+            description: 'The complete document, as it should be rendered. The limit is 2 MB per version.',
           },
           origins: {
             type: 'array',

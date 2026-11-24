@@ -658,6 +658,26 @@ export class BeeCodeService {
         };
       }
 
+      case 'slate.live': {
+        const id = this.requireString(args, 'id');
+        const location = this.slateLocation(args);
+        const enabled = args.enabled === true;
+        const origins = Array.isArray(args.origins) ? (args.origins as string[]) : undefined;
+        const meta = await this.slates.setLive({ ...location, id, enabled, origins });
+        // Consent that changes what a document may reach is what an audit trail is for:
+        // both edges are recorded, with the origins that were granted.
+        await this.audit.record({
+          sessionId: location.sessionId,
+          action: 'slate-live',
+          outcome: 'allowed',
+          target: `slate:${id}`,
+          detail: enabled
+            ? `live on; origins: ${meta.origins?.join(', ') || 'none'}`
+            : 'live off',
+        });
+        return { slate: this.slateSummary(location, meta) };
+      }
+
       case 'slate.remove': {
         const id = this.requireString(args, 'id');
         const location = this.slateLocation(args);
