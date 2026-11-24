@@ -28,6 +28,19 @@ All notable changes to beeCode will be documented in this file.
 
 ### Added
 
+- **Slates, phase 3 — the pipeline.** A long fenced `html` / `svg` block in an assistant
+  message is no longer pasted into the transcript: at 40+ lines it becomes a slate and the
+  message keeps a card where the block was. `src/shared/slateFence.ts` decides (a fenced
+  `html` sample inside another code block is ignored), the title comes from `<title>`, else
+  the first `h1` / `h2`, and an `svg` fragment is wrapped in the minimal page that renders
+  it. The model history keeps the full text, so a follow-up turn can still refer to what it
+  wrote, and a refused slate — a cap, a bad title — leaves the block inline instead of
+  losing it. While the block is still streaming the gallery shows a live tile fed by
+  `slate.delta`; `applyLiveSlates` rewrites that tile's body and label in place, so the pane
+  is never remounted under the reader. `slate.diff` compares two versions with an LCS line
+  diff (hunks with line numbers on both sides) and the gallery's Diff button renders it
+  below the list. Tests: `slateFence.test.ts`, `slatePromote.test.ts`, `slateDiff.test.ts`,
+  `slateLive.test.ts`.
 - **Slates — a document the agent writes into its own tab instead of the transcript.**
   `create_slate` and `update_slate` write append-only versions (`001-<id>.md`, `002-…`) plus a
   `meta.json` pointer under `<cwd>/.beecode/slates/<session>/`, and the transcript keeps one

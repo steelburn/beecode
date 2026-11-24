@@ -1,9 +1,13 @@
 # Slates
 
-> **Status: phases 1 and 2 implemented** — store, tools, transcript card, gallery, panel, promote, and the document tab's Copy / Download / Preview ⇄ Code.
-> The store (/src/service/slates.ts), the `create_slate` / `update_slate` / `promote_slate`
-> tools, the transcript card, the SLATE_TAB gallery and the Slates panel are in the tree, and
-> so are the three caps (*Size and retention caps*) and the promote form in both panes. What
+> **Status: phases 1–3 implemented** — the store, the three slate tools, the transcript card,
+> the SLATE_TAB gallery, the Slates panel, promote, the document tab's Copy / Download /
+> Preview ⇄ Code, and the pipeline: a long fenced `html` / `svg` block is auto-promoted out of
+> the transcript (`src/shared/slateFence.ts`, `src/service/slatePromote.ts`), a block that is
+> still streaming reaches the gallery as `slate.delta` and is patched in place, and two
+> versions can be compared (`src/shared/slateDiff.ts`, `slate.diff`,
+> `src/renderer/slateDiffView.ts`). The store itself (/src/service/slates.ts), the three caps
+> (*Size and retention caps*) and the promote form in both panes are in the tree too. What
 > is still proposal-only is called out per section below. The file references name where the
 > change landed.
 
@@ -396,7 +400,7 @@ would show `v4` while the pane still renders v3. The rule:
 | 16 | tests | `slates/store.test.ts` (versioning, confinement guard, cap refusals), `policy.test.ts` (the exemption and promote rules — see *Testing*), `docTabs.test.ts` (`SLATE_TAB`), `slateView.test.ts` (kind dispatch + approval matrix) | 1 |
 | 17 | `src/renderer/slateView.ts` + a host in `src/main/` | Tier B: sandboxed `WebContentsView`, `sandbox: true`, no preload, strict CSP; reuse the `pluginHost` / browser-dock pattern | 2 |
 | 18 | `src/renderer/slateDoc.ts`, `src/renderer/clipboard.ts`, `promote_slate` | **done** — the slate version tab switches **Preview ⇄ Code** (the existing `view: 'source'` option, relabelled for a document the agent wrote), **Copies** its text (async clipboard, `execCommand` fallback) and **Downloads** it through a native save dialog (`beecode:save-file`, suggested name `<slug>-v<N>.<ext>`); `promote_slate` writes through `evaluateFile` and raises an approval card | 2 |
-| 19 | pipeline | auto-promote long fenced `html`/`svg` blocks into slates; streamed `slate.delta`; version diff | 3 |
+| 19 | `src/shared/slateFence.ts`, `src/service/slatePromote.ts`, `src/shared/slateDiff.ts`, `src/renderer/slateDiffView.ts` | **done** — a closed `html` / `svg` fence of 40+ lines becomes a slate (title from `<title>`, else the first `h1` / `h2`, else the kind; an `svg` fragment is wrapped in the minimal page that centres it), the block leaves the display text while the model history keeps it, a refusal leaves it inline; while it streams the gallery shows a live tile fed by `slate.delta` and patched in place; `slate.diff` runs an LCS line diff and the gallery draws it with line numbers on both sides | 3 |
 
 Phase 1 is roughly 450–600 LOC of new code plus wiring, against a repo with no
 `slate`/`artifacts` identifiers anywhere today.
@@ -463,9 +467,16 @@ Definition of done per phase. Every line is checkable by hand or by the named sc
 ### Phase 3
 
 * A 40-line `html` fenced block in an assistant message becomes a slate and leaves a card
-  behind; a 5-line one does not.
+  behind; a 5-line one does not. — `src/shared/slateFence.test.ts` (including a fenced
+  `html` sample inside a ```` block, which is *not* promoted) and
+  `src/service/slatePromote.test.ts` against a real store.
 * `slate.delta` updates the pane without a full remount, and the diff between two versions
-  is readable.
+  is readable. — the delta merge is `src/renderer/slateLive.test.ts`; the gallery rewrites
+  the live tile's body and label in place (`applyLiveSlates`) instead of re-rendering the
+  pane, and `src/shared/slateDiff.test.ts` pins the hunk grouping, the two-side line
+  numbers and the add / remove counts.
+* The diff is a *view*: it reads two version files and writes nothing, and a pair that
+  cannot be read reports the error in the diff panel without taking the gallery down.
 
 ## Corrections recorded during review
 

@@ -130,6 +130,7 @@ export const RENDERER_METHODS: RpcMethod[] = [
   'slate.read',
   'slate.remove',
   'slate.promote',
+  'slate.diff',
   'plugin.list',
   'plugin.reload',
   'plugin.setEnabled',

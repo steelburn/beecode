@@ -12,6 +12,7 @@ import type {
 } from '../../shared/protocol';
 import type { ToolContext } from '../../shared/tools';
 import { streamChat } from '../llm/client';
+import { fenceTitle, openPromotableFence, promotableFences } from '../../shared/slateFence';
 import { buildSystemPrompt } from '../llm/prompts';
 import { pythonSummary } from '../python';
 import type { LlmChunk, LlmImage, LlmMessage, LlmToolSchema } from '../llm/types';
@@ -71,6 +72,12 @@ export interface AgentLoopDeps {
   tools: (session: SessionState) => ToolRegistry;
   config: () => BeeCodeConfig;
   emit: (event: ServiceEvent) => void;
+  /**
+   * Lift the long fenced html / svg blocks out of an assistant message and return the
+   * refs to card plus the text to show instead. The store write stays in the service,
+   * so this loop keeps its single job: driving the model.
+   */
+  promoteSlates: (session: SessionState, text: string) => Promise<{ refs: SlateRef[]; text: string }>;
   log: Logger;
   memory: MemoryStore;
   /** Permission policy rendered for the system prompt. */
@@ -201,6 +208,7 @@ export class AgentLoop {
             content: assistantEntry.text,
             ...(assistantEntry.reasoning ? { reasoning: assistantEntry.reasoning } : {}),
           });
+          await this.promoteEntry(session, assistantEntry);
           this.deps.emit({ type: 'session.entry', payload: { sessionId: session.id, entry: { ...assistantEntry } } });
           this.setStatus(session, 'idle');
           return;
@@ -217,6 +225,7 @@ export class AgentLoop {
           // back on the next request; dropping it is a hard 400.
           ...(assistantEntry.reasoning ? { reasoning: assistantEntry.reasoning } : {}),
         });
+        await this.promoteEntry(session, assistantEntry);
         this.deps.emit({ type: 'session.entry', payload: { sessionId: session.id, entry: { ...assistantEntry } } });
 
         let stopTurn = false;
@@ -295,6 +304,7 @@ export class AgentLoop {
       case 'text':
         textParts.push(chunk.text);
         entry.text = textParts.join('');
+this.emitFenceDelta(session, entry);
         this.deps.emit({
           type: 'assistant.delta',
           payload: { sessionId: session.id, entryId: entry.id, text: chunk.text },
@@ -311,6 +321,63 @@ export class AgentLoop {
         session.usage.inputTokens += chunk.inputTokens;
         session.usage.outputTokens += chunk.outputTokens;
         break;
+    }
+  }
+
+  /**
+   * While a block that will become a slate is still streaming, report how it looks so
+   * far: the gallery follows it in place instead of remounting on every chunk.
+   */
+  private emitFenceDelta(session: SessionState, entry: TranscriptEntry): void {
+    const open = openPromotableFence(entry.text);
+    if (!open) return;
+    this.deps.emit({
+      type: 'slate.delta',
+      payload: {
+        sessionId: session.id,
+        entryId: entry.id,
+        title: fenceTitle(open),
+        kind: 'html',
+        text: open.content,
+        lines: open.lines,
+        done: false,
+      },
+    });
+  }
+
+  /**
+   * Promote this message's long fenced blocks into slates. The block leaves the display
+   * text and a card takes its place; the model history keeps the full text it wrote, so
+   * a follow-up turn can still refer to what it authored.
+   */
+  private async promoteEntry(session: SessionState, entry: TranscriptEntry): Promise<void> {
+    const blocks = promotableFences(entry.text);
+    if (blocks.length === 0) return;
+    const last = blocks[blocks.length - 1];
+    this.deps.emit({
+      type: 'slate.delta',
+      payload: {
+        sessionId: session.id,
+        entryId: entry.id,
+        title: fenceTitle(last),
+        kind: 'html',
+        text: last.content,
+        lines: last.lines,
+        done: true,
+      },
+    });
+    try {
+      const promoted = await this.deps.promoteSlates(session, entry.text);
+      if (promoted.refs.length === 0) return;
+      entry.slates = promoted.refs;
+      entry.text = promoted.text;
+      for (const slate of promoted.refs) {
+        this.deps.emit({ type: 'slate.update', payload: { sessionId: session.id, slate, entryId: entry.id } });
+      }
+    } catch (err) {
+      this.deps.log.info('slate auto-promote failed', {
+        reason: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 

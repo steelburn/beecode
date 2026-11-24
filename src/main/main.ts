@@ -479,6 +479,17 @@ async function runSmokeCheck(serviceReady: boolean): Promise<void> {
               const read = first
                 ? await window.beeCode.invoke('slate.read', { sessionId: 'smoke-slate', cwd, id: first.id })
                 : undefined;
+              // The diff RPC reads both versions in the service and diffs them there, so a
+              // passing probe means the whole compare path works inside the real app.
+              const diff = first
+                ? await window.beeCode.invoke('slate.diff', {
+                    sessionId: 'smoke-slate',
+                    cwd,
+                    id: first.id,
+                    from: 1,
+                    to: 2,
+                  })
+                : undefined;
               const tab = document.querySelector('.panel-tabs .tab[data-panel="slates"]');
               if (tab) tab.click();
               const section = document.querySelector('#panel .panel-section.slates');
@@ -491,6 +502,10 @@ async function runSmokeCheck(serviceReady: boolean): Promise<void> {
                 content: read?.content,
                 panelTab: Boolean(tab),
                 panelSection: Boolean(section),
+                diffAdded: diff?.added,
+                diffRemoved: diff?.removed,
+                diffHunks: diff?.hunks.length,
+                diffIdentical: diff?.identical,
               };
             } catch (err) {
               return { error: String(err) };

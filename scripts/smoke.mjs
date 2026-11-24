@@ -79,7 +79,12 @@ const slatesOk =
   typeof slates.content === 'string' &&
   slates.content.includes('Second version') &&
   slates.panelTab === true &&
-  slates.panelSection === true;
+  slates.panelSection === true &&
+  // v1 -> v2 of the seeded slate changes one line, so the diff must show exactly that.
+  slates.diffAdded === 1 &&
+  slates.diffRemoved === 1 &&
+  slates.diffHunks === 1 &&
+  slates.diffIdentical === false;
 
 const panelTabsOk =
   panelTabs.count === 4 &&

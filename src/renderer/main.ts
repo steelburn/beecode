@@ -22,10 +22,14 @@ import type {
   TranscriptAction,
   TranscriptEntry,
   WorkspaceState,
+  SlateDelta,
   SlateRef,
   SlateSummary,
 } from '../shared/protocol';
 import { slateCardVersionLabel, slateRefOf } from './slateRef';
+import { applySlateDelta, clearLiveSlates, liveSlateList, type LiveSlates } from './slateLive';
+import { applyLiveSlates } from './slateGallery';
+import type { SlateDiff } from '../shared/slateDiff';
 import { slateDocFromPath, slateExportName } from './slateDoc';
 import { copyText } from './clipboard';
 import type { DocTab } from './docTabs';
@@ -233,6 +237,8 @@ interface State {
   docs: DocTabsState;
   /** Slates of the current session, as the SLATE_TAB gallery lists them. */
   slates: SlateSummary[];
+  /** Slates still streaming in, keyed by the transcript entry writing them. */
+liveSlates: LiveSlates;
   /** Set when `slate.list` failed, so the gallery can say why it is empty. */
   slateError?: string;
   panel: PanelTab;
@@ -268,6 +274,7 @@ const state: State = {
   explorer: {},
   docs: emptyDocTabs(readDocTheme()),
   slates: [],
+  liveSlates: {},
   panel: 'subagents',
   settings: { open: false, section: 'general' },
   terminalOpen: false,
@@ -341,6 +348,7 @@ async function boot(): Promise<void> {
     {
       activate: activateMainTab,
       openSlate: (id, version) => void openSlate(id, version),
+      diffSlate,
       removeSlate: (id) => void removeSlate(id),
       promoteSlate: (id, version, path) => void promoteSlate(id, version, path),
       close: closeDocTab,
@@ -700,6 +708,16 @@ function setAttachments(paths: string[]): void {
 }
 
 /**
+ * Compare two versions of one slate. The service runs the diff (it has both texts),
+ * so the UI only has to say which pair it wants.
+ */
+async function diffSlate(id: string, from: number, to: number): Promise<SlateDiff> {
+  const sessionId = state.current?.id;
+  if (!sessionId) throw new Error('open a session first');
+  return api.invoke('slate.diff', { id, from, to, sessionId });
+}
+
+/**
  * The gallery lists what the store holds right now rather than accumulating events: a
  * slate created before this window opened has to appear too.
  */
@@ -1011,9 +1029,23 @@ function handleEvent(event: import('../shared/protocol').ServiceEvent): void {
     }
 
     case 'slate.update': {
+
+    const entryId = event.payload.entryId;
+if (entryId) {
+  state.liveSlates = clearLiveSlates(state.liveSlates, [entryId]);
+  applyLiveSlates(els.docPane, liveSlateList(state.liveSlates));
+}
       if (event.payload.sessionId !== state.current?.id) return;
       // The gallery refreshes from the service, not from the payload: one order of truth.
       void loadSlates(event.payload.sessionId);
+      break;
+    }
+
+    case 'slate.delta': {
+      if (event.payload.sessionId !== state.current?.id) return;
+      state.liveSlates = applySlateDelta(state.liveSlates, event.payload);
+      // Patch the live tile in place: a remount per chunk would fight the reader's scroll.
+      applyLiveSlates(els.docPane, liveSlateList(state.liveSlates));
       break;
     }
 
@@ -1419,6 +1451,7 @@ function buildEntry(entry: TranscriptEntry): HTMLElement {
   const body = h('div', { class: 'body' });
   if (role === 'assistant' || role === 'user') body.innerHTML = renderMarkdown(entry.text || '');
   else body.textContent = entry.text;
+  for (const slate of entry.slates ?? []) wrapper.append(buildSlateCard(entry, slate));
   wrapper.append(body);
   if (entry.attachments?.length) wrapper.append(buildEntryAttachments(entry.attachments));
 
@@ -1804,6 +1837,7 @@ function renderPanels(): void {
     },
     createKnowledgeFolder: (path: string) => void createKnowledgeSubfolder(path),
     openSlate: (id: string, version?: number) => void openSlate(id, version),
+    diffSlate,
     removeSlate: (id: string) => void removeSlate(id),
     promoteSlate: (id: string, version: number, path: string) => void promoteSlate(id, version, path),
     copyToKnowledge: (path: string) => void copyFileToKnowledge(path),
@@ -2171,7 +2205,12 @@ function writeDocTheme(theme: DocTheme): void {
 }
 
 function renderMainArea(): void {
-  mainArea?.render(state.docs, { browserVisible: browserShown, slates: state.slates, error: state.slateError });
+  mainArea?.render(state.docs, {
+    browserVisible: browserShown,
+    slates: state.slates,
+    error: state.slateError,
+    live: liveSlateList(state.liveSlates),
+  });
 }
 
 /**

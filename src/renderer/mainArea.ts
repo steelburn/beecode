@@ -14,6 +14,7 @@ import {
 import { canSwitchView, type FileView } from './preview';
 import { slateDocFromPath, slateExportName, type SlateDocRef } from './slateDoc';
 import { renderSlateGallery, type SlateGalleryView } from './slateGallery';
+import type { SlateDiff } from '../shared/slateDiff';
 
 /**
  * The main-area tab strip and the document pane below it.
@@ -38,6 +39,8 @@ export interface MainAreaHandlers {
   /** Open one version of a slate as a document tab; without a version, the current one. */
   openSlate(id: string, version?: number): void;
   removeSlate(id: string): void;
+  /** Compare two versions of a slate; the gallery renders the result. */
+diffSlate(id: string, from: number, to: number): Promise<SlateDiff>;
   /** Write one slate version into the workspace tree as a real file. */
   promoteSlate(id: string, version: number, path: string): void;
   /** Put a document tab's text on the clipboard. */

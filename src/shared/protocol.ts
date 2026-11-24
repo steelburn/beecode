@@ -1,3 +1,5 @@
+import type { SlateDiff } from './slateDiff';
+
 /**
  * Wire protocol shared by the renderer, the Electron main process and the background
  * agent service. The service speaks JSON-RPC 2.0; the payload shapes below are the
@@ -66,6 +68,11 @@ export interface TranscriptEntry {
   failed?: boolean;
   /** Set on a tool entry that wrote a slate: the transcript renders a card, not the body. */
   slate?: SlateRef;
+  /**
+   * One entry per long fenced block this message had promoted, in document order. The
+   * block itself is gone from `text`; these cards stand where it was.
+   */
+  slates?: SlateRef[];
   /** Buttons the transcript offers next to this entry. */
   actions?: TranscriptAction[];
   /** Set when this assistant turn was interleaved with reasoning text. */
@@ -785,6 +792,13 @@ export interface DelegateArgs {
 export type SlateKind = 'markdown' | 'html' | 'csv';
 
 /**
+ * Content lines a fenced html / svg block needs before the transcript hands it to a
+ * slate instead of printing it inline. Below this a snippet stays a code block: five
+ * lines are quicker to read where they are than to open in a tab.
+ */
+export const SLATE_AUTO_PROMOTE_MIN_LINES = 40;
+
+/**
  * The store's hard limits, shared so the renderer can show how close a slate is: these
  * are refuse-not-prune caps, so the UI has to warn before the agent hits one.
  */
@@ -796,6 +810,24 @@ export const SLATE_LIMITS = {
   /** Slates one session may hold. */
   slates: 100,
 } as const;
+
+/**
+ * A fenced block large enough to become a slate, still arriving. Emitted as
+ * `slate.delta` while the model writes so a pane can follow the document without the
+ * tab being torn down and rebuilt on every chunk.
+ */
+export interface SlateDelta {
+  sessionId: string;
+  /** The assistant entry the block is streaming into; the live tile is keyed by it. */
+  entryId: string;
+  title: string;
+  kind: SlateKind;
+  /** The block so far, without its fences. */
+  text: string;
+  lines: number;
+  /** True once the closing fence arrived; `slate.update` supersedes the tile next. */
+  done: boolean;
+}
 
 /** One append-only version file of a slate. `n` is 1-based and matches the NNN prefix. */
 export interface SlateVersionInfo {
@@ -911,6 +943,10 @@ export interface RpcRequests {
   'scheduler.run': { params: { id: string }; result: { sessionId: string } };
 
   'slate.list': { params: { cwd?: string; sessionId?: string }; result: { slates: SlateSummary[] } };
+  'slate.diff': {
+    params: { id: string; from?: number; to?: number; cwd?: string; sessionId?: string };
+    result: SlateDiff;
+  };
   'slate.read': {
     params: { id: string; version?: number; cwd?: string; sessionId?: string };
     result: Slate;
@@ -934,6 +970,7 @@ export type ServiceEvent =
   | { type: 'session.snapshot'; payload: SessionSnapshot }
   | { type: 'session.status'; payload: { sessionId: string; status: SessionStatus } }
   | { type: 'session.entry'; payload: { sessionId: string; entry: TranscriptEntry } }
+  | { type: 'slate.delta'; payload: SlateDelta }
   | { type: 'assistant.delta'; payload: { sessionId: string; entryId: string; text: string } }
   | { type: 'tool.call'; payload: { sessionId: string; call: ToolCallRecord } }
   | {
@@ -950,7 +987,7 @@ export type ServiceEvent =
   | { type: 'service.health'; payload: ServiceHealth }
   /** The workspace (root, recents, knowledge folders) changed — repaint the panels. */
   | { type: 'workspace.state'; payload: WorkspaceState }
-  | { type: 'slate.update'; payload: { sessionId: string; slate: SlateRef; removed?: boolean } }
+  | { type: 'slate.update'; payload: { sessionId: string; slate: SlateRef; removed?: boolean; entryId?: string } }
   | { type: 'log'; payload: { level: 'debug' | 'info' | 'warn' | 'error'; message: string; at: string } }
   | { type: 'error'; payload: { sessionId?: string; message: string } };
 

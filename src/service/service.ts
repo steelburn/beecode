@@ -25,6 +25,7 @@ import type {
   FsEntry,
   FsFile,
   FsListing,
+  SlateRef,
   SlateSummary,
 } from '../shared/protocol';
 import type { HostCall } from '../shared/browser';
@@ -40,6 +41,8 @@ import { McpManager } from './mcp/manager';
 import { convertOffice, officeFormat, type OfficeFormat } from './preview/office';
 import { SkillStore } from './skills/store';
 import { SlateStore, type SlateLocation, type SlateMeta } from './slates';
+import { promoteFences } from './slatePromote';
+import { diffSlateText } from '../shared/slateDiff';
 import { installSkills } from './skills/install';
 import { readZip } from './skills/zip';
 import { installPlugins } from './plugins/install';
@@ -246,6 +249,7 @@ export class BeeCodeService {
       tools: (session) => (session.depth > 0 ? this.subagentRegistry : this.registry),
       config: () => this.config,
       emit: (event) => this.emit(event),
+      promoteSlates: (session, text) => this.promoteSlateFences(session, text),
       log: this.log,
       memory: this.memory,
       describePolicy: () => this.policy.describeAllowedApps(),
@@ -669,6 +673,22 @@ export class BeeCodeService {
         return { slates: metas.map((meta) => this.slateSummary(location, meta)), removedSlate: true };
       }
 
+      case 'slate.diff': {
+        const location = this.slateLocation(args);
+        const id = this.requireString(args, 'id');
+        const meta = (await this.slates.list(location)).find((entry) => entry.id === id);
+        if (!meta) throw new Error(`no slate "${id}" in this session`);
+        const asVersion = (value: unknown, fallback: number): number => {
+          const n = typeof value === 'number' && Number.isFinite(value) ? Math.floor(value) : fallback;
+          return Math.min(Math.max(n, 1), meta.current);
+        };
+        const from = asVersion(args.from, meta.current > 1 ? meta.current - 1 : meta.current);
+        const to = asVersion(args.to, meta.current);
+        const older = await this.slates.read({ ...location, id, version: from });
+        const newer = await this.slates.read({ ...location, id, version: to });
+        return diffSlateText(from, to, older.content, newer.content);
+      }
+
       case 'slate.promote': {
         const location = this.slateLocation(args);
         // A promote writes into the real tree, so the RPC answers to the same policy as the
@@ -1061,6 +1081,30 @@ export class BeeCodeService {
     const p = paths();
     await mkdir(p.home, { recursive: true });
     await writeJsonFile(p.config, this.config);
+  }
+
+  /**
+   * Auto-promote this message: the long fenced html / svg blocks become slates and the
+   * display text loses them. The pipeline itself lives in `promoteFences`, which is pure
+   * enough to test without a service.
+   */
+  private async promoteSlateFences(
+    session: { id: string; cwd: string },
+    text: string,
+  ): Promise<{ refs: SlateRef[]; text: string }> {
+    return promoteFences(this.slates, { cwd: session.cwd, sessionId: session.id }, text, (title, reason) =>
+      this.log.info('slate auto-promote refused', { title, reason }),
+    );
+  }
+  /** The part of a slate a transcript card and an event need. */
+  private slateRefOf(meta: SlateMeta): SlateRef {
+    return {
+      id: meta.id,
+      title: meta.title,
+      kind: meta.kind,
+      version: meta.current,
+      versions: meta.versions.length,
+    };
   }
 
   /**
