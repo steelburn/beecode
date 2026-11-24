@@ -4,6 +4,8 @@ All notable changes to beeCode will be documented in this file.
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-11-24
+
 - **A slate version can record what it was built from, and be refreshed (slates, recipes).**
   `SlateVersion.recipe` holds `{ tool, args, at }` per source — **references only**, never a
   payload, so a slate's own 2 MB/version cap stays honest and nothing is duplicated beside the
