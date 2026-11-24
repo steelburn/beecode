@@ -1310,7 +1310,7 @@ function buildEntry(entry: TranscriptEntry): HTMLElement {
     wrapper.append(h('div', { class: 'role', text: role === 'system' ? 'beeCode' : 'you' }));
   }
   const body = h('div', { class: 'body' });
-  if (role === 'assistant') body.innerHTML = renderMarkdown(entry.text || '');
+  if (role === 'assistant' || role === 'user') body.innerHTML = renderMarkdown(entry.text || '');
   else body.textContent = entry.text;
   wrapper.append(body);
   if (entry.attachments?.length) wrapper.append(buildEntryAttachments(entry.attachments));

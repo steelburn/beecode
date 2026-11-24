@@ -50,6 +50,11 @@ test('renderMarkdown turns a chart fence into a chart figure', () => {
   assert.ok(!html.includes('<pre'), 'the chart spec must not also be shown as code');
 });
 
+test('renderMarkdown keeps a soft line break so user messages show their newlines', () => {
+  const html = renderMarkdown('first line\nsecond line');
+  assert.match(html, /<p class="md-p">first line<br\/>second line<\/p>/);
+});
+
 test('renderMarkdown renders a blockquote and a still-streaming code fence', () => {
   const quote = renderMarkdown('> quoted **line**');
   assert.match(quote, /<blockquote class="md-quote">quoted <strong>line<\/strong><\/blockquote>/);

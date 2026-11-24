@@ -314,10 +314,10 @@ body.col-resizing, body.col-resizing * { cursor: col-resize !important; user-sel
   background: var(--bg-raised); border: 1px solid var(--line); border-radius: var(--radius);
   padding: 12px 14px; line-height: 1.55; overflow-wrap: anywhere;
 }
-.msg.user .body { background: #1a2331; border-color: #26344a; }
+.msg.user .body { background: #1a2331; border-color: #26344a; white-space: pre-wrap; }
 .msg-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .msg-actions .note { font-size: 11px; color: var(--text-faint); }
-.msg.system .body { background: #221a1a; border-color: #4a2b2b; color: #f2c9c9; font-size: 13px; }
+.msg.system .body { background: #221a1a; border-color: #4a2b2b; color: #f2c9c9; font-size: 13px; white-space: pre-wrap; }
 .msg .body p { margin: 0 0 8px; }
 .msg .body p:last-child { margin-bottom: 0; }
 .msg .body code {

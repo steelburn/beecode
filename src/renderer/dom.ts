@@ -54,7 +54,7 @@ export function escapeHtml(text: string): string {
 }
 
 /**
- * Safe Markdown for assistant messages: headings, nested ordered/unordered lists, GFM
+ * Safe Markdown for assistant and user messages: headings, nested ordered/unordered lists, GFM
  * tables, blockquotes, rules, fenced code with a language label and inline formatting
  * (code, links, bold, italic, strikethrough). Raw HTML is escaped first, so model output
  * can never inject markup; a \`\`\`chart fence is handed to chart.ts instead of a <pre>.
