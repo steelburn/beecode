@@ -4,6 +4,8 @@ export interface PromptContext {
   mode: AgentMode;
   cwd: string;
   platform: string;
+  /** One-line report of the Python runtime the shell tool hands its children. */
+  python?: string;
   /** Policy-rendered list of permissible applications. */
   allowedApps: string;
   agentName: string;
@@ -51,6 +53,11 @@ export function buildSystemPrompt(ctx: PromptContext): string {
     `You operate a real ${ctx.platform} desktop through tools: you can see what is on screen, focus`,
     'windows, drive UI Automation elements, type, send hotkeys, launch permitted applications and',
     'delegate work to subagents.',
+    `Python available to your shell: ${ctx.python ?? 'unknown'} — do not report a language runtime as`,
+    'missing before checking the shell.',
+    'Python packages: `python -m venv .venv` works offline, then `.venv\\Scripts\\python -m pip install <pkg>`',
+    '(or `.venv/bin/python` on POSIX). Build the venv inside the workspace; do not install into the',
+    "bundled runtime itself — it belongs to the app. `pip`/`pip3` on PATH are the same interpreter.",
     '',
     MODE_RULES[ctx.mode],
     '',

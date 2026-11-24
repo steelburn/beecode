@@ -4,6 +4,44 @@ All notable changes to beeCode will be documented in this file.
 
 ## [Unreleased]
 
+- **A bundled Python runtime — with venv and pip — and one executable resolver for the whole
+  app.** beeCode no longer reports "Python is not installed": `scripts/fetch-python.mjs`
+  vendors a full CPython build into `resources/python` (42 MB, pip 25 + `venv` + `ensurepip`,
+  `python3`/`py`/`pip`/`pip3` shims), electron-builder copies it to `<app>/resources/python`
+  outside the asar, and `src/service/python.ts` puts it in front of `PATH` for every child
+  process — the shell tool, subagent CLI runs and the workspace terminal — with `PYTHONUTF8=1`,
+  `PYTHONNOUSERSITE=1` and a `Python available to your shell: …` line in the system prompt so
+  the agent plans around the runtime instead of asserting it is missing. The payload is the full
+  Windows layout, not the embeddable zip: embeddable has no `ensurepip`, so `python -m venv`
+  failed outright and its `._pth` hid pip installs — a *venv in the workspace* is now the
+  documented way to add packages, and the prompt says so. `python`, `python3`, `py`, `pip`
+  and `pip3` are allowed by default in shell policy, and `evaluateShell` judges an
+  absolute-path invocation by its file name, so `"…\resources\python\python.exe" -m venv
+  .venv` matches while an absolute `curl.exe` still trips the block list. Lookup moved into
+  `src/service/executables.ts`: `PATH` plus the conventional per-platform install roots
+  (per-user `Programs`, npm/scoop/choco shims, Homebrew, `/usr/local/bin`, pyenv/asdf) and
+  PATHEXT expansion for a bare command name. The shell tool, the CLI-agent probe
+  (`probeCommand`) and `DesktopController.resolveExecutable` — previously Windows-only,
+  `;`-split and blind to `.exe` suffixes — all delegate to it.
+  Tests: `src/service/executables.test.ts`, `src/service/python.test.ts` (incl. building a
+  venv and running its pip), `src/service/policy.test.ts`.
+
+### Fixed
+
+- **An upgraded install kept denying the Python it ships.** The runtime prefixes were added to
+  `defaultPolicy()`, but the effective policy is the stored `~/.beecode/policy.json`, and it is
+  only migrated when `POLICY_DOCUMENT_VERSION` says it is stale — so every existing user kept the
+  old eight-prefix shell list and still got "Python is installed, but I could not execute it".
+  Version 4 adds a shell migration that unions exactly the runtimes this build grants
+  (`python`, `python3`, `py`, `pip`, `pip3`, from the single `DEFAULT_SHELL_RUNTIMES` export) into
+  the stored list and writes the document back, so the file stops claiming to be v3 instead of
+  being re-migrated on every start. A union, not a re-seed: a prefix the user removed on purpose
+  stays removed.
+- **Quoted arguments in `shell_run`.** Node's argv quoting turned `dir "C:\Program Files"` into
+  `dir \"C:\Program Files\"`, which `cmd /s /c` rejects with "filename, directory name, or volume
+  label syntax is incorrect". The command line is now wrapped in exactly one pair of quotes and
+  passed with `windowsVerbatimArguments`, which is the form `/s` documents.
+
 ## [0.1.1] - 2026-11-23
 
 ### Added

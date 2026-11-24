@@ -1,5 +1,5 @@
-import { existsSync } from 'node:fs';
-import { basename, join, resolve } from 'node:path';
+import { basename, join } from 'node:path';
+import { findExecutable } from '../executables';
 import type { AuditEntry, DesktopAction } from '../../shared/protocol';
 import type { AuditLog } from '../audit';
 import type { PolicyDecision, PolicyEngine } from '../policy';
@@ -384,29 +384,16 @@ export class DesktopController {
           .join('\n'),
     );
   }
-  /** Locate an executable on PATH and the usual Windows install roots. */
+  /**
+   * Locate an executable for an app rule.
+   *
+   * PATH alone is not enough inside a packaged app, so the shared resolver also walks the
+   * conventional install roots; the rule's own `allowedPaths` are searched first.
+   */
   private resolveExecutable(names: string[], allowedPaths?: string[]): string | undefined {
-    const dirs: string[] = [];
-    if (allowedPaths?.length) dirs.push(...allowedPaths);
-    dirs.push(...(process.env.PATH ?? '').split(';').filter(Boolean));
-    const sysRoot = process.env.SystemRoot ?? 'C:\\Windows';
-    const programFiles = process.env.ProgramFiles ?? 'C:\\Program Files';
-    const programFilesX86 = process.env['ProgramFiles(x86)'] ?? 'C:\\Program Files (x86)';
-    const localAppData = process.env.LOCALAPPDATA ?? join(process.env.USERPROFILE ?? '', 'AppData', 'Local');
-    dirs.push(
-      sysRoot,
-      join(sysRoot, 'System32'),
-      programFiles,
-      programFilesX86,
-      join(localAppData, 'Microsoft', 'WindowsApps'),
-    );
-
     for (const name of names) {
-      if (/^[A-Za-z]:\\/.test(name) && existsSync(name)) return resolve(name);
-      for (const dir of dirs) {
-        const candidate = join(dir, name);
-        if (existsSync(candidate)) return resolve(candidate);
-      }
+      const found = findExecutable(name, { extraDirs: allowedPaths ?? [] });
+      if (found) return found;
     }
     return undefined;
   }

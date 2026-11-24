@@ -2,6 +2,8 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import type { McpServerConfig } from '../../shared/protocol';
 import type { Logger } from '../logger';
 import { serviceVersion } from '../version';
+import { findExecutable } from '../executables';
+import { childEnvironment } from '../python';
 
 /** Protocol revision this client implements. */
 export const MCP_PROTOCOL_VERSION = '2024-11-05';
@@ -166,8 +168,10 @@ export class McpClient {
     const command = (this.config.command ?? '').trim();
     if (!command) throw new Error('stdio MCP server needs a "command"');
 
-    const child = spawn(command, this.config.args ?? [], {
-      env: { ...process.env, ...(this.config.env ?? {}) },
+    // The same lookup the shell tool and the CLI adapters use: a server command may sit in
+    // an install root the packaged app's inherited PATH does not carry.
+    const child = spawn(findExecutable(command) ?? command, this.config.args ?? [], {
+      env: { ...childEnvironment(), ...(this.config.env ?? {}) },
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
     });

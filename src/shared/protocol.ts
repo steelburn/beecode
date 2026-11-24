@@ -223,7 +223,8 @@ export const DESKTOP_ACTIONS: DesktopAction[] = [
  * Bumped whenever the action set changes, so a policy file written by an older beeCode can be
  * migrated instead of silently denying the new actions for apps the user already allowed.
  */
-export const POLICY_DOCUMENT_VERSION = 3;
+// v4: the bundled runtimes joined the default shell allow-list (see DEFAULT_SHELL_RUNTIMES).
+export const POLICY_DOCUMENT_VERSION = 4;
 
 export interface AppRule {
   /** Stable id used by tools (`desktop_*` take an `app` id). */

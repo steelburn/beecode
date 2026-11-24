@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import { resolve } from 'node:path';
+import { childEnvironment } from '../python';
 import type { ToolDefinition } from '../../shared/tools';
 import type { AuditLog } from '../audit';
 import type { PolicyEngine } from '../policy';
@@ -66,11 +67,20 @@ export function shellTools(deps: ShellToolDeps): ToolDefinition[] {
         const timeoutMs = Math.min(num(args, 'timeoutMs', 60_000), 300_000);
         const isWin = process.platform === 'win32';
         const file = isWin ? 'cmd.exe' : '/bin/sh';
-        const argv = isWin ? ['/d', '/s', '/c', command] : ['-c', command];
+        // `cmd /s /c` strips the first and last quote of the rest of the line and runs what is
+        // left verbatim. Node's own argv quoting would instead hand cmd `dir \"C:\Program Files\"`,
+        // which cmd rejects with "filename, directory name, or volume label syntax is incorrect"
+        // — so the whole command is wrapped in exactly one pair of quotes and passed untouched.
+        const argv = isWin ? ['/d', '/s', '/c', '"' + command + '"'] : ['-c', command];
 
         const result = await new Promise<{ code: number | null; stdout: string; stderr: string; timedOut: boolean }>(
           (resolvePromise) => {
-            const child = spawn(file, argv, { cwd, windowsHide: true, env: process.env });
+            const child = spawn(file, argv, {
+              cwd,
+              windowsHide: true,
+              env: childEnvironment(),
+              windowsVerbatimArguments: isWin,
+            });
             let stdout = '';
             let stderr = '';
             let timedOut = false;

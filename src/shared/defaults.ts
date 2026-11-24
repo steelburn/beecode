@@ -106,6 +106,17 @@ export function defaultConfig(): BeeCodeConfig {
  * Default desktop policy: deny-by-default with a small, safe starter set.
  * Everything the agent can touch on the desktop must appear here first.
  */
+/**
+ * Shell prefixes that must be allowed because beeCode ships or needs the runtime itself.
+ *
+ * Entries are command *names*, matched by `PolicyEngine.evaluateShell` after it normalises
+ * quotes, extensions and absolute paths — not full command lines, so they also cover
+ * `python -m venv` and `python -m pip`. Exported so `migratePolicy` can grant exactly these to a
+ * `policy.json` written by an older build (see POLICY_DOCUMENT_VERSION 4) without resurrecting
+ * other prefixes the user removed on purpose.
+ */
+export const DEFAULT_SHELL_RUNTIMES: readonly string[] = ['python', 'python3', 'py', 'pip', 'pip3'];
+
 export function defaultPolicy(): PolicyDocument {
   return {
     version: POLICY_DOCUMENT_VERSION,
@@ -173,7 +184,20 @@ export function defaultPolicy(): PolicyDocument {
     ],
     shell: {
       enabled: true,
-      allowedCommands: ['git status', 'git diff', 'git log', 'git branch', 'dir', 'echo', 'node --version', 'npm run'],
+      // The bundled Python is allowed by default: the app ships the interpreter, so making the
+      // user whitelist the runtime it just installed recreates the "no Python installed" loop.
+      // The prefixes cover `python -m venv` and `python -m pip` too, plus the pip shims.
+      allowedCommands: [
+        'git status',
+        'git diff',
+        'git log',
+        'git branch',
+        'dir',
+        'echo',
+        'node --version',
+        'npm run',
+        ...DEFAULT_SHELL_RUNTIMES,
+      ],
       blocked: [
         'rm -rf',
         'rmdir /s',

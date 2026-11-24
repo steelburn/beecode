@@ -325,6 +325,36 @@ directory inside the workspace root.
 When the configured workspace root changes, the runner re-confines itself to the new root
 and drops the old scrollback.
 
+## Bundled Python and executable lookup
+
+beeCode ships its own Python, so "Python is not installed" is no longer something it has to
+say. `scripts/fetch-python.mjs` vendors a full CPython build into `resources/python`,
+`electron-builder.yml` copies it to `<app>/resources/python` — outside the asar, because an
+interpreter cannot be started from inside an archive — and `src/service/python.ts` puts it in
+front of the `PATH` of every child process. `python`, `python3`, `py`, `pip` and `pip3`
+therefore work in `shell_run`, in subagent CLI runs and in the workspace terminal.
+
+The payload is a *full* distribution, not python.org's embeddable zip. Embeddable ships no
+`ensurepip`, so `python -m venv` failed outright and its `._pth` file hid anything pip had
+installed; the full layout carries `Lib\venv`, `Lib\ensurepip` (with its wheel, so a venv
+bootstraps pip offline) and `Lib\site-packages\pip`. Two details keep that honest:
+`PYTHONNOUSERSITE=1` for children, so the machine's per-user site-packages cannot shadow the
+bundled `pip` (a stale `pip 24.0` did exactly that), and `python`/`pip` on the default shell
+allow-list, so the runtime the app just installed never has to be whitelisted by hand.
+
+* `pythonRuntime()` prefers the bundled interpreter and falls back to an OS install
+  (`BEECODE_PYTHON_HOME` overrides the bundled location). `pythonSummary()` puts the result
+  in the system prompt, so the agent plans around a missing runtime instead of guessing.
+* Executable lookup is one shared implementation, `src/service/executables.ts`: `PATH` first,
+  then the conventional install roots per platform (Program Files, per-user `Programs`,
+  npm/scoop/choco shims on Windows; Homebrew, `/usr/local/bin`, `~/.local/bin`, pyenv/asdf
+  elsewhere), with PATHEXT suffixes tried for a bare name. The shell tool, the CLI-agent
+  probe and the desktop driver's app rules all use it, so a tool that is installed but
+  missing from the truncated `PATH` a GUI session inherits is still found. `evaluateShell`
+  judges a command that names its executable by absolute path by that file *name*, so
+  `"…\resources\python\python.exe" -m venv .venv` matches the same allow prefix — while an
+  absolute `curl.exe` still trips the block list.
+
 ## Modes
 
 | Mode | Behaviour |
@@ -387,6 +417,7 @@ src/
 | `npm run smoke` | boots the real app in `--smoke` mode and asserts the UI reached the service |
 | `npm run check` | typecheck + test + build + smoke |
 | `npm run dist` | NSIS installer in `release/` via electron-builder |
+| `npm run python:fetch` | vendors the bundled Python runtime into `resources/python` (also runs before `npm run dist` / `npm run package`) |
 | `npm run docs:screenshots` | boots the app, drives the internal browser, opens the settings dialog and the terminal drawer, and regenerates `docs/images/*.png` |
 | `npm run verify:driver` | drives the real Windows driver against Calculator — UI Automation, coordinate clicks, resize |
 | `npm run verify:llm` | round-trips the `.env.llm` endpoint through the agent loop |

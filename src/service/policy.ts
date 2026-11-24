@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { basename, isAbsolute, relative, resolve, sep } from 'node:path';
 import { BROWSER_ACTIONS, type BrowserAction } from '../shared/browser';
-import { defaultPolicy } from '../shared/defaults';
+import { DEFAULT_SHELL_RUNTIMES, defaultPolicy } from '../shared/defaults';
 import type { AppRule, BrowserPolicy, DesktopAction, PolicyDocument } from '../shared/protocol';
 import { POLICY_DOCUMENT_VERSION } from '../shared/protocol';
 import { writeJsonFile } from './logger';
@@ -32,6 +32,19 @@ const DENY = (reason: string): PolicyDecision => ({ allowed: false, reason, requ
  * widened, and only by actions the curated rule itself grants — a hand-edited or repointed
  * rule is left exactly as the user wrote it.
  */
+/**
+ * Adds the runtimes the current build grants to a stored shell allow-list.
+ *
+ * A union of the *version-4 additions* only: re-seeding the whole default list would undo a
+ * prefix the user removed on purpose, while adding nothing keeps denying the interpreter
+ * beeCode installs into its own resources folder.
+ */
+function withDefaultRuntimes(commands: string[]): string[] {
+  const present = new Set(commands.map((command) => command.trim().toLowerCase()));
+  const added = DEFAULT_SHELL_RUNTIMES.filter((name) => !present.has(name));
+  return added.length ? [...commands, ...added] : commands;
+}
+
 export function migratePolicy(parsed: PolicyDocument): PolicyDocument {
   const from = parsed.version ?? 1;
   if (from >= POLICY_DOCUMENT_VERSION) return parsed;
@@ -48,7 +61,10 @@ export function migratePolicy(parsed: PolicyDocument): PolicyDocument {
   // A policy written before the internal browser existed has no `browser` block: fill
   // it from the defaults rather than leaving every `browser_*` call to crash on undefined.
   const browser = { ...defaultPolicy().browser, ...(parsed.browser ?? {}) };
-  return { ...parsed, version: POLICY_DOCUMENT_VERSION, allowedApps, browser };
+  const shell = parsed.shell
+    ? { ...parsed.shell, allowedCommands: withDefaultRuntimes(parsed.shell.allowedCommands ?? []) }
+    : parsed.shell;
+  return { ...parsed, version: POLICY_DOCUMENT_VERSION, allowedApps, browser, shell };
 }
 
 /**
@@ -71,7 +87,19 @@ export class PolicyEngine {
     try {
       const raw = await readFile(file, 'utf8');
       const parsed = JSON.parse(raw) as PolicyDocument;
-      if (parsed && Array.isArray(parsed.allowedApps)) this.policy = migratePolicy(parsed);
+      if (parsed && Array.isArray(parsed.allowedApps)) {
+        this.policy = migratePolicy(parsed);
+        if (this.policy.version !== parsed.version) {
+          try {
+            // Persist the migration so `policy.json` shows what the running build grants instead
+            // of being re-migrated on every start. A failed write is not fatal — the in-memory
+            // policy is already migrated.
+            await this.save(file);
+          } catch {
+            /* keep the migrated policy in memory */
+          }
+        }
+      }
     } catch {
       this.policy = defaultPolicy();
       await this.save(file);
@@ -165,12 +193,35 @@ export class PolicyEngine {
     if (!cfg.enabled) return DENY('shell access is disabled by policy');
     const normalized = command.trim().toLowerCase();
     if (!normalized) return DENY('empty command');
-    const blocked = cfg.blocked.find((b) => normalized.includes(b.toLowerCase()));
+    const forms = this.shellForms(normalized);
+    const blocked = cfg.blocked.find((b) => forms.some((form) => form.includes(b.toLowerCase())));
     if (blocked) return DENY(`command contains blocked pattern "${blocked}"`);
-    if (cfg.allowedCommands.length && !cfg.allowedCommands.some((p) => normalized.startsWith(p.toLowerCase()))) {
+    if (
+      cfg.allowedCommands.length &&
+      !cfg.allowedCommands.some((p) => forms.some((form) => form.startsWith(p.toLowerCase())))
+    ) {
       return DENY(`command does not start with an allowed prefix (${cfg.allowedCommands.join(', ')})`);
     }
     return { allowed: true, reason: 'command matches shell policy', requiresApproval: true };
+  }
+
+  /**
+   * The command as typed, plus a variant with a leading absolute executable path reduced to its
+   * bare name — `"C:\Program Files\beeCode\resources\python\python.exe" -m venv .venv` becomes
+   * `python -m venv .venv`.
+   *
+   * Both the allow prefixes and the block patterns are written against names (`python`, `curl`),
+   * so without this an allowed interpreter invoked by its full path was rejected for starting
+   * with `c:` while an absolute `curl.exe` slipped past the block list.
+   */
+  private shellForms(command: string): string[] {
+    const leading = /^(?:"([^"]+)"|(\S+))(?:\s+([\s\S]*))?$/.exec(command);
+    const target = leading?.[1] ?? leading?.[2] ?? '';
+    if (!/[\\/]/.test(target)) return [command];
+    const name = (target.split(/[\\/]/).pop() ?? '').replace(/\.(exe|cmd|bat|com|ps1)$/i, '');
+    if (!name) return [command];
+    const rest = (leading?.[3] ?? '').trim();
+    return [command, rest ? `${name} ${rest}` : name];
   }
 
   /**

@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { defaultPolicy } from '../shared/defaults';
+import { DEFAULT_SHELL_RUNTIMES, defaultPolicy } from '../shared/defaults';
 import { POLICY_DOCUMENT_VERSION } from '../shared/protocol';
 import type { DesktopAction } from '../shared/protocol';
 import { migratePolicy, PolicyEngine } from './policy';
@@ -117,6 +117,26 @@ test('shell policy refuses blocked patterns and non-allow-listed prefixes', asyn
   assert.equal(policy.evaluateShell('git status && rm -rf /').allowed, false);
 });
 
+test('the bundled Python is allowed by default, also when named by absolute path', async () => {
+  const policy = await engine();
+  assert.equal(policy.evaluateShell('python --version').allowed, true);
+  assert.equal(policy.evaluateShell('python -c "print(1)"').allowed, true);
+  // venv + pip are the point of the bundled runtime.
+  assert.equal(policy.evaluateShell('python -m venv .venv').allowed, true);
+  assert.equal(policy.evaluateShell('python -m pip install requests').allowed, true);
+  assert.equal(policy.evaluateShell('py -3 script.py').allowed, true);
+  assert.equal(policy.evaluateShell('pip install requests').allowed, true);
+  assert.equal(
+    policy.evaluateShell('"C:\\Program Files\\beeCode\\resources\\python\\python.exe" -V').allowed,
+    true,
+  );
+  // ...but a full path must not launder a blocked binary.
+  assert.equal(
+    policy.evaluateShell('"C:\\Windows\\System32\\curl.exe" -s https://example.com').allowed,
+    false,
+  );
+});
+
 test('filesystem policy keeps tools inside the workspace', async () => {
   const policy = await engine();
   assert.equal(policy.evaluateFile('C:\\work\\demo\\notes.txt', false).allowed, true);
@@ -144,6 +164,45 @@ test('policy round-trips through disk', async () => {
     const reloaded = new PolicyEngine(defaultPolicy(), ['C:\\work\\demo']);
     await reloaded.load(file);
     assert.equal(reloaded.get().allowedApps.length, 0);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+
+test('a policy.json written before version 4 gains the bundled runtimes on load', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'bee-policy-migrate-'));
+  const file = join(dir, 'policy.json');
+  try {
+    const stale = defaultPolicy();
+    // Exactly what the pre-v4 build wrote: no python/py/pip prefixes, and this user had removed
+    // `dir` from the list on purpose.
+    const older = {
+      ...stale,
+      version: POLICY_DOCUMENT_VERSION - 1,
+      shell: {
+        ...stale.shell,
+        allowedCommands: stale.shell.allowedCommands.filter(
+          (command) => !DEFAULT_SHELL_RUNTIMES.includes(command) && command !== 'dir',
+        ),
+      },
+    };
+    await writeFile(file, JSON.stringify(older, null, 2), 'utf8');
+
+    const policy = new PolicyEngine(defaultPolicy(), ['C:\\work\\demo']);
+    await policy.load(file);
+
+    // The interpreter beeCode ships is usable straight after an upgrade.
+    assert.equal(policy.evaluateShell('python --version').allowed, true);
+    assert.equal(policy.evaluateShell('python -m venv .venv').allowed, true);
+    assert.equal(policy.evaluateShell('pip install requests').allowed, true);
+    // Not a blanket re-seed: a prefix the user removed stays removed.
+    assert.equal(policy.evaluateShell('dir').allowed, false);
+
+    // The migration is written back, so the file stops claiming to be the old version and is not
+    // re-migrated on every start.
+    const rewritten = JSON.parse(await readFile(file, 'utf8')) as { version: number };
+    assert.equal(rewritten.version, POLICY_DOCUMENT_VERSION);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

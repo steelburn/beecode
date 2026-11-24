@@ -6,7 +6,16 @@ directories:
 files:
   - dist/**/*
   - resources/**/*
+  # The vendored Python runtime cannot be executed from inside the asar, so it is kept out
+  # of the archive and copied next to it by extraResources below.
+  - "!resources/python/**"
+  - "!resources/.cache/**"
   - package.json
+extraResources:
+  - from: resources/python
+    to: python
+    filter:
+      - "**/*"
 extraMetadata:
   main: dist/main.js
 win:

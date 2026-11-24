@@ -10,8 +10,9 @@ import type {
   BeeCodeConfig,
 } from '../../shared/protocol';
 import type { ToolContext } from '../../shared/tools';
-import { buildSystemPrompt } from '../llm/prompts';
 import { streamChat } from '../llm/client';
+import { buildSystemPrompt } from '../llm/prompts';
+import { pythonSummary } from '../python';
 import type { LlmChunk, LlmImage, LlmMessage, LlmToolSchema } from '../llm/types';
 import type { Logger } from '../logger';
 import type { MemoryStore } from '../stores';
@@ -144,6 +145,7 @@ export class AgentLoop {
           mode: session.mode,
           cwd: session.cwd,
           platform: process.platform,
+          python: pythonSummary(),
           allowedApps: this.deps.describePolicy(),
           agentName: 'beeCode',
           subagents: this.deps.listAgents(),

@@ -1,4 +1,6 @@
 import { spawn, spawnSync } from 'node:child_process';
+import { findExecutable } from '../executables';
+import { childEnvironment } from '../python';
 
 export interface CliAgentConfig {
   id: string;
@@ -98,18 +100,16 @@ export function probeCommand(command: string): CommandProbe {
   if (!command.trim()) return { onPath: false, detail: 'no command configured' };
   const isWin = process.platform === 'win32';
   try {
-    const found = spawnSync(isWin ? 'where.exe' : 'which', [command], {
+    // PATH plus the conventional install roots: a CLI installed per-user, or by an
+    // installer that never refreshed the session PATH, is still installed.
+    const location = findExecutable(command);
+    if (!location) return { onPath: false, detail: `${command} not found on PATH` };
+    const versionRun = spawnSync(location, ['--version'], {
       windowsHide: true,
       encoding: 'utf8',
       timeout: PROBE_TIMEOUT_MS,
-    });
-    if (found.status !== 0) return { onPath: false, detail: `${command} not found on PATH` };
-    const location = String(found.stdout ?? '').split(/\r?\n/).find((line) => line.trim());
-    const versionRun = spawnSync(command, ['--version'], {
-      windowsHide: true,
-      encoding: 'utf8',
-      timeout: PROBE_TIMEOUT_MS,
-      shell: isWin, // .cmd shims (codex.cmd, claude.cmd)
+      env: childEnvironment(),
+      shell: isWin && /\.(cmd|bat)$/i.test(location), // .cmd shims (codex.cmd, claude.cmd)
     });
     const version = String(versionRun.stdout ?? versionRun.stderr ?? '')
       .split(/\r?\n/)
@@ -190,11 +190,14 @@ export class CliAgentAdapter {
       let settled = false;
       let timedOut = false;
 
-      const child = spawn(this.config.command, argv, {
+      // Resolved the way probeCommand resolves it: an installer that never refreshed the
+      // session PATH leaves the CLI installed but invisible to a bare spawn.
+      const command = findExecutable(this.config.command) ?? this.config.command;
+      const child = spawn(command, argv, {
         cwd: options.cwd,
         windowsHide: true,
-        shell: process.platform === 'win32', // .cmd shims (codex.cmd, claude.cmd)
-        env: { ...process.env, BEECODE_SUBAGENT: '1' },
+        shell: process.platform === 'win32' && /\.(cmd|bat)$/i.test(command), // .cmd shims
+        env: { ...childEnvironment(), BEECODE_SUBAGENT: '1' },
       });
 
       const finish = (result: CliRunResult) => {

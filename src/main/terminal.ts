@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { resolve, sep } from 'node:path';
+import { childEnvironment } from '../service/python';
 import type { TerminalLine, TerminalState } from '../shared/terminal';
 
 /**
@@ -179,8 +180,9 @@ export class WorkspaceTerminal {
           windowsHide: true,
           shell: false,
           windowsVerbatimArguments: true,
+          env: childEnvironment(),
         })
-      : spawn('/bin/sh', ['-c', line], { cwd: this.cwd, shell: false });
+      : spawn('/bin/sh', ['-c', line], { cwd: this.cwd, shell: false, env: childEnvironment() });
   }
 
   private finish(code: number | undefined): void {
