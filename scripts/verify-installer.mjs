@@ -211,11 +211,32 @@ function run(cmd, args, timeoutMs = 120000, options = {}) {
 // while every check on release/win-unpacked still passes. So install for real and boot
 // the installed exe with --smoke (scratch user-data, GUI quirks stripped from env).
 if (process.platform === 'win32') {
-  const setup = readdirSync('release').find((f) => /^beeCode Setup .*\.exe$/.test(f));
-  check('installer artifact present', Boolean(setup), setup ?? 'release/beeCode Setup *.exe');
+  const pkgVersion = JSON.parse(readFileSync('package.json', 'utf8')).version;
+  // Name the artifact for the version being packaged: release/ can hold older builds, and
+  // picking whichever .exe came first verified a stale installer against fresh code.
+  const expectedSetup = `beeCode Setup ${pkgVersion}.exe`;
+  const releaseFiles = readdirSync('release');
+  const setup = releaseFiles.includes(expectedSetup) ? expectedSetup : undefined;
+  const otherSetups = releaseFiles.filter((f) => /^beeCode Setup .*\.exe$/.test(f));
+  check(
+    'installer artifact present for the packaged version',
+    Boolean(setup),
+    setup ?? `release/${expectedSetup} missing (found: ${otherSetups.join(', ') || 'none'})`,
+  );
   if (setup) {
     const setupPath = join('release', setup);
     const sizeMb = (statSync(setupPath).size / 1024 / 1024).toFixed(1);
+    // The updater serves whatever latest.yml names, so a manifest that disagrees with the
+    // file on disk is a broken release even when the installer itself boots.
+    const manifest = readFileSync('release/latest.yml', 'utf8');
+    const manifestVersion = /^version:\s*(\S+)/m.exec(manifest)?.[1];
+    const manifestSize = Number(/\n\s+size:\s*(\d+)/.exec(manifest)?.[1] ?? 0);
+    const fileSize = statSync(setupPath).size;
+    check(
+      'latest.yml names this version and its size matches the file',
+      manifestVersion === pkgVersion && manifestSize === fileSize,
+      `manifest ${manifestVersion} / ${manifestSize} bytes, file ${pkgVersion} / ${fileSize} bytes`,
+    );
     const installed = join(process.env.LOCALAPPDATA ?? '', 'Programs', 'beeCode');
     const install = await run(setupPath, ['/S'], 420000);
     const installedExe = join(installed, 'beeCode.exe');
@@ -226,10 +247,13 @@ if (process.platform === 'win32') {
     );
     const sha = (p) => createHash('sha256').update(readFileSync(p)).digest('hex');
     const installedAsar = join(installed, 'resources', 'app.asar');
-    check(
-      'installed payload matches release/win-unpacked',
-      existsSync(installedAsar) && sha(installedAsar) === sha(ASAR),
-    );
+    // NSIS can exit before the last files land, so poll briefly instead of racing the deploy.
+    let payloadMatches = false;
+    for (let i = 0; i < 30 && !payloadMatches; i += 1) {
+      payloadMatches = existsSync(installedAsar) && sha(installedAsar) === sha(ASAR);
+      if (!payloadMatches) await new Promise((r) => setTimeout(r, 1000));
+    }
+    check('installed payload matches release/win-unpacked', payloadMatches);
     if (existsSync(installedExe)) {
       const userData = mkdtempSync(join(tmpdir(), 'beecode-installed-'));
       const env = { ...process.env };
