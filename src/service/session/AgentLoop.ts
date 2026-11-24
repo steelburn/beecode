@@ -8,6 +8,7 @@ import type {
   ServiceEvent,
   ToolCallRecord,
   BeeCodeConfig,
+  SlateRef,
 } from '../../shared/protocol';
 import type { ToolContext } from '../../shared/tools';
 import { streamChat } from '../llm/client';
@@ -17,6 +18,26 @@ import type { LlmChunk, LlmImage, LlmMessage, LlmToolSchema } from '../llm/types
 import type { Logger } from '../logger';
 import type { MemoryStore } from '../stores';
 import type { ToolRegistry } from '../tools/registry';
+
+/**
+ * The slate a tool result points at, read from `meta.slate`. Returns undefined for every
+ * other tool, so a malformed payload loses the card instead of breaking the tool result.
+ */
+function slateRefFrom(meta: Record<string, unknown> | undefined): SlateRef | undefined {
+  const raw = meta?.slate;
+  if (!raw || typeof raw !== 'object') return undefined;
+  const value = raw as Record<string, unknown>;
+  const kind = value.kind;
+  if (typeof value.id !== 'string' || typeof value.title !== 'string') return undefined;
+  if (kind !== 'markdown' && kind !== 'html' && kind !== 'csv') return undefined;
+  return {
+    id: value.id,
+    title: value.title,
+    kind,
+    version: typeof value.version === 'number' ? value.version : 1,
+    versions: typeof value.versions === 'number' ? value.versions : 1,
+  };
+}
 
 export interface SessionState {
   id: string;
@@ -392,6 +413,7 @@ export class AgentLoop {
       toolName: call.name,
       toolResult: text,
       failed: result.failed === true,
+      ...(slateRefFrom(result.meta) ? { slate: slateRefFrom(result.meta) } : {}),
     });
     session.messages.push({
       role: 'tool',
@@ -401,6 +423,11 @@ export class AgentLoop {
       toolFailed: result.failed === true,
     });
     this.deps.emit({ type: 'tool.result', payload: { sessionId: session.id, callId: call.id, name: call.name, result: text, failed: result.failed === true, meta: result.meta } });
+    // A slate tool result carries its identity in `meta.slate`: the transcript renders a
+    // one-line card from it and the gallery refreshes on the event, so the document body
+    // never has to travel through the chat.
+    const slate = slateRefFrom(result.meta);
+    if (slate) this.deps.emit({ type: 'slate.update', payload: { sessionId: session.id, slate } });
     void entry;
     return { stopTurn: false };
   }

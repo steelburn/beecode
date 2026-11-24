@@ -14,6 +14,12 @@ import { canSwitchView, defaultView, fileKind, type FileKind, type FileView } fr
 export const CHAT_TAB = 'chat';
 /** The embedded browser is a singleton: the main process owns exactly one page view. */
 export const BROWSER_TAB = 'browser';
+/**
+ * The slate gallery is a singleton too, and it is not a document: it lists the slates of
+ * the current session. Opening one opens its version file, which *is* a document tab — a
+ * slate needs no tab type of its own, only a path.
+ */
+export const SLATE_TAB = 'slate';
 
 /** How rendered documents paint. Source text and the app chrome do not follow it. */
 export type DocTheme = 'dark' | 'light';
@@ -111,7 +117,7 @@ export function setDocView(state: DocTabsState, path: string, view: FileView): D
  * leaving the main area on a document that is no longer there.
  */
 export function activateTab(state: DocTabsState, id: string): DocTabsState {
-  if (id === CHAT_TAB || id === BROWSER_TAB) return { ...state, active: id };
+  if (id === CHAT_TAB || id === BROWSER_TAB || id === SLATE_TAB) return { ...state, active: id };
   const known = state.tabs.some((tab) => docId(tab.path) === id);
   return { ...state, active: known ? id : CHAT_TAB };
 }

@@ -68,10 +68,23 @@ const markdownOk =
 // and the scheduler live in the settings dialog and the terminal in the drawer, so a
 // regression that puts them back into the strip is caught here.
 const panelTabs = report.dom?.panelTabs ?? {};
+// The slate probe seeds one slate with two versions in the workspace: the RPC list and read
+// must agree with it, and the panel that lists slates must open.
+const slates = report.dom?.slates ?? {};
+const slatesOk =
+  slates.listed === 1 &&
+  slates.title === 'Smoke slate' &&
+  slates.versions === 2 &&
+  slates.current === 2 &&
+  typeof slates.content === 'string' &&
+  slates.content.includes('Second version') &&
+  slates.panelTab === true &&
+  slates.panelSection === true;
+
 const panelTabsOk =
-  panelTabs.count === 3 &&
+  panelTabs.count === 4 &&
   JSON.stringify(panelTabs.panels) ===
-    JSON.stringify(['subagents', 'activity', 'explorer']) &&
+    JSON.stringify(['subagents', 'activity', 'slates', 'explorer']) &&
   panelTabs.dialog === true &&
   panelTabs.drawer === true;
 
@@ -290,6 +303,7 @@ const ok =
   markdownOk &&
   columnsOk &&
   panelTabsOk &&
+  slatesOk &&
   toolsOk &&
   permissionsOk &&
   integrationsOk &&
@@ -307,6 +321,7 @@ const ok =
   railOk &&
   terminalOk;
 if (!columnsOk) console.error(`[smoke] side column check failed: ${JSON.stringify(columns)}`);
+if (!slatesOk) console.error(`[smoke] slate check failed: ${JSON.stringify(slates)}`);
 if (!panelTabsOk)
   console.error(`[smoke] panel tab strip check failed: ${JSON.stringify(panelTabs)}`);
 if (!markdownOk) console.error(`[smoke] markdown/chart render check failed: ${JSON.stringify(rendered)}`);

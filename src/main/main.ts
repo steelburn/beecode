@@ -388,6 +388,43 @@ async function runSmokeCheck(serviceReady: boolean): Promise<void> {
   await rm(smokeShelf, { recursive: true, force: true }).catch(() => undefined);
   await mkdir(smokeShelf, { recursive: true }).catch(() => undefined);
 
+  // A slate exactly where the tools write one: the layout on disk is the contract between
+  // SlateStore and the UI, so the probe seeds two versions and reads them back through the
+  // RPCs and the panel. Nothing here is a placeholder — it is the same meta.json shape.
+  const smokeConfig = await supervisor.request('config.get', {}).catch(() => undefined);
+  const smokeSlateRoot = (smokeConfig?.workspace.root ?? '').trim();
+  const smokeSlateDir = smokeSlateRoot
+    ? join(smokeSlateRoot, '.beecode', 'slates', 'smoke-slate', 'smoke-demo')
+    : '';
+  if (smokeSlateDir) {
+    const stamp = new Date().toISOString();
+    const first = '# Smoke slate\n\nFirst version.\n';
+    const second = '# Smoke slate\n\nSecond version.\n';
+    await mkdir(smokeSlateDir, { recursive: true }).catch(() => undefined);
+    await writeFile(join(smokeSlateDir, '001-smoke-demo.md'), first, 'utf8').catch(() => undefined);
+    await writeFile(join(smokeSlateDir, '002-smoke-demo.md'), second, 'utf8').catch(() => undefined);
+    await writeFile(
+      join(smokeSlateDir, 'meta.json'),
+      `${JSON.stringify(
+        {
+          id: 'smoke-demo',
+          title: 'Smoke slate',
+          kind: 'markdown',
+          current: 2,
+          versions: [
+            { n: 1, file: '001-smoke-demo.md', bytes: Buffer.byteLength(first), createdAt: stamp },
+            { n: 2, file: '002-smoke-demo.md', bytes: Buffer.byteLength(second), createdAt: stamp },
+          ],
+          createdAt: stamp,
+          updatedAt: stamp,
+        },
+        null,
+        2,
+      )}\n`,
+      'utf8',
+    ).catch(() => undefined);
+  }
+
   let dom: Record<string, unknown> = { error: 'window unavailable' };
   try {
     dom = (await win?.webContents.executeJavaScript(
@@ -429,6 +466,35 @@ async function runSmokeCheck(serviceReady: boolean): Promise<void> {
             dialog: !!document.getElementById('settings-modal'),
             drawer: !!document.getElementById('drawer-body'),
           };
+          // Slates: list and read the seeded slate through the service, then open the panel
+          // that lists them. The gallery in the main area lists the same RPC result, so this
+          // covers the path the transcript card and the SLATE_TAB both take.
+        })(),
+        slates: await (async () => {
+            try {
+              const cfg = await window.beeCode.invoke('config.get', {});
+              const cwd = cfg.workspace.root;
+              const listed = await window.beeCode.invoke('slate.list', { sessionId: 'smoke-slate', cwd });
+              const first = listed.slates[0];
+              const read = first
+                ? await window.beeCode.invoke('slate.read', { sessionId: 'smoke-slate', cwd, id: first.id })
+                : undefined;
+              const tab = document.querySelector('.panel-tabs .tab[data-panel="slates"]');
+              if (tab) tab.click();
+              const section = document.querySelector('#panel .panel-section.slates');
+              return {
+                listed: listed.slates.length,
+                title: first?.title,
+                versions: first ? first.versions.length : 0,
+                current: first ? first.current : 0,
+                path: read?.path,
+                content: read?.content,
+                panelTab: Boolean(tab),
+                panelSection: Boolean(section),
+              };
+            } catch (err) {
+              return { error: String(err) };
+            }
         })(),
         settings: await (async () => {
           const opener = document.getElementById('open-settings');
@@ -845,6 +911,9 @@ async function runSmokeCheck(serviceReady: boolean): Promise<void> {
 
   // The probe leaves the shelf attached only when it failed half-way: detach and delete it.
   await supervisor.request('knowledge.remove', { path: smokeShelf }).catch(() => undefined);
+  if (smokeSlateDir) {
+    await rm(smokeSlateDir, { recursive: true, force: true }).catch(() => undefined);
+  }
   await rm(smokeShelf, { recursive: true, force: true }).catch(() => undefined);
 
   // Internal browser: the dock must reserve a rectangle before the host can paint a page

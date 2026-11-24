@@ -7,7 +7,7 @@ import type { ToolInfo } from '../../shared/protocol';
  * refused in-band: resolving a relative path against the process directory would make
  * the installation folder the agent's workspace, which the product never does.
  */
-const WORKSPACE_GROUPS = new Set(['files', 'shell']);
+const WORKSPACE_GROUPS = new Set(['files', 'shell', 'slate']);
 
 /** Ordered tool catalogue with a name index. */
 export class ToolRegistry {

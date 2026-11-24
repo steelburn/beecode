@@ -3,6 +3,7 @@ import { canShowFile, mountFileView } from './fileView';
 import {
   BROWSER_TAB,
   CHAT_TAB,
+  SLATE_TAB,
   activeDoc,
   docId,
   docThemeClass,
@@ -11,6 +12,7 @@ import {
   type DocTheme,
 } from './docTabs';
 import { canSwitchView, type FileView } from './preview';
+import { renderSlateGallery, type SlateGalleryView } from './slateGallery';
 
 /**
  * The main-area tab strip and the document pane below it.
@@ -32,6 +34,14 @@ export interface MainAreaHandlers {
   close(path: string): void;
   setView(path: string, view: FileView): void;
   toggleTheme(): void;
+  /** Open one version of a slate as a document tab; without a version, the current one. */
+  openSlate(id: string, version?: number): void;
+  removeSlate(id: string): void;
+}
+
+/** Everything below the strip needs besides the tab state itself. */
+export interface MainAreaView extends SlateGalleryView {
+  browserVisible: boolean;
 }
 
 export interface MainAreaHost {
@@ -43,20 +53,22 @@ export interface MainAreaHost {
 
 export interface MainArea {
   /** Repaint the strip and the document pane. Cheap and idempotent. */
-  render(state: DocTabsState, view: { browserVisible: boolean }): void;
+  render(state: DocTabsState, view: MainAreaView): void;
 }
 
 export function mountMainArea(host: MainAreaHost, handlers: MainAreaHandlers): MainArea {
   return {
     render(state, view) {
       const doc = activeDoc(state);
+      const slateActive = state.active === SLATE_TAB;
       const browserActive = state.active === BROWSER_TAB && view.browserVisible;
-      renderStrip(host.strip, state, view.browserVisible, handlers);
-      host.workspace.classList.toggle('view-doc', Boolean(doc));
+      renderStrip(host.strip, state, view, handlers);
+      host.workspace.classList.toggle('view-doc', Boolean(doc) || slateActive);
       host.workspace.classList.toggle('view-browser', browserActive);
-      host.workspace.classList.toggle('view-chat', !doc && !browserActive);
-      host.pane.hidden = !doc;
+      host.workspace.classList.toggle('view-chat', !doc && !slateActive && !browserActive);
+      host.pane.hidden = !doc && !slateActive;
       if (doc) renderDoc(host.pane, doc, state.theme, handlers);
+      else if (slateActive) renderSlateGallery(host.pane, view, handlers);
       else clear(host.pane);
     },
   };
@@ -69,25 +81,36 @@ export function mountMainArea(host: MainAreaHost, handlers: MainAreaHandlers): M
 function renderStrip(
   strip: HTMLElement,
   state: DocTabsState,
-  browserVisible: boolean,
+  view: MainAreaView,
   handlers: MainAreaHandlers,
 ): void {
   // The strip is rebuilt whenever the tab set changes: keep where the user scrolled it, or
   // every tab open throws the view back to the first tab.
   const keptScroll = strip.querySelector('.view-tablist')?.scrollLeft ?? 0;
   clear(strip);
-  strip.hidden = state.tabs.length === 0 && !browserVisible;
+  strip.hidden = state.tabs.length === 0 && !view.browserVisible && view.slates.length === 0;
   if (strip.hidden) return;
 
   const tabs = [
     tabButton(CHAT_TAB, 'Chat', 'The chat transcript', state.active === CHAT_TAB, () =>
       handlers.activate(CHAT_TAB),
     ),
+    ...(view.slates.length
+      ? [
+          tabButton(
+            SLATE_TAB,
+            'Slates',
+            'The slates this session produced',
+            state.active === SLATE_TAB,
+            () => handlers.activate(SLATE_TAB),
+          ),
+        ]
+      : []),
     ...state.tabs.map((tab) =>
       docTabButton(tab, state.active === docId(tab.path), handlers),
     ),
   ];
-  if (browserVisible) {
+  if (view.browserVisible) {
     tabs.push(
       tabButton(BROWSER_TAB, 'Browser', 'The embedded browser page', state.active === BROWSER_TAB, () =>
         handlers.activate(BROWSER_TAB),

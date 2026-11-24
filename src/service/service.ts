@@ -25,6 +25,7 @@ import type {
   FsEntry,
   FsFile,
   FsListing,
+  SlateSummary,
 } from '../shared/protocol';
 import type { HostCall } from '../shared/browser';
 import { paths } from '../shared/tools';
@@ -38,6 +39,7 @@ import { DesktopController } from './desktop/controller';
 import { McpManager } from './mcp/manager';
 import { convertOffice, officeFormat, type OfficeFormat } from './preview/office';
 import { SkillStore } from './skills/store';
+import { SlateStore, type SlateLocation, type SlateMeta } from './slates';
 import { installSkills } from './skills/install';
 import { readZip } from './skills/zip';
 import { installPlugins } from './plugins/install';
@@ -97,6 +99,7 @@ export class BeeCodeService {
   private sessionStore!: SessionStore;
   private registry!: ToolRegistry;
   private skills!: SkillStore;
+  private readonly slates = new SlateStore();
   private mcp!: McpManager;
   private plugins!: PluginHost;
   /** Schedules on disk — the same list the `schedule` tool and the Scheduler panel edit. */
@@ -225,6 +228,7 @@ export class BeeCodeService {
       goalTodoEnabled: this.config.features.goalTodo,
       disabledTools: this.config.tools.disabled,
       skills: this.skills,
+      slates: this.slates,
       scanSkills: (cwd) => this.scanSkills(cwd),
       mcp: this.mcp,
       // Same contract as MCP: the thunk is re-read on every rebuildRegistries(), which
@@ -630,6 +634,43 @@ export class BeeCodeService {
         return { servers };
       }
 
+      case 'slate.list': {
+        const location = this.slateLocation(args);
+        const metas = await this.slates.list(location);
+        return { slates: metas.map((meta) => this.slateSummary(location, meta)) };
+      }
+
+      case 'slate.read': {
+        const read = await this.slates.read({
+          ...this.slateLocation(args),
+          id: this.requireString(args, 'id'),
+          version: typeof args.version === 'number' ? args.version : undefined,
+        });
+        return {
+          ...this.slateSummary(this.slateLocation(args), read.meta),
+          version: { ...read.version, path: read.path },
+          path: read.path,
+          content: read.content,
+        };
+      }
+
+      case 'slate.remove': {
+        const id = this.requireString(args, 'id');
+        const location = this.slateLocation(args);
+        const metas = await this.slates.remove({ ...location, id });
+        return { slates: metas.map((meta) => this.slateSummary(location, meta)) };
+      }
+
+      case 'slate.promote': {
+        const promoted = await this.slates.promote({
+          ...this.slateLocation(args),
+          id: this.requireString(args, 'id'),
+          path: this.requireString(args, 'path'),
+          version: typeof args.version === 'number' ? args.version : undefined,
+        });
+        return { path: promoted.path, version: promoted.version };
+      }
+
       case 'skill.list':
         return { skills: await this.scanSkills(this.skillsCwd(args)) };
 
@@ -1004,6 +1045,29 @@ export class BeeCodeService {
     const p = paths();
     await mkdir(p.home, { recursive: true });
     await writeJsonFile(p.config, this.config);
+  }
+
+  /**
+   * Where a slate RPC reads and writes: a slate always belongs to one session inside one
+   * workspace folder, so a named session decides both halves of the location.
+   */
+  private slateLocation(args: Record<string, unknown>): SlateLocation {
+    const sessionId = typeof args.sessionId === 'string' ? args.sessionId.trim() : '';
+    if (sessionId && this.sessions.has(sessionId)) {
+      const session = this.sessions.get(sessionId);
+      return { cwd: session.cwd, sessionId: session.id };
+    }
+    if (!sessionId) throw new Error('a slate belongs to a session — pass its sessionId');
+    return { cwd: this.skillsCwd(args), sessionId };
+  }
+
+  /** The wire shape: a store meta plus the absolute path of every version file. */
+  private slateSummary(location: SlateLocation, meta: SlateMeta): SlateSummary {
+    const dir = this.slates.slateDir({ ...location, id: meta.id });
+    return {
+      ...meta,
+      versions: meta.versions.map((version) => ({ ...version, path: join(dir, version.file) })),
+    };
   }
 
   private skillsCwd(args: Record<string, unknown>): string {

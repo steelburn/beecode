@@ -5,6 +5,7 @@ import type { DesktopController } from '../desktop/controller';
 import type { McpManager } from '../mcp/manager';
 import type { PolicyEngine } from '../policy';
 import type { SkillStore } from '../skills/store';
+import type { SlateStore } from '../slates';
 import type { GoalStore, MemoryStore, TodoStore } from '../stores';
 import type { SubagentRunner } from '../subagents/runner';
 import type { BrowserController } from '../browser/controller';
@@ -17,6 +18,7 @@ import { ToolRegistry } from './registry';
 import { schedulerTools, type SchedulerToolDeps } from './scheduler';
 import { shellTools } from './shell';
 import { skillTools } from './skills';
+import { slateTools } from './slates';
 
 export interface ToolDeps {
   controller: DesktopController;
@@ -35,6 +37,8 @@ export interface ToolDeps {
    */
   disabledTools: Iterable<string>;
   skills: SkillStore;
+  /** Slate store behind create_slate / update_slate and the slate tab. */
+  slates: SlateStore;
   /** Rescans the skill roots for a working directory (config-aware). */
   scanSkills: (cwd: string) => Promise<SkillInfo[]>;
   /** Scheduler store + runner behind the `schedule` tool; absent when scheduling is off. */
@@ -79,6 +83,7 @@ export function buildToolRegistry(deps: ToolDeps, options: { allowDelegation: bo
       goalTodoEnabled: deps.goalTodoEnabled,
     }),
     ...skillTools({ store: deps.skills, scan: deps.scanSkills }),
+    ...slateTools({ store: deps.slates, policy: deps.policy }),
     ...(deps.scheduler ? schedulerTools(deps.scheduler) : []),
     ...agentTools({ subagents: deps.subagents, allowDelegation: options.allowDelegation }),
     ...(deps.mcp ? deps.mcp.toolDefinitions() : []),

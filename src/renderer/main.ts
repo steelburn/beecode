@@ -22,7 +22,10 @@ import type {
   TranscriptAction,
   TranscriptEntry,
   WorkspaceState,
+  SlateRef,
+  SlateSummary,
 } from '../shared/protocol';
+import { slateCardVersionLabel, slateRefOf } from './slateRef';
 import { initColumns } from './columns';
 import { clear, formatJsonForDisplay, h, renderMarkdown } from './dom';
 import { mountBrowserDock, type BrowserDock, type DockMode } from './browserDock';
@@ -50,6 +53,7 @@ import {
   renderPermissions,
   renderScheduler,
   renderSettings,
+  renderSlates,
   renderSubagents,
   renderTools,
 } from './panels';
@@ -174,7 +178,7 @@ window.addEventListener('unhandledrejection', (event) => rendererErrors.push(Str
  * it did, and the workspace files it can reach. Everything app-wide — models, integrations,
  * scheduled runs — lives in the settings dialog, and the shell in the bottom drawer.
  */
-type PanelTab = 'subagents' | 'activity' | 'explorer';
+type PanelTab = 'subagents' | 'activity' | 'explorer' | 'slates';
 
 /** Settings dialog sections: one per card group that used to be a panel tab of its own. */
 type SettingsSection = 'general' | 'tools' | 'permissions' | 'integrations' | 'automation';
@@ -224,6 +228,10 @@ interface State {
   explorer: ExplorerState;
   /** Main-area tabs: the open documents, the active view and the rendered theme. */
   docs: DocTabsState;
+  /** Slates of the current session, as the SLATE_TAB gallery lists them. */
+  slates: SlateSummary[];
+  /** Set when `slate.list` failed, so the gallery can say why it is empty. */
+  slateError?: string;
   panel: PanelTab;
   /** App-wide configuration: it opens over the session instead of taking a panel tab. */
   settings: { open: boolean; section: SettingsSection };
@@ -256,6 +264,7 @@ const state: State = {
   unread: new Set<string>(),
   explorer: {},
   docs: emptyDocTabs(readDocTheme()),
+  slates: [],
   panel: 'subagents',
   settings: { open: false, section: 'general' },
   terminalOpen: false,
@@ -328,6 +337,8 @@ async function boot(): Promise<void> {
     { workspace: els.workspace, strip: els.viewTabs, pane: els.docPane },
     {
       activate: activateMainTab,
+      openSlate: (id, version) => void openSlate(id, version),
+      removeSlate: (id) => void removeSlate(id),
       close: closeDocTab,
       setView: setDocTabView,
       toggleTheme: toggleDocTheme,
@@ -527,6 +538,12 @@ function bindUi(): void {
   for (const tab of document.querySelectorAll<HTMLButtonElement>('.panel-tabs .tab')) {
     tab.addEventListener('click', () => {
       state.panel = (tab.dataset.panel as PanelTab) ?? 'subagents';
+      // The panel lists the session's slates, so it re-reads them on every visit.
+      if (state.panel === 'slates') {
+        const open = state.current?.id;
+        if (open) void loadSlates(open).then(() => renderPanels());
+        else renderPanels();
+      }
       for (const other of document.querySelectorAll('.panel-tabs .tab')) other.classList.toggle('active', other === tab);
       // A boot load that failed — a transient RPC, a service that was still starting — left
       // every panel empty while the composer kept working. Opening a tab is the user asking
@@ -629,6 +646,7 @@ async function openSession(sessionId: string): Promise<void> {
   state.unread.delete(sessionId);
   state.statuses[sessionId] = snapshot.status;
   state.current = snapshot;
+  void loadSlates(sessionId);
   state.lastCwd = snapshot.cwd;
   state.entries = snapshot.entries;
   state.approval = snapshot.pendingApproval;
@@ -673,6 +691,64 @@ function setAttachments(paths: string[]): void {
     return true;
   });
   renderAttachments();
+}
+
+/**
+ * The gallery lists what the store holds right now rather than accumulating events: a
+ * slate created before this window opened has to appear too.
+ */
+async function loadSlates(sessionId: string): Promise<void> {
+  try {
+    const { slates } = await api.invoke('slate.list', { sessionId });
+    if (state.current?.id !== sessionId) return;
+    state.slates = slates;
+    state.slateError = undefined;
+  } catch (error) {
+    if (state.current?.id !== sessionId) return;
+    state.slates = [];
+    state.slateError = (error as Error).message;
+  }
+  renderMainArea();
+}
+
+/**
+ * Open one slate version as a document tab. The service returns the version's file and
+ * text, which is exactly what a tab holds, so there is no second read and no slate-only
+ * viewer: the markdown and sandboxed-HTML renderers already exist.
+ */
+async function openSlate(id: string, version?: number): Promise<void> {
+  const sessionId = state.current?.id;
+  if (!sessionId) return;
+  try {
+    const slate = await api.invoke('slate.read', { id, sessionId, version });
+    state.docs = openDoc(state.docs, {
+      path: slate.path,
+      name: slate.version.file,
+      size: slate.version.bytes,
+      truncated: false,
+      binary: false,
+      text: slate.content,
+    });
+    renderMainArea();
+  } catch (error) {
+    setHint(`Could not open the slate: ${(error as Error).message}`);
+  }
+}
+
+/** Delete a slate and close any tab that was showing one of its versions. */
+async function removeSlate(id: string): Promise<void> {
+  const sessionId = state.current?.id;
+  if (!sessionId) return;
+  const removed = state.slates.find((candidate) => candidate.id === id);
+  try {
+    const { slates } = await api.invoke('slate.remove', { id, sessionId });
+    state.slates = slates;
+    state.slateError = undefined;
+    for (const version of removed?.versions ?? []) state.docs = closeDoc(state.docs, version.path);
+    renderMainArea();
+  } catch (error) {
+    setHint(`Could not remove the slate: ${(error as Error).message}`);
+  }
 }
 
 function addAttachments(paths: string[]): void {
@@ -911,6 +987,13 @@ function handleEvent(event: import('../shared/protocol').ServiceEvent): void {
       break;
     }
 
+    case 'slate.update': {
+      if (event.payload.sessionId !== state.current?.id) return;
+      // The gallery refreshes from the service, not from the payload: one order of truth.
+      void loadSlates(event.payload.sessionId);
+      break;
+    }
+
     case 'tool.result': {
       if (event.payload.sessionId !== state.current?.id) {
         markBackground(event.payload.sessionId);
@@ -924,6 +1007,7 @@ function handleEvent(event: import('../shared/protocol').ServiceEvent): void {
         toolCallId: event.payload.callId,
         toolName: event.payload.name,
         toolResult: event.payload.result,
+        slate: slateRefOf(event.payload.meta),
         failed: event.payload.failed,
       });
       const meta = event.payload.meta;
@@ -1337,6 +1421,30 @@ function buildEntry(entry: TranscriptEntry): HTMLElement {
   return wrapper;
 }
 
+/**
+ * One line per slate in the transcript: `Sales Q3 · v2 · Open`. The version travels with
+ * the entry, so a resumed session shows the card it showed when the tool ran.
+ */
+function buildSlateCard(entry: TranscriptEntry, slate: SlateRef): HTMLElement {
+  const open = h('button', {
+    type: 'button',
+    class: 'btn ghost small slate-open',
+    text: 'Open',
+    title: 'Open this slate in its own tab',
+  });
+  open.addEventListener('click', () => void openSlate(slate.id, slate.version));
+  return h(
+    'div',
+    { class: 'slate-card', dataset: { entryId: entry.id, slateId: slate.id } },
+    h('span', { class: 'slate-card-title', text: slate.title }),
+    h('span', {
+      class: 'slate-card-meta',
+      text: slateCardVersionLabel(slate),
+    }),
+    open,
+  );
+}
+
 /** The files a user entry was sent with; the prompt already ran, so these are read-only. */
 function buildEntryAttachments(paths: string[]): HTMLElement {
   const row = h('div', { class: 'msg-attachments' });
@@ -1405,6 +1513,9 @@ async function applyStepLimit(
 
 function buildToolCard(entry: TranscriptEntry): HTMLElement {
   const failed = entry.failed === true;
+  // A slate is a document, and a document belongs in a tab: the transcript keeps one line
+  // pointing at it instead of the body the model just wrote.
+  if (entry.slate && !failed) return buildSlateCard(entry, entry.slate);
   const result = entry.toolResult ?? entry.text;
   return h(
     'details',
@@ -1669,6 +1780,8 @@ function renderPanels(): void {
       state.explorer = { ...state.explorer, newFolder: name };
     },
     createKnowledgeFolder: (path: string) => void createKnowledgeSubfolder(path),
+    openSlate: (id: string, version?: number) => void openSlate(id, version),
+    removeSlate: (id: string) => removeSlate(id),
     copyToKnowledge: (path: string) => void copyFileToKnowledge(path),
     close: () => {
       state.explorer = { ...state.explorer, file: undefined, view: undefined };
@@ -1767,7 +1880,8 @@ function renderPanels(): void {
         explorerCallbacks,
       );
     } else void openExplorer(state.explorer.path);
-  } else renderActivity(host, state.audit, callbacks);
+  } else if (state.panel === 'slates') renderSlates(host, state.slates, state.slateError, callbacks);
+  else renderActivity(host, state.audit, callbacks);
 }
 
 /**
@@ -2033,7 +2147,7 @@ function writeDocTheme(theme: DocTheme): void {
 }
 
 function renderMainArea(): void {
-  mainArea?.render(state.docs, { browserVisible: browserShown });
+  mainArea?.render(state.docs, { browserVisible: browserShown, slates: state.slates, error: state.slateError });
 }
 
 /**

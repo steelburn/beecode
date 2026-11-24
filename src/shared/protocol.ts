@@ -64,6 +64,8 @@ export interface TranscriptEntry {
   toolResult?: string;
   /** Marks a tool entry that failed, so the UI can style it. */
   failed?: boolean;
+  /** Set on a tool entry that wrote a slate: the transcript renders a card, not the body. */
+  slate?: SlateRef;
   /** Buttons the transcript offers next to this entry. */
   actions?: TranscriptAction[];
   /** Set when this assistant turn was interleaved with reasoning text. */
@@ -146,6 +148,7 @@ export interface ToolInfo {
     | 'control'
     | 'mcp'
     | 'skills'
+    | 'slate'
     | 'scheduler'
     | 'plugins';
   /** JSON Schema (draft-07 subset) for the tool arguments. */
@@ -774,6 +777,56 @@ export interface DelegateArgs {
   cwd?: string;
 }
 
+/**
+ * A slate is a document the agent writes for the app to render in its own tab, next to
+ * the chat. The kind is fixed at creation — the version file's extension follows it — and
+ * `current` is the version the app shows; an older one can be pinned in the UI.
+ */
+export type SlateKind = 'markdown' | 'html' | 'csv';
+
+/** One append-only version file of a slate. `n` is 1-based and matches the NNN prefix. */
+export interface SlateVersionInfo {
+  n: number;
+  file: string;
+  bytes: number;
+  createdAt: string;
+  /** Absolute path of the version file, so the UI can open it as a document tab. */
+  path: string;
+}
+
+/** What the transcript card and the slate gallery need: identity plus the version list. */
+export interface SlateSummary {
+  id: string;
+  title: string;
+  kind: SlateKind;
+  current: number;
+  versions: SlateVersionInfo[];
+  createdAt: string;
+  updatedAt: string;
+  /** Origins an `html` slate may reach. Never a wildcard. */
+  origins?: string[];
+}
+
+/** One rendered version, as `slate.read` returns it. */
+export interface Slate extends SlateSummary {
+  version: SlateVersionInfo;
+  /** Absolute path of the rendered version file. */
+  path: string;
+  content: string;
+}
+
+/**
+ * The slate a tool result points at. Carried on the transcript entry (so a resumed session
+ * still shows its card) and on the `slate.update` event (so the gallery refreshes).
+ */
+export interface SlateRef {
+  id: string;
+  title: string;
+  kind: SlateKind;
+  version: number;
+  versions: number;
+}
+
 /** Client → service request table. Keys are the JSON-RPC method names. */
 export interface RpcRequests {
   'plugin.list': { params: Record<string, never>; result: { plugins: PluginInfo[] } };
@@ -843,6 +896,20 @@ export interface RpcRequests {
   };
   'scheduler.remove': { params: { id: string }; result: { schedules: Schedule[] } };
   'scheduler.run': { params: { id: string }; result: { sessionId: string } };
+
+  'slate.list': { params: { cwd?: string; sessionId?: string }; result: { slates: SlateSummary[] } };
+  'slate.read': {
+    params: { id: string; version?: number; cwd?: string; sessionId?: string };
+    result: Slate;
+  };
+  'slate.remove': {
+    params: { id: string; cwd?: string; sessionId?: string };
+    result: { slates: SlateSummary[] };
+  };
+  'slate.promote': {
+    params: { id: string; path: string; version?: number; cwd?: string; sessionId?: string };
+    result: { path: string; version: number };
+  };
 }
 
 export type RpcMethod = keyof RpcRequests;
@@ -869,6 +936,7 @@ export type ServiceEvent =
   | { type: 'service.health'; payload: ServiceHealth }
   /** The workspace (root, recents, knowledge folders) changed — repaint the panels. */
   | { type: 'workspace.state'; payload: WorkspaceState }
+  | { type: 'slate.update'; payload: { sessionId: string; slate: SlateRef; removed?: boolean } }
   | { type: 'log'; payload: { level: 'debug' | 'info' | 'warn' | 'error'; message: string; at: string } }
   | { type: 'error'; payload: { sessionId?: string; message: string } };
 

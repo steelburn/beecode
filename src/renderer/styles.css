@@ -352,6 +352,17 @@ body.col-resizing, body.col-resizing * { cursor: col-resize !important; user-sel
 }
 .tool-card .label { font-size: 10px; text-transform: uppercase; letter-spacing: .07em; color: var(--text-faint); }
 
+/* A slate is a document with a tab of its own, so the transcript keeps one line: title,
+   version, Open. The body never enters the chat. */
+.slate-card {
+  display: flex; align-items: center; gap: 8px;
+  border: 1px solid var(--line); border-left: 3px solid var(--amber);
+  border-radius: 9px; background: #10151d; padding: 7px 12px;
+}
+.slate-card-title { color: var(--text); font-weight: 600; }
+.slate-card-meta { color: var(--text-faint); font-size: 12px; }
+.slate-card .slate-open { margin-left: auto; }
+
 /* -------------------------------------------------------------- approval */
 
 .question-slot:empty { display: none; }
@@ -1241,6 +1252,55 @@ body.dragging-browser-dock { cursor: row-resize; user-select: none; }
   white-space: nowrap;
 }
 .view-theme:hover { border-color: var(--line); color: var(--text); }
+
+/* ------------------------------------------------------------ slate gallery */
+
+/* The gallery is the SLATE_TAB pane. It lists, it does not render: a version opens as a
+   document tab, so the markdown and sandboxed-HTML viewers stay the only renderers. */
+.slate-gallery { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 16px; }
+.slate-gallery-head h3 { margin: 0 0 4px; font-size: 14px; }
+.slate-gallery-head p { margin: 0 0 14px; color: var(--text-faint); font-size: 12px; }
+.slate-gallery-list {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px;
+}
+.slate-tile {
+  display: flex; flex-direction: column; gap: 8px;
+  border: 1px solid var(--line); border-radius: 10px; background: var(--bg-raised);
+  padding: 12px;
+}
+.slate-tile-head { display: flex; align-items: baseline; gap: 8px; }
+.slate-tile-head h4 { margin: 0; font-size: 13px; flex: 1 1 auto; }
+.slate-tile-kind {
+  font-size: 10px; text-transform: uppercase; letter-spacing: .07em;
+  color: var(--text-faint); border: 1px solid var(--line); border-radius: 6px; padding: 1px 6px;
+}
+.slate-tile-meta { margin: 0; color: var(--text-faint); font-size: 12px; }
+.slate-tile-actions { display: flex; align-items: center; gap: 8px; margin-top: auto; }
+.slate-version { font-size: 12px; }
+.slate-remove { margin-left: auto; }
+.slate-gallery-empty { color: var(--text-faint); font-size: 13px; }
+.slate-gallery-error { color: #e08686; font-size: 13px; }
+
+/* The Slates panel lists the same slates as the gallery, with the version history as a
+   picker instead of a tile per version. */
+.panel-section.slates .slate-rows { display: flex; flex-direction: column; gap: 6px; }
+.slate-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+.slate-row-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+.slate-row-version { font-size: 12px; }
 
 /* ------------------------------------------------------------ document pane */
 

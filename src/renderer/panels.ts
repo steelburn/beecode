@@ -18,6 +18,7 @@ import type {
   PluginInfo,
   SkillInfo,
   SkillInstallInput,
+  SlateSummary,
   SubagentRunInfo,
   ToolInfo,
 } from '../shared/protocol';
@@ -61,6 +62,10 @@ export interface PanelCallbacks {
   removeSkill?(name: string): Promise<SkillInfo[]>;
   /** Validate, persist and activate a workspace folder (`workspace.set`). */
   setWorkspace?(path: string): Promise<void>;
+  /** Open one version of a slate as a document tab (Slates panel). */
+  openSlate?(id: string, version?: number): void;
+  /** Delete a slate and everything it versions (`slate.remove`). */
+  removeSlate?(id: string): Promise<void>;
   /** Drop a folder from the recents, or clear the active root (`workspace.forget`). */
   forgetWorkspace?(path: string): Promise<void>;
 }
@@ -76,6 +81,7 @@ const TOOL_GROUP_ORDER: Array<ToolInfo['group']> = [
   'browser',
   'agents',
   'skills',
+  'slate',
   'scheduler',
   'mcp',
   'plugins',
@@ -89,6 +95,7 @@ const TOOL_GROUP_LABELS: Record<ToolInfo['group'], string> = {
   browser: 'Browser',
   agents: 'Subagents',
   skills: 'Skills & memory',
+  slate: 'Slates',
   scheduler: 'Scheduled runs',
   mcp: 'MCP servers',
   plugins: 'Plugins',
@@ -2343,3 +2350,70 @@ export function renderScheduler(host: HTMLElement, schedules: Schedule[], cb: Pa
     ),
   );
 }
+
+/* ------------------------------------------------------------------- slates */
+
+/**
+ * The Slates panel: every slate of the current session, with its full version history as a
+ * picker. The SLATE_TAB gallery lists the same slates one click away; this panel keeps them
+ * beside the chat while the user works.
+ */
+export function renderSlates(
+  host: HTMLElement,
+  slates: SlateSummary[],
+  error: string | undefined,
+  callbacks: PanelCallbacks,
+): void {
+  clear(host);
+  const section = h('section', { class: 'panel-section slates' });
+  section.append(h('h2', { class: 'panel-title', text: 'Slates' }));
+  section.append(
+    h('p', {
+      class: 'hint',
+      text: 'Documents the agent wrote in this conversation. They are kept in .beecode/slates — outside the workspace tree — until one is promoted to a real file.',
+    }),
+  );
+  if (error) section.append(h('p', { class: 'hint error', text: error }));
+  else if (slates.length === 0) {
+    section.append(h('p', { class: 'hint', text: 'No slates yet: the agent creates one with create_slate.' }));
+  } else {
+    const list = h('div', { class: 'slate-rows' });
+    for (const slate of slates) {
+      const row = h('div', { class: 'slate-row', dataset: { slateId: slate.id } });
+      row.append(h('span', { class: 'slate-row-title', text: slate.title, title: slate.id }));
+      const picker = document.createElement('select');
+      picker.className = 'slate-row-version';
+      picker.title = 'Version to open';
+      picker.setAttribute('aria-label', `Version of ${slate.title}`);
+      for (const version of [...slate.versions].reverse()) {
+        const option = document.createElement('option');
+        option.value = String(version.n);
+        option.textContent =
+          version.n === slate.current ? `v${version.n} (current)` : `v${version.n}`;
+        option.selected = version.n === slate.current;
+        picker.append(option);
+      }
+      picker.addEventListener('change', () =>
+        callbacks.openSlate?.(slate.id, Number(picker.value)),
+      );
+      row.append(picker);
+      const open = h('button', { type: 'button', class: 'btn ghost small', text: 'Open' });
+      open.addEventListener('click', () => callbacks.openSlate?.(slate.id, Number(picker.value)));
+      row.append(open);
+      if (callbacks.removeSlate) {
+        const remove = h('button', {
+          type: 'button',
+          class: 'btn ghost small',
+          text: 'Remove',
+          title: 'Delete this slate and all of its versions',
+        });
+        remove.addEventListener('click', () => void callbacks.removeSlate?.(slate.id));
+        row.append(remove);
+      }
+      list.append(row);
+    }
+    section.append(list);
+  }
+  host.append(section);
+}
+

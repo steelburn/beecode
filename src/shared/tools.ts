@@ -47,6 +47,7 @@ export interface ToolDefinition {
     | 'control'
     | 'mcp'
     | 'skills'
+    | 'slate'
     | 'scheduler'
     | 'plugins';
   inputSchema: Record<string, unknown>;

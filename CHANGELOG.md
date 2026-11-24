@@ -28,6 +28,20 @@ All notable changes to beeCode will be documented in this file.
 
 ### Added
 
+- **Slates — a document the agent writes into its own tab instead of the transcript.**
+  `create_slate` and `update_slate` write append-only versions (`001-<id>.md`, `002-…`) plus a
+  `meta.json` pointer under `<cwd>/.beecode/slates/<session>/`, and the transcript keeps one
+  line per slate (`Sales Q3 · v2 of 3 · Open`) rather than the document body. The new
+  `SLATE_TAB` gallery lists the session's slates with their version history, and the Slates
+  panel keeps the same list beside the chat; opening a version is an ordinary document tab,
+  so the existing markdown and sandboxed-HTML viewers render it. Creating a slate raises one
+  approval card, later versions raise none, both stay refused in plan mode, and the slate
+  folder itself is exempt from `filesystem.writable` — `promote_slate` is what writes into the
+  real tree, and that one goes through `evaluateFile` like any other file write. Slate ids are
+  path-guarded (no separators, no `..`, no absolute paths), so nothing the model names can
+  escape its folder. Tests: `src/service/slates.test.ts`, `src/service/tools/slates.test.ts`,
+  `src/renderer/slateRef.test.ts`, plus a slate probe in the Electron smoke check.
+
 - **Knowledge folders — shared, read-only shelves a workspace can read.** A workspace may
   now reference one or more knowledge folders beside its root (Files panel → **Knowledge
   (read-only)**: add, rename, detach). The agent reads them without approval and is refused
