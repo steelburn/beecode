@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { defaultConfig, normalizeConfig, normalizeTools } from './defaults';
+import { defaultConfig, normalizeConfig, normalizeTools, normalizeWorkspace } from './defaults';
 import type { BeeCodeConfig } from './protocol';
 
 function configWith(models: unknown[], overrides: Partial<BeeCodeConfig> = {}): BeeCodeConfig {
@@ -85,6 +85,28 @@ test('normalizeTools trims, de-duplicates and sorts the switched-off names', () 
     { disabled: [] },
   );
   assert.deepEqual(result.disabled, ['fs_read', 'shell_run']);
+});
+
+test('normalizeWorkspace repairs the knowledge folder list', () => {
+  const repaired = normalizeWorkspace(
+    {
+      root: 'C:\\work\\demo',
+      knowledge: [
+        { path: 'D:\\lib\\kb\\', label: '', addedAt: '' },
+        // Same folder, different case and separator: a shared shelf must not be listed twice.
+        { path: 'D:/LIB/KB', label: 'duplicate' },
+        { path: '', label: 'no path' },
+        { label: 'path is not a string' },
+      ],
+    } as never,
+    defaultConfig().workspace,
+  );
+
+  assert.equal(repaired.knowledge?.length, 1);
+  assert.equal(repaired.knowledge?.[0].path, 'D:\\lib\\kb');
+  assert.equal(repaired.knowledge?.[0].label, 'kb');
+  assert.ok(repaired.knowledge?.[0].addedAt, 'a missing timestamp is filled in');
+  assert.equal(repaired.root, 'C:\\work\\demo', 'the root survives untouched');
 });
 
 test('normalizeConfig gives an older config an empty tool switch list', () => {

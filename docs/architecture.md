@@ -173,6 +173,21 @@ terminal. Output is pushed back over `beecode:terminal-update` and capped at 400
 400 KB; Stop kills the process tree and Clear empties the scrollback. When the configured
 workspace root changes, the runner re-confines (`setRoot`) and drops the old scrollback.
 
+### Knowledge folders
+
+`config.workspace.knowledge` lists extra roots — shared shelves the workspace may read.
+The Files panel shows them under **Knowledge (read-only)** with add / detach, a radio that
+picks the copy target and a "new subfolder" field; the preview header carries a `K+` action
+that copies the open workspace file onto the selected shelf.
+
+The read-only promise is enforced in one place: `PolicyEngine.evaluateFile` tests the
+knowledge roots **before** the workspace grant, so a read is allowed and every write is
+denied with an explicit reason — including when the shelf is a subfolder of the workspace,
+where the narrower grant has to win. The two user-driven writes (`knowledge.mkdir`,
+`knowledge.copy`) run as service RPCs rather than agent tools, so no tool call can reach
+them. The `app://beecode/file` viewer accepts the same roots as the workspace, so pictures
+and PDFs preview out of a shelf as well.
+
 ### Main-area tabs
 
 The main area is one column with two occupants that exclude each other, plus a header.

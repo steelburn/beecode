@@ -1,4 +1,4 @@
-import { mkdir, open, readdir, readFile, stat } from 'node:fs/promises';
+import { cp, mkdir, open, readdir, readFile, stat } from 'node:fs/promises';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import {
   defaultConfig,
@@ -20,6 +20,7 @@ import type {
   ServiceEvent,
   ServiceHealth,
   AuditEntry,
+  KnowledgeFolder,
   WorkspaceState,
   FsEntry,
   FsFile,
@@ -75,6 +76,8 @@ export interface ServiceOptions {
  */
 const FS_LIST_LIMIT = 500;
 const FS_PREVIEW_BYTES = 256 * 1024;
+/** A shared shelf, not a filesystem import: this many knowledge folders is the ceiling. */
+const MAX_KNOWLEDGE_FOLDERS = 16;
 
 export class BeeCodeService {
   private config: BeeCodeConfig = defaultConfig();
@@ -165,7 +168,7 @@ export class BeeCodeService {
 
     this.audit = new AuditLog(p.audit);
     await this.loadPolicyState();
-    this.policy.setWorkspaceRoots(this.workspaceRoots());
+    this.syncPolicyRoots();
 
     // Browser activity is reported on the same host-activity stream as the desktop driver so
     // the UI has a single "what did the agent do to the machine" feed.
@@ -244,6 +247,7 @@ export class BeeCodeService {
       describePolicy: () => this.policy.describeAllowedApps(),
       listAgents: () => this.subagents.availableAgents(),
       listSkills: (cwd) => this.skillSection(cwd),
+      describeKnowledge: () => this.knowledgeSection(),
       describeMcp: () => this.mcp.describe(),
       requestApproval: (session, request) => this.sessions.requestApproval(session, request),
     });
@@ -505,6 +509,34 @@ export class BeeCodeService {
       case 'workspace.forget':
         return this.forgetWorkspace(resolve(this.requireString(args, 'path').trim()));
 
+      case 'knowledge.add':
+        return this.addKnowledgeFolder(
+          resolve(this.requireString(args, 'path').trim()),
+          typeof args.label === 'string' ? args.label : undefined,
+        );
+
+      case 'knowledge.remove':
+        return this.removeKnowledgeFolder(resolve(this.requireString(args, 'path').trim()));
+
+      case 'knowledge.rename':
+        return this.renameKnowledgeFolder(
+          resolve(this.requireString(args, 'path').trim()),
+          this.requireString(args, 'label').trim(),
+        );
+
+      case 'knowledge.mkdir':
+        return this.mkdirInKnowledge(
+          resolve(this.requireString(args, 'path').trim()),
+          this.requireString(args, 'name').trim(),
+        );
+
+      case 'knowledge.copy':
+        return this.copyIntoKnowledge(
+          resolve(this.requireString(args, 'from').trim()),
+          resolve(this.requireString(args, 'to').trim()),
+          args.overwrite === true,
+        );
+
       case 'goal.set': {
         const sessionId = this.requireString(args, 'sessionId');
         this.sessions.get(sessionId);
@@ -712,7 +744,7 @@ export class BeeCodeService {
         // Drop secrets for presets the normalizer rejected or the user removed.
         this.secrets.prune(this.config.models.map((preset) => preset.id));
         if (this.config.agent.workingDir) await mkdir(this.config.agent.workingDir, { recursive: true });
-        this.policy.setWorkspaceRoots(this.workspaceRoots());
+        this.syncPolicyRoots();
         await writeJsonFile(paths().config, this.config);
         // An edited server list has to take effect now: the registry cannot grow tools
         // after it is built, so reconnect and rebuild before answering. A server that
@@ -817,7 +849,7 @@ export class BeeCodeService {
 
   /** True when `target` is one of the configured roots or lives below one of them. */
   private isInsideRoots(target: string): boolean {
-    return this.workspaceRoots()
+    return [...this.workspaceRoots(), ...this.knowledgeRoots()]
       .map((root) => resolve(root))
       .some((root) => target === root || target.startsWith(`${root}${sep}`) || target.startsWith(`${root}/`));
   }
@@ -926,7 +958,7 @@ export class BeeCodeService {
       const info = await stat(root).catch(() => undefined);
       configured = Boolean(info?.isDirectory());
     }
-    return { root, recent: [...recent], configured };
+    return { root, recent: [...recent], knowledge: [...(this.config.workspace.knowledge ?? [])], configured };
   }
 
   private async setWorkspace(dir: string): Promise<WorkspaceState> {
@@ -942,7 +974,7 @@ export class BeeCodeService {
       this.config.agent.workingDir = dir;
     }
     await this.persistConfig();
-    this.policy.setWorkspaceRoots(this.workspaceRoots());
+    this.syncPolicyRoots();
     await this.scanSkills(dir);
     this.emit({ type: 'service.health', payload: this.health() });
     this.log.info('workspace set', { root: dir });
@@ -961,7 +993,7 @@ export class BeeCodeService {
       // The tools lose their root with it. An explicit working directory stays, but it is
       // never replaced by the installation directory: the renderer shows the setup step.
       if (this.config.agent.workingDir === dir) this.config.agent.workingDir = '';
-      this.policy.setWorkspaceRoots(this.workspaceRoots());
+      this.syncPolicyRoots();
     }
     await this.persistConfig();
     this.emit({ type: 'service.health', payload: this.health() });
@@ -996,6 +1028,128 @@ export class BeeCodeService {
   private async skillSection(cwd: string): Promise<string> {
     await this.scanSkills(cwd);
     return this.skills.describe();
+  }
+
+  /* ------------------------------------------------------------ knowledge */
+
+  /** Configured knowledge roots, in display order. */
+  private knowledgeRoots(): string[] {
+    return (this.config.workspace.knowledge ?? []).map((entry) => entry.path);
+  }
+
+  /** True when `target` is a knowledge root or lives below one. */
+  private isInsideKnowledge(target: string): boolean {
+    const abs = resolve(target);
+    return this.knowledgeRoots().some((root) => {
+      const base = resolve(root);
+      return abs === base || abs.startsWith(`${base}${sep}`) || abs.startsWith(`${base}/`);
+    });
+  }
+
+  /** Re-point the policy overlay after any change to the roots the service knows about. */
+  private syncPolicyRoots(): void {
+    this.policy.setWorkspaceRoots(this.workspaceRoots());
+    this.policy.setKnowledgeRoots(this.knowledgeRoots());
+  }
+
+  /** The read-only knowledge block of the system prompt ('' when none is attached). */
+  private knowledgeSection(): string {
+    const folders = this.config.workspace.knowledge ?? [];
+    if (folders.length === 0) return '';
+    return folders.map((folder) => `- ${folder.path} (${folder.label})`).join('\n');
+  }
+
+  /** Persist a new knowledge list and keep policy, health and the UI in step. */
+  private async commitKnowledge(next: KnowledgeFolder[], note: string): Promise<WorkspaceState> {
+    this.config.workspace = { ...this.config.workspace, knowledge: next };
+    await this.persistConfig();
+    this.syncPolicyRoots();
+    this.emit({ type: 'service.health', payload: this.health() });
+    this.emit({ type: 'workspace.state', payload: await this.workspaceState() });
+    this.log.info(note);
+    return this.workspaceState();
+  }
+
+  private async addKnowledgeFolder(path: string, label?: string): Promise<WorkspaceState> {
+    const info = await stat(path).catch(() => undefined);
+    if (!info?.isDirectory()) throw new Error(`not an existing folder: ${path}`);
+    const existing = this.config.workspace.knowledge ?? [];
+    if (existing.some((entry) => resolve(entry.path).toLowerCase() === path.toLowerCase())) {
+      return this.workspaceState();
+    }
+    if (existing.length >= MAX_KNOWLEDGE_FOLDERS) {
+      throw new Error(`at most ${MAX_KNOWLEDGE_FOLDERS} knowledge folders can be attached`);
+    }
+    const folder: KnowledgeFolder = {
+      path,
+      label: (label ?? '').trim() || basename(path) || path,
+      addedAt: new Date().toISOString(),
+    };
+    return this.commitKnowledge([...existing, folder], `knowledge folder added: ${path}`);
+  }
+
+  private async removeKnowledgeFolder(path: string): Promise<WorkspaceState> {
+    const existing = this.config.workspace.knowledge ?? [];
+    const kept = existing.filter((entry) => resolve(entry.path).toLowerCase() !== path.toLowerCase());
+    // Detaching a folder only stops beeCode from reading it: nothing on disk is touched.
+    if (kept.length === existing.length) return this.workspaceState();
+    return this.commitKnowledge(kept, `knowledge folder detached: ${path}`);
+  }
+
+  private async renameKnowledgeFolder(path: string, label: string): Promise<WorkspaceState> {
+    if (!label) throw new Error('missing required parameter "label"');
+    const existing = this.config.workspace.knowledge ?? [];
+    const next = existing.map((entry) =>
+      resolve(entry.path).toLowerCase() === path.toLowerCase() ? { ...entry, label } : entry,
+    );
+    return this.commitKnowledge(next, `knowledge folder renamed: ${path} -> ${label}`);
+  }
+
+  /**
+   * Create a subfolder inside a knowledge folder.
+   *
+   * This is the only write a knowledge folder accepts and it is user-driven: the agent's
+   * file tools go through the policy engine, which has no `knowledge.mkdir` path at all.
+   */
+  private async mkdirInKnowledge(path: string, name: string): Promise<{ path: string }> {
+    if (!this.isInsideKnowledge(path)) throw new Error(`${path} is not inside a knowledge folder`);
+    if (!name || name === '.' || name === '..' || /[\\/]/.test(name)) {
+      throw new Error('a subfolder name must be a single path segment');
+    }
+    const target = join(resolve(path), name);
+    await mkdir(target, { recursive: true });
+    this.log.info('knowledge subfolder created', { path: target });
+    return { path: target };
+  }
+
+  /**
+   * Copy a workspace file or folder into a knowledge folder.
+   *
+   * The only way content enters a knowledge folder: `from` must live in the workspace (a
+   * knowledge folder never copies into another one) and `to` must be inside a knowledge
+   * folder. Missing destination folders are created, which is why a subfolder never has to
+   * be made by hand first.
+   */
+  private async copyIntoKnowledge(
+    from: string,
+    to: string,
+    overwrite: boolean,
+  ): Promise<{ path: string }> {
+    if (this.isInsideKnowledge(from)) throw new Error(`${from} is already inside a knowledge folder`);
+    if (!this.isInsideRoots(from)) throw new Error(`${from} is not inside the workspace`);
+    if (!this.isInsideKnowledge(to)) throw new Error(`${to} is not inside a knowledge folder`);
+    const source = await stat(from).catch(() => undefined);
+    if (!source) throw new Error(`no such file or folder: ${from}`);
+    const target = join(resolve(to), basename(from));
+    if (!overwrite) {
+      const exists = await stat(target).catch(() => undefined);
+      if (exists) throw new Error(`${target} already exists in the knowledge folder`);
+    }
+    await mkdir(resolve(to), { recursive: true });
+    await cp(from, target, { recursive: source.isDirectory(), force: overwrite });
+    this.audit.record({ action: 'file-write', tool: 'knowledge.copy', target, outcome: 'allowed' });
+    this.log.info('copied into knowledge folder', { from, target });
+    return { path: target };
   }
 
   private requireString(args: Record<string, unknown>, key: string): string {

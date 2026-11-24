@@ -175,6 +175,20 @@ const htmlPreviewOk =
   (preview.htmlRendered === true &&
     preview.htmlScriptStripped === true &&
     preview.htmlStylesIsolated === true);
+// The knowledge shelf is attached, copied into, extended, browsed and detached through the
+// Files panel; once detached the path must be outside the readable roots again.
+const knowledge = report.dom?.knowledge ?? {};
+const knowledgeOk =
+  knowledge.attached === true &&
+  knowledge.label === 'Smoke shelf' &&
+  knowledge.starred === true &&
+  knowledge.copied === true &&
+  knowledge.typed === 'notes' &&
+  knowledge.subfolder === true &&
+  knowledge.browsed === true &&
+  knowledge.detached === true &&
+  knowledge.refused === true;
+
 const previewOk =
   preview.tab === true &&
   preview.listing === true &&
@@ -285,6 +299,7 @@ const ok =
   silentOk &&
   downloadOk &&
   previewOk &&
+  knowledgeOk &&
   mainAreaOk &&
   browserTabOk &&
   tabsFitOk &&
@@ -305,6 +320,8 @@ if (!silentOk) console.error(`[smoke] silent browser drive check failed: ${JSON.
 if (!downloadOk)
   console.error(`[smoke] download check failed: ${JSON.stringify(download)}`);
 if (!previewOk) console.error(`[smoke] files preview check failed: ${JSON.stringify(preview)}`);
+if (!knowledgeOk)
+  console.error(`[smoke] knowledge folder check failed: ${JSON.stringify(knowledge)}`);
 if (!mainAreaOk) console.error(`[smoke] main-area tab check failed: ${JSON.stringify(mainArea)}`);
 if (!browserTabOk)
   console.error(`[smoke] browser tab check failed: ${JSON.stringify(report.browser?.controls)}`);

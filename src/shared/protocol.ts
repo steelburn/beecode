@@ -395,6 +395,24 @@ export interface SubagentConfig {
 }
 
 /**
+ * A shared reference folder attached to the workspace.
+ *
+ * Knowledge folders are deliberately NOT the workspace: the agent may read and search
+ * them, but every write path is refused by the policy engine, and files only enter one
+ * through an explicit user action (copy a workspace file in, or create a subfolder).
+ * One workspace may reference several of them, and a folder may be shared by many
+ * workspaces, which is the point: knowledge is not re-copied per project.
+ */
+export interface KnowledgeFolder {
+  /** Absolute path of the folder root. */
+  path: string;
+  /** Display label; defaults to the folder name. */
+  label: string;
+  /** ISO timestamp of when the user added it. */
+  addedAt: string;
+}
+
+/**
  * Where the user works. beeCode never defaults this to the installation
  * directory: until the user picks a folder, `root` is empty and the renderer
  * shows the workspace setup step.
@@ -402,6 +420,11 @@ export interface SubagentConfig {
 export interface WorkspaceConfig {
   /** Absolute path the file/shell tools are rooted at. Empty until configured. */
   root: string;
+  /**
+   * Read-only knowledge folders this workspace can consult. The agent may read them,
+   * never write; only the user adds a folder, creates a subfolder or copies a file in.
+   */
+  knowledge?: KnowledgeFolder[];
   /** Most-recently used roots, newest first (capped at 8). */
   recent: string[];
   /** Reopen the newest session of `root` on start when true. */
@@ -472,6 +495,8 @@ export interface FsFile {
 export interface WorkspaceState {
   root: string;
   recent: string[];
+  /** Read-only knowledge folders attached to this workspace, in display order. */
+  knowledge: KnowledgeFolder[];
   /** False while the user has not picked a workspace yet (first-run setup). */
   configured: boolean;
 }
@@ -760,6 +785,14 @@ export interface RpcRequests {
   'workspace.state': { params: Record<string, never>; result: WorkspaceState };
   'workspace.set': { params: { path: string }; result: WorkspaceState };
   'workspace.forget': { params: { path: string }; result: WorkspaceState };
+  'knowledge.add': { params: { path: string; label?: string }; result: WorkspaceState };
+  'knowledge.remove': { params: { path: string }; result: WorkspaceState };
+  'knowledge.rename': { params: { path: string; label: string }; result: WorkspaceState };
+  'knowledge.mkdir': { params: { path: string; name: string }; result: { path: string } };
+  'knowledge.copy': {
+    params: { from: string; to: string; overwrite?: boolean };
+    result: { path: string };
+  };
   'fs.list': { params: { path?: string }; result: FsListing };
   'fs.read': { params: { path: string }; result: FsFile };
   'goal.set': { params: { sessionId: string; text: string }; result: SessionSnapshot };
@@ -834,6 +867,8 @@ export type ServiceEvent =
   | { type: 'scheduler.changed'; payload: { schedules: Schedule[] } }
   | { type: 'desktop.activity'; payload: AuditEntry }
   | { type: 'service.health'; payload: ServiceHealth }
+  /** The workspace (root, recents, knowledge folders) changed — repaint the panels. */
+  | { type: 'workspace.state'; payload: WorkspaceState }
   | { type: 'log'; payload: { level: 'debug' | 'info' | 'warn' | 'error'; message: string; at: string } }
   | { type: 'error'; payload: { sessionId?: string; message: string } };
 

@@ -865,6 +865,19 @@ function noteStatus(sessionId: string, status: SessionStatus): void {
 
 function handleEvent(event: import('../shared/protocol').ServiceEvent): void {
   switch (event.type) {
+    case 'workspace.state': {
+      // Another window or a direct RPC changed the workspace: adopt it and drop a copy
+      // target that no longer exists.
+      state.workspace = event.payload;
+      const shelves = event.payload.knowledge ?? [];
+      const target = state.explorer.copyTarget;
+      if (target && !shelves.some((shelf) => shelf.path === target)) {
+        state.explorer = { ...state.explorer, copyTarget: undefined };
+      }
+      renderPanels();
+      break;
+    }
+
     case 'service.health':
       state.health = event.payload;
       state.status = event.payload.ok ? 'ready' : 'failed';
@@ -1645,6 +1658,18 @@ function renderPanels(): void {
     open: (path?: string) => void openExplorer(path),
     preview: (path: string) => void previewFile(path),
     openDoc: (path: string) => void openDocTab(path),
+    addKnowledge: () => void addKnowledgeFolder(),
+    removeKnowledge: (path: string) => void detachKnowledgeFolder(path),
+    selectKnowledge: (path: string) => {
+      state.explorer = { ...state.explorer, copyTarget: path };
+      renderPanels();
+    },
+    editKnowledgeName: (name: string) => {
+      // Re-rendering on every keystroke would fight the caret; only the value is kept.
+      state.explorer = { ...state.explorer, newFolder: name };
+    },
+    createKnowledgeFolder: (path: string) => void createKnowledgeSubfolder(path),
+    copyToKnowledge: (path: string) => void copyFileToKnowledge(path),
     close: () => {
       state.explorer = { ...state.explorer, file: undefined, view: undefined };
       renderPanels();
@@ -1736,7 +1761,11 @@ function renderPanels(): void {
     // First visit reads the workspace root; after that the listing is re-read when the tab
     // is opened again (see the tab handler) or when the user navigates.
     if (state.explorer.listing || state.explorer.error) {
-      renderExplorer(host, state.explorer, explorerCallbacks);
+      renderExplorer(
+        host,
+        { ...state.explorer, knowledge: state.workspace?.knowledge ?? [] },
+        explorerCallbacks,
+      );
     } else void openExplorer(state.explorer.path);
   } else renderActivity(host, state.audit, callbacks);
 }
@@ -1873,11 +1902,103 @@ async function applyWorkspace(path: string): Promise<void> {
 
 /* -------------------------------------------------------------- explorer */
 
+/* ------------------------------------------------------------ knowledge */
+
+/** The knowledge folder copies land in: the selected one, else the first attached. */
+function knowledgeTarget(): string | undefined {
+  return state.explorer.copyTarget ?? state.workspace?.knowledge?.[0]?.path;
+}
+
+/** Adopt a returned workspace state and repaint both surfaces that show knowledge. */
+function applyKnowledge(next: WorkspaceState): void {
+  state.workspace = next;
+  const selected = state.explorer.copyTarget;
+  state.explorer = {
+    ...state.explorer,
+    knowledge: next.knowledge,
+    copyTarget: next.knowledge.some((folder) => folder.path === selected)
+      ? selected
+      : next.knowledge[0]?.path,
+  };
+  renderPanels();
+}
+
+/**
+ * Attach a shared knowledge folder. The picker is the whole write path: the service refuses
+ * a path that is not an existing folder, and the agent can never call this at all.
+ */
+async function addKnowledgeFolder(): Promise<void> {
+  try {
+    const picked = await api.pickDirectory({
+      title: 'Attach a read-only knowledge folder',
+      defaultPath: state.workspace?.root || state.workspace?.recent[0],
+    });
+    if (!picked) return;
+    applyKnowledge(await api.invoke('knowledge.add', { path: picked }));
+    setHint(`Knowledge folder attached (read-only for the agent): ${picked}`);
+  } catch (error) {
+    setHint(`Could not attach that folder: ${(error as Error).message}`);
+  }
+}
+
+/** Detach a knowledge folder. Nothing on disk is touched. */
+async function detachKnowledgeFolder(path: string): Promise<void> {
+  try {
+    applyKnowledge(await api.invoke('knowledge.remove', { path }));
+    setHint(`Knowledge folder detached: ${path}`);
+  } catch (error) {
+    setHint(`Could not detach that folder: ${(error as Error).message}`);
+  }
+}
+
+/** Create the subfolder typed into the panel's field, inside the selected knowledge folder. */
+async function createKnowledgeSubfolder(parent: string): Promise<void> {
+  const name = (state.explorer.newFolder ?? '').trim();
+  if (!name) {
+    setHint('Type a subfolder name first.');
+    return;
+  }
+  try {
+    const created = await api.invoke('knowledge.mkdir', { path: parent, name });
+    state.explorer = { ...state.explorer, newFolder: '' };
+    setHint(`Created ${created.path}`);
+    if (state.explorer.path === parent) await openExplorer(parent);
+    else renderPanels();
+  } catch (error) {
+    setHint(`Could not create that folder: ${(error as Error).message}`);
+  }
+}
+
+/** Copy a workspace file into the selected knowledge folder (the agent cannot do this). */
+async function copyFileToKnowledge(path: string): Promise<void> {
+  const target = knowledgeTarget();
+  if (!target) {
+    setHint('Attach a knowledge folder before copying into it.');
+    return;
+  }
+  try {
+    const copied = await api.invoke('knowledge.copy', { from: path, to: target });
+    setHint(`Copied to ${copied.path} (read-only for the agent from now on)`);
+    if (state.explorer.path === target) await openExplorer(target);
+  } catch (error) {
+    setHint(`Could not copy into knowledge: ${(error as Error).message}`);
+  }
+}
+
 /** List one directory of the workspace; no path means the workspace root. */
 async function openExplorer(path?: string): Promise<void> {
   try {
     const listing = await api.invoke('fs.list', path ? { path } : {});
-    state.explorer = { path: listing.path, listing };
+    // `copyTarget`/`newFolder` belong to the panel, not to the folder being listed, so
+    // navigating keeps them.
+    state.explorer = {
+      ...state.explorer,
+      path: listing.path,
+      listing,
+      file: undefined,
+      view: undefined,
+      error: undefined,
+    };
   } catch (error) {
     // Drop the listing: keeping it showed a folder that no longer matched the path, and
     // the panel had no way back out of the error state.

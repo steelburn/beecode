@@ -59,6 +59,8 @@ export interface AgentLoopDeps {
   listSkills: (cwd: string) => Promise<string>;
   /** MCP server catalogue, rendered for the prompt. */
   describeMcp: () => string;
+  /** Read-only knowledge folders rendered for the prompt ('' when none is attached). */
+  describeKnowledge: () => string;
   requestApproval: (session: SessionState, request: Omit<ApprovalRequest, 'id' | 'sessionId' | 'requestedAt'>) => Promise<'allow' | 'allow-session' | 'deny'>;
 }
 
@@ -152,6 +154,7 @@ export class AgentLoop {
           memory: await this.deps.memory.describe(session.cwd),
           skills: await this.deps.listSkills(session.cwd),
           mcp: this.deps.describeMcp(),
+          knowledge: this.deps.describeKnowledge(),
           isSubagent: session.depth > 0,
         });
 

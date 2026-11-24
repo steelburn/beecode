@@ -2,6 +2,7 @@ import type {
   BeeCodeConfig,
   BrowserConfig,
   FeaturesConfig,
+  KnowledgeFolder,
   McpServerConfig,
   ModelPreset,
   PluginsConfig,
@@ -65,7 +66,7 @@ export function defaultConfig(): BeeCodeConfig {
     // The workspace root is deliberately EMPTY: beeCode must never silently adopt
     // the directory the app happens to be installed in. Until the user picks a
     // folder the renderer shows the workspace setup step.
-    workspace: { root: '', recent: [], restoreSession: true },
+    workspace: { root: '', recent: [], restoreSession: true, knowledge: [] },
     features: { goalTodo: true },
     tools: { disabled: [] },
     models: MODEL_PRESETS,
@@ -254,6 +255,26 @@ export function normalizeWorkspace(
   };
 
   const root = clean(source.root) || fallback.root;
+  const leaf = (value: string): string => value.split(/[\\/]/).filter(Boolean).pop() ?? value;
+  const knowledge: KnowledgeFolder[] = [];
+  const seenKnowledge = new Set<string>();
+  const knowledgeInput = Array.isArray(source.knowledge) ? source.knowledge : (fallback.knowledge ?? []);
+  for (const entry of knowledgeInput) {
+    const dir = clean((entry as KnowledgeFolder | undefined)?.path);
+    // One folder, one row: the same shelf pasted with the other separator must not appear twice.
+    const key = dir.replace(/[\\/]+/g, '/').toLowerCase();
+    if (!dir || seenKnowledge.has(key)) continue;
+    seenKnowledge.add(key);
+    const label =
+      typeof (entry as KnowledgeFolder).label === 'string' ? (entry as KnowledgeFolder).label.trim() : '';
+    const addedAt =
+      typeof (entry as KnowledgeFolder).addedAt === 'string' && (entry as KnowledgeFolder).addedAt
+        ? (entry as KnowledgeFolder).addedAt
+        : new Date().toISOString();
+    knowledge.push({ path: dir, label: label || leaf(dir), addedAt });
+    // A shared shelf, not a filesystem import: 16 is plenty and keeps the UI honest.
+    if (knowledge.length >= 16) break;
+  }
   const recent: string[] = [];
   const candidates = Array.isArray(source.recent) ? source.recent : fallback.recent;
   for (const candidate of candidates) {
@@ -265,6 +286,7 @@ export function normalizeWorkspace(
   return {
     root,
     recent,
+    knowledge,
     restoreSession:
       typeof source.restoreSession === 'boolean'
         ? source.restoreSession

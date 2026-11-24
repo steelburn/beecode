@@ -153,6 +153,34 @@ test('a session working directory is allowed as an extra file root for that call
   assert.equal(policy.evaluateFile('C:\\other\\proj\\notes.txt', false).allowed, false);
 });
 
+test('knowledge folders are readable but never writable', async () => {
+  const policy = await engine();
+  policy.setKnowledgeRoots(['D:\\lib\\knowledge']);
+
+  // A knowledge root outside the workspace is readable, and only inside it.
+  assert.equal(policy.evaluateFile('D:\\lib\\knowledge\\notes.md', false).allowed, true);
+  assert.equal(policy.evaluateFile('D:\\lib\\knowledge\\src\\a.ts', false).allowed, true);
+  assert.equal(policy.evaluateFile('D:\\lib\\knowledge\\..\\secrets.txt', false).allowed, false);
+  assert.equal(policy.evaluateFile('D:\\lib\\other\\notes.md', false).allowed, false);
+
+  // Every write is refused, and the refusal says why so the model can adapt.
+  const denied = policy.evaluateFile('D:\\lib\\knowledge\\notes.md', true);
+  assert.equal(denied.allowed, false);
+  assert.match(denied.reason ?? '', /read-only/);
+
+  // Reading is not an approval gate: a knowledge folder is reference material.
+  assert.equal(policy.evaluateFile('D:\\lib\\knowledge\\notes.md', false).requiresApproval, false);
+});
+
+test('a knowledge folder inside the workspace still shadows the write grant', async () => {
+  const policy = await engine();
+  policy.setKnowledgeRoots(['C:\\work\\demo\\docs']);
+
+  assert.equal(policy.evaluateFile('C:\\work\\demo\\src\\app.ts', true).allowed, true);
+  assert.equal(policy.evaluateFile('C:\\work\\demo\\docs\\guide.md', true).allowed, false);
+  assert.equal(policy.evaluateFile('C:\\work\\demo\\docs\\guide.md', false).allowed, true);
+});
+
 test('policy round-trips through disk', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'beecode-policy-'));
   try {

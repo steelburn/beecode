@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AddressInfo } from 'node:net';
 import { test } from 'node:test';
-import type { FsFile, FsListing, McpListResult, PluginInstallResult, SkillInstallResult, SkillListResult, SkillReadResult } from '../shared/protocol';
+import type { FsFile, FsListing, McpListResult, PluginInstallResult, SkillInstallResult, SkillListResult, SkillReadResult, WorkspaceState } from '../shared/protocol';
 
 /** A real stdio MCP server with one read-only and one mutating tool. */
 const FAKE_MCP_SERVER = `
@@ -263,6 +263,50 @@ test('background service answers JSON-RPC over loopback HTTP', async () => {
     assert.match(escaped.error?.message ?? '', /outside the workspace/);
     const escapedRead = await rpc('fs.read', { path: '../../etc/passwd' });
     assert.match(escapedRead.error?.message ?? '', /outside the workspace/);
+
+    // Shared knowledge folders: readable from the explorer, never writable by the agent, and
+    // only the user puts content in (attach, create a subfolder, copy a workspace file in).
+    const shelf = join(home, 'knowledge');
+    await mkdir(shelf, { recursive: true });
+    const attached = (await rpc('knowledge.add', { path: shelf })).result as WorkspaceState;
+    assert.equal(attached.knowledge.length, 1);
+    assert.equal(attached.knowledge[0].path, shelf);
+    assert.equal(attached.knowledge[0].label, 'knowledge');
+
+    // A knowledge folder is browsable although it lives outside the workspace root, while a
+    // folder that is neither workspace nor knowledge stays refused.
+    const shelfListing = (await rpc('fs.list', { path: shelf })).result as FsListing;
+    assert.equal(shelfListing.path, shelf);
+    const outsideListing = await rpc('fs.list', { path: home });
+    assert.match(outsideListing.error?.message ?? '', /outside the workspace/);
+
+    const made = (await rpc('knowledge.mkdir', { path: shelf, name: 'inbox' })).result as {
+      path: string;
+    };
+    assert.equal(made.path, join(shelf, 'inbox'));
+
+    const copied = (
+      await rpc('knowledge.copy', { from: join(workspace, 'notes.txt'), to: made.path })
+    ).result as { path: string };
+    assert.equal(copied.path, join(made.path, 'notes.txt'));
+    const copiedFile = (await rpc('fs.read', { path: copied.path })).result as FsFile;
+    assert.match(copiedFile.text ?? '', /hello explorer/);
+
+    // Copies refuse to clobber, and a knowledge folder never feeds another one.
+    const again = await rpc('knowledge.copy', { from: join(workspace, 'notes.txt'), to: made.path });
+    assert.match(again.error?.message ?? '', /already exists/);
+    const sideways = await rpc('knowledge.copy', { from: copied.path, to: shelf });
+    assert.match(sideways.error?.message ?? '', /already inside a knowledge folder/);
+
+    // Subfolders only exist inside a knowledge folder.
+    const strayMkdir = await rpc('knowledge.mkdir', { path: workspace, name: 'nope' });
+    assert.match(strayMkdir.error?.message ?? '', /not inside a knowledge folder/);
+
+    // Detaching stops the read grant: the folder is outside the workspace again.
+    const detached = (await rpc('knowledge.remove', { path: shelf })).result as WorkspaceState;
+    assert.equal(detached.knowledge.length, 0);
+    const blocked = await rpc('fs.list', { path: shelf });
+    assert.match(blocked.error?.message ?? '', /outside the workspace/);
 
     // Config editing: the integrations panel writes mcpServers through config.set, so a
     // saved edit has to reconnect right there and the tool catalogue has to follow.

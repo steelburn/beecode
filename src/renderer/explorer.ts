@@ -1,4 +1,4 @@
-import type { FsFile, FsListing } from '../shared/protocol';
+import type { FsFile, FsListing, KnowledgeFolder } from '../shared/protocol';
 import { clear, h } from './dom';
 import { canShowFile, mountFileView } from './fileView';
 import {
@@ -26,6 +26,12 @@ export interface ExplorerState {
   view?: FileView;
   /** Last failure, shown in place of the listing. */
   error?: string;
+  /** Read-only knowledge folders the workspace can consult (shared with other workspaces). */
+  knowledge?: KnowledgeFolder[];
+  /** Knowledge folder that a copy from the workspace lands in. */
+  copyTarget?: string;
+  /** Text typed into the "new subfolder" field, kept across re-renders. */
+  newFolder?: string;
 }
 
 export interface ExplorerCallbacks {
@@ -39,6 +45,18 @@ export interface ExplorerCallbacks {
   setView: (view: FileView) => void;
   /** Open the previewed file as a tab in the main area. */
   openDoc: (path: string) => void;
+  /** Attach a folder as shared read-only knowledge. */
+  addKnowledge: () => void;
+  /** Detach a knowledge folder; nothing on disk is deleted. */
+  removeKnowledge: (path: string) => void;
+  /** Pick which knowledge folder copies land in. */
+  selectKnowledge: (path: string) => void;
+  /** Remember what was typed into the new-subfolder field. */
+  editKnowledgeName: (name: string) => void;
+  /** Create a subfolder inside a knowledge folder. */
+  createKnowledgeFolder: (path: string) => void;
+  /** Copy a workspace file into the selected knowledge folder. */
+  copyToKnowledge: (path: string) => void;
 }
 
 export function renderExplorer(host: HTMLElement, state: ExplorerState, cb: ExplorerCallbacks): void {
@@ -115,6 +133,7 @@ export function renderExplorer(host: HTMLElement, state: ExplorerState, cb: Expl
   }
 
   if (state.file) card.append(renderPreview(state.file, state, cb));
+  card.append(renderKnowledge(state, cb));
   host.append(card);
 }
 
@@ -168,6 +187,15 @@ function renderPreview(file: FsFile, state: ExplorerState, cb: ExplorerCallbacks
             title: 'Open in the main area as a tab',
             on: { click: () => cb.openDoc(file.path) },
           }),
+      (state.copyTarget ?? state.knowledge?.[0]?.path) && !isInsideKnowledge(file.path, state)
+        ? h('button', {
+            class: 'btn ghost small',
+            type: 'button',
+            text: 'K+',
+            title: 'Copy into the selected knowledge folder (read-only there)',
+            on: { click: () => cb.copyToKnowledge(file.path) },
+          })
+        : null,
       h('button', {
         class: 'btn ghost small',
         type: 'button',
@@ -181,6 +209,111 @@ function renderPreview(file: FsFile, state: ExplorerState, cb: ExplorerCallbacks
       : null,
     body,
   );
+}
+
+/**
+ * Shared knowledge folders: attached once, consulted from every workspace, and read-only for
+ * the agent. Only the user writes here — attaching a folder, creating a subfolder or copying a
+ * workspace file in — so those verbs live in this panel and nowhere in the tool catalogue.
+ */
+function renderKnowledge(state: ExplorerState, cb: ExplorerCallbacks): HTMLElement {
+  const folders = state.knowledge ?? [];
+  const target = state.copyTarget ?? folders[0]?.path;
+  const section = h('div', { class: 'explorer-knowledge' });
+  section.append(
+    h(
+      'div',
+      { class: 'explorer-crumbs' },
+      h('span', { class: 'card-title', text: 'Knowledge (read-only)' }),
+      h('button', {
+        class: 'btn ghost small',
+        type: 'button',
+        text: 'add folder',
+        title: 'Attach a shared read-only folder',
+        on: { click: () => cb.addKnowledge() },
+      }),
+    ),
+  );
+
+  if (folders.length === 0) {
+    section.append(
+      h('div', {
+        class: 'explorer-empty',
+        text: 'No knowledge folder attached. The agent can only read these, never write them.',
+      }),
+    );
+    return section;
+  }
+
+  for (const folder of folders) {
+    const active = target === folder.path;
+    section.append(
+      h(
+        'div',
+        { class: `explorer-knowledge-row${active ? ' active' : ''}` },
+        h('button', {
+          class: 'btn ghost small',
+          type: 'button',
+          text: active ? '[*]' : '[ ]',
+          title: active ? 'Copies land here' : 'Send copies here',
+          on: { click: () => cb.selectKnowledge(folder.path) },
+        }),
+        h(
+          'button',
+          {
+            class: 'explorer-row',
+            type: 'button',
+            title: folder.path,
+            on: { click: () => cb.open(folder.path) },
+          },
+          h('span', { class: 'explorer-name', text: folder.label }),
+        ),
+        h('button', {
+          class: 'btn ghost small',
+          type: 'button',
+          text: 'detach',
+          title: 'Stop reading this folder; nothing on disk is deleted',
+          on: { click: () => cb.removeKnowledge(folder.path) },
+        }),
+      ),
+    );
+  }
+
+  if (target) {
+    section.append(
+      h(
+        'div',
+        { class: 'explorer-knowledge-row' },
+        h('input', {
+          class: 'explorer-newfolder',
+          type: 'text',
+          placeholder: 'new subfolder',
+          value: state.newFolder ?? '',
+          on: {
+            input: (event) => cb.editKnowledgeName((event.target as HTMLInputElement).value),
+          },
+        }),
+        h('button', {
+          class: 'btn ghost small',
+          type: 'button',
+          text: 'create',
+          title: 'Create this subfolder inside the selected knowledge folder',
+          on: { click: () => cb.createKnowledgeFolder(target) },
+        }),
+      ),
+    );
+  }
+
+  return section;
+}
+
+/** True when `path` already lives in one of the knowledge folders (nothing to copy). */
+function isInsideKnowledge(path: string, state: ExplorerState): boolean {
+  const normalized = path.replace(/\\/g, '/').toLowerCase();
+  return (state.knowledge ?? []).some((folder) => {
+    const root = folder.path.replace(/\\/g, '/').toLowerCase().replace(/\/+$/, '');
+    return normalized === root || normalized.startsWith(`${root}/`);
+  });
 }
 
 /** Sizes are read at a glance, so a compact power-of-two form beats the exact byte count. */

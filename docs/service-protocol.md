@@ -54,6 +54,14 @@ curl -s -N -H "Authorization: Bearer $TOKEN" http://127.0.0.1:4870/events
 | `approval.respond` | `{ approvalId, decision }` | `{ ok: boolean }` |
 | `policy.get` / `policy.set` | `{}` / `{ policy }` | `PolicyDocument` |
 | `config.get` / `config.set` | `{}` / `{ config }` | `BeeCodeConfig` |
+| `workspace.state` | `{}` | `WorkspaceState` |
+| `workspace.set` | `{ path }` | `WorkspaceState` |
+| `workspace.forget` | `{ path }` | `WorkspaceState` |
+| `knowledge.add` | `{ path, label? }` | `WorkspaceState` |
+| `knowledge.remove` | `{ path }` | `WorkspaceState` |
+| `knowledge.rename` | `{ path, label }` | `WorkspaceState` |
+| `knowledge.mkdir` | `{ path, name }` | `{ path }` |
+| `knowledge.copy` | `{ from, to, overwrite? }` | `{ path }` |
 | `audit.list` | `{ limit? }` | `AuditEntry[]` |
 | `agents.list` | `{}` | `AgentInfo[]` |
 | `subagent.list` | `{}` | `SubagentRunInfo[]` |
@@ -101,11 +109,40 @@ the clickable folder chip under the session title.
 `session.prompt` is asynchronous: it returns `accepted: true` and the turn's progress
 arrives on the event stream. Prompts to the same session are queued.
 
+### Knowledge folders
+
+A workspace may reference one or more **knowledge folders** — shared shelves the agent may
+read but never write. They are attached with `knowledge.add` (and from the Files panel) and
+show up in `WorkspaceState.knowledge`; nothing else about the workspace changes, so a folder
+outside the workspace root becomes browsable and readable without widening the workspace
+grant.
+
+The policy engine tests the knowledge roots first: an `fs.read`-class action inside one is
+allowed without approval, and every write is **denied** with a reason — even when the folder
+sits inside the workspace, the narrower grant wins. The only writes are the two the user
+drives:
+
+- `knowledge.mkdir` — `{ path, name }` creates one subfolder (a single path segment, no
+  separators) inside a knowledge folder and returns its path.
+- `knowledge.copy` — `{ from, to, overwrite? }` copies a workspace file into a knowledge
+  folder, creating missing parents. A source that is already inside a knowledge folder is
+  refused, and so is clobbering an existing file unless `overwrite: true`. The copy is
+  audited as a `file-write`.
+
+Neither is reachable as an agent tool: they are service RPCs, so the agent cannot route a
+write around the denial. The agent is told the roots exist in its system prompt
+(`KNOWLEDGE FOLDERS (read-only)`), so a denial is not mistaken for a permission bug and
+retried from another angle.
+
+Every one of these calls returns the new `WorkspaceState`, and the service also pushes it as
+a `workspace.state` event, so a panel — or a second window — repaints without asking.
+
 ## Events (`GET /events`, or `method: "event"` on stdio)
 
 | Event | Payload |
 | --- | --- |
 | `service.health` | `ServiceHealth` (also the ready signal) |
+| `workspace.state` | `WorkspaceState` — the root, recents or knowledge folders changed |
 | `session.snapshot` | `SessionSnapshot` |
 | `session.entry` | `{ sessionId, entry: TranscriptEntry }` |
 | `session.status` | `{ sessionId, status }` |

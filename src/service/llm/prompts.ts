@@ -15,6 +15,8 @@ export interface PromptContext {
   skills?: string;
   /** Rendered MCP server catalogue (empty when none is configured). */
   mcp?: string;
+  /** Rendered read-only knowledge folder list (empty when none is attached). */
+  knowledge?: string;
   isSubagent?: boolean;
 }
 
@@ -116,6 +118,17 @@ export function buildSystemPrompt(ctx: PromptContext): string {
 
   if (ctx.memory) {
     lines.push('', 'WORKSPACE NOTES', ctx.memory);
+  }
+  if (ctx.knowledge) {
+    lines.push(
+      '',
+      'KNOWLEDGE FOLDERS (read-only)',
+      'Shared reference folders the user attached to this workspace. Read and search them freely, but',
+      'any write, delete or move inside them is refused outside the model — that is deliberate, and not',
+      'the kind of denial to work around (no shell redirect, no rename, no copy out and back). If a file',
+      'belongs there, ask the user to copy it in from the workspace.',
+      ctx.knowledge,
+    );
   }
   if (ctx.skills) {
     lines.push('', ctx.skills);

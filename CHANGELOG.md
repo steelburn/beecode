@@ -26,6 +26,22 @@ All notable changes to beeCode will be documented in this file.
   Tests: `src/service/executables.test.ts`, `src/service/python.test.ts` (incl. building a
   venv and running its pip), `src/service/policy.test.ts`.
 
+### Added
+
+- **Knowledge folders — shared, read-only shelves a workspace can read.** A workspace may
+  now reference one or more knowledge folders beside its root (Files panel → **Knowledge
+  (read-only)**: add, rename, detach). The agent reads them without approval and is refused
+  every write, with a reason and a system-prompt note so it stops rather than retries; the
+  check lives in `PolicyEngine` and runs before the workspace grant, so a shelf inside the
+  workspace is still write-denied while one outside it does not open the rest of the drive.
+  `knowledge.mkdir` creates subfolders and `knowledge.copy` copies a workspace file in
+  (missing parents created, no silent clobber, audited as a write) — the only two writes,
+  and both user-driven service RPCs rather than agent tools. The `app://beecode/file`
+  viewer accepts the knowledge roots too, so pictures and PDFs preview out of a shelf.
+  Workspace changes now also arrive as a `workspace.state` service event, so the panes
+  (and a second window) repaint themselves, and the copy button shows up for the shelf
+  that is already selected instead of only after clicking its radio.
+
 ### Fixed
 
 - **An upgraded install kept denying the Python it ships.** The runtime prefixes were added to

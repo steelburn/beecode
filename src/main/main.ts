@@ -185,15 +185,21 @@ const VIEWABLE_TYPES: Record<string, string> = {
   '.ico': 'image/x-icon',
 };
 
-let viewerRootCache: { at: number; root: string } | undefined;
+let viewerRootCache: { at: number; roots: string[] } | undefined;
 
-/** Workspace root the viewers may read from — the service owns that setting. */
-async function viewerRoot(): Promise<string> {
-  if (viewerRootCache && Date.now() - viewerRootCache.at < 1000) return viewerRootCache.root;
+/**
+ * Roots the viewers may read from: the workspace plus every read-only knowledge folder.
+ * The service owns both settings; knowledge folders are read-only by policy, so serving
+ * a picture or a PDF out of one widens nothing.
+ */
+async function viewerRoots(): Promise<string[]> {
+  if (viewerRootCache && Date.now() - viewerRootCache.at < 1000) return viewerRootCache.roots;
   const config = await supervisor.request('config.get', {}).catch(() => undefined);
   const root = (config?.workspace.root ?? '').trim() || workspace;
-  viewerRootCache = { at: Date.now(), root };
-  return root;
+  const knowledge = (config?.workspace.knowledge ?? []).map((folder) => folder.path);
+  const roots = [root, ...knowledge].map((entry) => entry.trim()).filter((entry) => entry.length > 0);
+  viewerRootCache = { at: Date.now(), roots };
+  return roots;
 }
 
 /**
@@ -201,18 +207,21 @@ async function viewerRoot(): Promise<string> {
  *
  * A picture needs bytes for its <img> and Chromium's PDF viewer needs a real navigation,
  * so neither can travel through the text preview RPC. The route is deliberately narrow —
- * inside the workspace root only, and only for the types a viewer asks for — so it cannot
- * turn into a general file reader the renderer could abuse.
+ * inside the workspace root or a knowledge folder only, and only for the types a viewer asks
+ * for — so it cannot turn into a general file reader the renderer could abuse.
  */
 async function serveWorkspaceFile(input: string | null): Promise<Response> {
   if (!input) return new Response('missing path', { status: 400 });
   const file = resolve(input);
   const type = VIEWABLE_TYPES[extname(file).toLowerCase()];
   if (!type) return new Response('unsupported type', { status: 403 });
-  const root = await viewerRoot();
-  if (!root) return new Response('no workspace', { status: 409 });
-  const sub = relative(resolve(root), file);
-  if (!sub || sub.startsWith('..') || isAbsolute(sub)) return new Response('forbidden', { status: 403 });
+  const roots = await viewerRoots();
+  if (roots.length === 0) return new Response('no workspace', { status: 409 });
+  const allowed = roots.some((root) => {
+    const inside = relative(resolve(root), file);
+    return inside.length > 0 && !inside.startsWith('..') && !isAbsolute(inside);
+  });
+  if (!allowed) return new Response('forbidden', { status: 403 });
   const source = await net.fetch(pathToFileURL(file).toString());
   if (!source.ok) return source;
   return new Response(source.body, {
@@ -372,6 +381,12 @@ async function runSmokeCheck(serviceReady: boolean): Promise<void> {
 
   // Give the renderer a beat to run its boot sequence (service status poll + first render).
   await new Promise((r) => setTimeout(r, 2500));
+
+  // A throwaway shelf outside the workspace: the knowledge probe attaches it, drives it
+  // through the panel and detaches it again, so nothing of the user's is touched.
+  const smokeShelf = join(tmpdir(), 'beecode-smoke-knowledge');
+  await rm(smokeShelf, { recursive: true, force: true }).catch(() => undefined);
+  await mkdir(smokeShelf, { recursive: true }).catch(() => undefined);
 
   let dom: Record<string, unknown> = { error: 'window unavailable' };
   try {
@@ -626,6 +641,88 @@ async function runSmokeCheck(serviceReady: boolean): Promise<void> {
           out.closed = await waitFor(() => !document.querySelector('.view-tabs:not([hidden])'), 20000);
           return out;
         })().catch((err) => ({ error: String(err) })),
+        // Knowledge folders: attach a throwaway shelf, send the open file into it, create a
+        // subfolder, browse it, detach it — the read-only chain driven from the panel.
+        knowledge: await (async () => {
+          const shelf = ${JSON.stringify(smokeShelf)};
+          const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+          const poll = async (fn, ms) => {
+            const end = Date.now() + ms;
+            while (Date.now() < end) {
+              if (await fn()) return true;
+              await sleep(150);
+            }
+            return false;
+          };
+          const names = async (dir) => {
+            const listing = await window.beeCode.invoke('fs.list', { path: dir });
+            return (listing.entries ?? []).map((entry) => entry.name);
+          };
+          const button = (scope, text) =>
+            Array.from(document.querySelectorAll(scope + ' button')).find(
+              (b) => (b.textContent ?? '').trim() === text,
+            );
+          const copyName = (
+            document.querySelector('.explorer-preview .explorer-head .card-title')?.textContent ?? ''
+          ).trim();
+          await window.beeCode.invoke('knowledge.add', { path: shelf, label: 'Smoke shelf' });
+          const attached = await poll(
+            () => document.querySelectorAll('.explorer-knowledge-row').length > 0,
+            8000,
+          );
+          const label = (
+            document.querySelector('.explorer-knowledge-row .explorer-name')?.textContent ?? ''
+          ).trim();
+          button('.explorer-knowledge-row', '[ ]')?.click();
+          const starred = await poll(() => Boolean(button('.explorer-knowledge-row', '[*]')), 6000);
+          const copyButton = button('.explorer-preview .explorer-head', 'K+');
+          copyButton?.click();
+          const copied = copyName
+            ? await poll(async () => (await names(shelf)).includes(copyName), 8000)
+            : false;
+          let typed = '';
+          let subfolder = false;
+          const field = document.querySelector('.explorer-newfolder');
+          if (field) {
+            field.value = 'notes';
+            field.dispatchEvent(new Event('input', { bubbles: true }));
+            await sleep(250);
+            typed = document.querySelector('.explorer-newfolder')?.value ?? '';
+            button('.explorer-knowledge-row', 'create')?.click();
+            subfolder = await poll(async () => (await names(shelf)).includes('notes'), 8000);
+          }
+          document.querySelector('.explorer-knowledge-row .explorer-row')?.click();
+          const browsed = await poll(
+            () =>
+              Array.from(document.querySelectorAll('.explorer-row .explorer-name')).some(
+                (n) => (n.textContent ?? '').trim() === 'notes',
+              ),
+            8000,
+          );
+          button('.explorer-knowledge-row', 'detach')?.click();
+          const detached = await poll(
+            () => document.querySelectorAll('.explorer-knowledge-row').length === 0,
+            8000,
+          );
+          const refused = await window.beeCode
+            .invoke('fs.list', { path: shelf })
+            .then(() => false)
+            .catch(() => true);
+          return {
+            attached,
+            label,
+            starred,
+            copyName,
+            copied,
+            typed,
+            subfolder,
+            browsed,
+            detached,
+            refused,
+            copyButton: Boolean(copyButton),
+            copyHint: (document.getElementById('composer-hint')?.textContent ?? '').trim(),
+          };
+        })().catch((err) => ({ error: String(err) })),
         // Workspace terminal: the renderer mounts the panel, the main process runs the
         // command and streams the output back — this drives that whole chain.
         terminal: await (async () => {
@@ -745,6 +842,10 @@ async function runSmokeCheck(serviceReady: boolean): Promise<void> {
   } catch (err) {
     dom = { error: (err as Error).message };
   }
+
+  // The probe leaves the shelf attached only when it failed half-way: detach and delete it.
+  await supervisor.request('knowledge.remove', { path: smokeShelf }).catch(() => undefined);
+  await rm(smokeShelf, { recursive: true, force: true }).catch(() => undefined);
 
   // Internal browser: the dock must reserve a rectangle before the host can paint a page
   // into it, so this drives the real chain — host exec -> state push -> dock layout ->

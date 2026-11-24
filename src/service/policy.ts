@@ -77,10 +77,12 @@ export function migratePolicy(parsed: PolicyDocument): PolicyDocument {
 export class PolicyEngine {
   private policy: PolicyDocument;
   private workspaceRoots: string[];
+  private knowledgeRoots: string[];
 
-  constructor(policy: PolicyDocument, workspaceRoots: string[]) {
+  constructor(policy: PolicyDocument, workspaceRoots: string[], knowledgeRoots: string[] = []) {
     this.policy = policy;
     this.workspaceRoots = workspaceRoots.map((p) => resolve(p));
+    this.knowledgeRoots = knowledgeRoots.map((p) => resolve(p));
   }
 
   async load(file: string): Promise<void> {
@@ -122,6 +124,21 @@ export class PolicyEngine {
 
   setWorkspaceRoots(roots: string[]): void {
     this.workspaceRoots = roots.map((p) => resolve(p));
+  }
+
+  /**
+   * Shared knowledge folders: readable, never writable.
+   *
+   * They are a read overlay, not a widening of the workspace: a knowledge root inside the
+   * workspace still shadows the write grant, and one outside it does not open the rest of
+   * that drive.
+   */
+  setKnowledgeRoots(roots: string[]): void {
+    this.knowledgeRoots = roots.map((p) => resolve(p));
+  }
+
+  knowledgeRootsSnapshot(): string[] {
+    return [...this.knowledgeRoots];
   }
 
   findApp(appId: string): AppRule | undefined {
@@ -234,6 +251,17 @@ export class PolicyEngine {
     const abs = resolve(targetPath);
     const sessionRoots = extraRoots.map((r) => resolve(r));
     if (write && !cfg.writable) return DENY('file writes are disabled by policy');
+
+    // Knowledge folders come first: read-only wins over every write grant below, even when
+    // the folder happens to live inside the workspace root.
+    if (this.knowledgeRoots.some((root) => isInside(root, abs))) {
+      if (write) {
+        return DENY(
+          `${abs} is inside a knowledge folder, which is read-only; ask the user to copy the file in`,
+        );
+      }
+      return { allowed: true, reason: 'read from a read-only knowledge folder', requiresApproval: false };
+    }
 
     if (cfg.workspaceOnly) {
       const roots = [...this.workspaceRoots, ...sessionRoots, ...cfg.allowedRoots.map((r) => resolve(r))];
