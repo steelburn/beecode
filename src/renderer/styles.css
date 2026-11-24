@@ -1379,6 +1379,19 @@ body.dragging-browser-dock { cursor: row-resize; user-select: none; }
 }
 .doc-view.active { background: var(--bg-raised); color: var(--text); }
 
+.doc-actions { display: flex; gap: 6px; flex: 0 0 auto; }
+.doc-action {
+  padding: 3px 8px;
+  border: 1px solid var(--line-soft);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 11px;
+  cursor: pointer;
+}
+.doc-action:hover { background: var(--bg-raised); color: var(--text); }
+
+
 .doc-body {
   flex: 1 1 auto;
   min-height: 0;

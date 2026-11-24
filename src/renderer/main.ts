@@ -26,6 +26,9 @@ import type {
   SlateSummary,
 } from '../shared/protocol';
 import { slateCardVersionLabel, slateRefOf } from './slateRef';
+import { slateDocFromPath, slateExportName } from './slateDoc';
+import { copyText } from './clipboard';
+import type { DocTab } from './docTabs';
 import { initColumns } from './columns';
 import { clear, formatJsonForDisplay, h, renderMarkdown } from './dom';
 import { mountBrowserDock, type BrowserDock, type DockMode } from './browserDock';
@@ -342,6 +345,8 @@ async function boot(): Promise<void> {
       promoteSlate: (id, version, path) => void promoteSlate(id, version, path),
       close: closeDocTab,
       setView: setDocTabView,
+      copyDoc: (path) => void copyDocToClipboard(path),
+      downloadDoc: (path) => void saveDocAs(path),
       toggleTheme: toggleDocTheme,
     },
   );
@@ -2209,6 +2214,50 @@ function setDocTabView(path: string, view: FileView): void {
   state.docs = setDocView(state.docs, path, view);
   renderMainArea();
 }
+
+/** The open document tab for a path, for the tab actions that work on its text. */
+function docTabByPath(path: string): DocTab | undefined {
+  return state.docs.tabs.find((tab) => tab.path === path);
+}
+
+/**
+ * Copy a document tab's text to the clipboard. The tab already holds the text its viewer
+ * rendered, so the copy matches the screen and nothing is re-read from disk.
+ */
+async function copyDocToClipboard(path: string): Promise<void> {
+  const tab = docTabByPath(path);
+  if (tab?.text == null) {
+    setHint('Nothing to copy: this tab has no text.');
+    return;
+  }
+  const copied = await copyText(tab.text);
+  setHint(copied ? `Copied ${tab.name}` : `Could not copy ${tab.name}`);
+}
+
+/**
+ * Download a document tab: the user picks the path in the native save dialog and the text
+ * the tab holds is written there. A slate is named `<slug>-v<N>.<ext>`, so two versions
+ * of one slate never land on the same file.
+ */
+async function saveDocAs(path: string): Promise<void> {
+  const tab = docTabByPath(path);
+  if (tab?.text == null) {
+    setHint('Nothing to save: this tab has no text.');
+    return;
+  }
+  const slate = slateDocFromPath(tab.path);
+  try {
+    const result = await api.saveFile({
+      suggestedName: slate ? slateExportName(slate) : tab.name,
+      content: tab.text,
+      title: `Save ${tab.name}`,
+    });
+    setHint(result.saved ? `Saved to ${result.path ?? tab.name}` : 'Save cancelled.');
+  } catch (error) {
+    setHint(`Could not save ${tab.name}: ${(error as Error).message}`);
+  }
+}
+
 
 function toggleDocTheme(): void {
   state.docs = toggleTheme(state.docs);

@@ -1,6 +1,6 @@
 # Slates
 
-> **Status: phase 1 implemented; the caps and the promote action of phase 2 are in.**
+> **Status: phases 1 and 2 implemented** — store, tools, transcript card, gallery, panel, promote, and the document tab's Copy / Download / Preview ⇄ Code.
 > The store (/src/service/slates.ts), the `create_slate` / `update_slate` / `promote_slate`
 > tools, the transcript card, the SLATE_TAB gallery and the Slates panel are in the tree, and
 > so are the three caps (*Size and retention caps*) and the promote form in both panes. What
@@ -390,12 +390,12 @@ would show `v4` while the pane still renders v3. The rule:
 | 10 | `src/renderer/mainArea.ts` | gallery pane for `SLATE_TAB`, a **gallery branch in `docPaneBody()`** (`mainArea.ts:215`, which currently assumes a file-backed tab), the tab button label (`:142`), the `slate.update` subscription and the follow/pin retarget (see *Version and tab coherence*) | 1 |
 | 11 | `src/renderer/mainArea.ts` | **signature**: `render(state, view)` takes `{ browserVisible }` (`:46`) — add `slateVisible`, and update `renderStrip` plus the "show one of three" pane toggle (`:53`–`:54`, `:72`) | 1 |
 | 12 | `src/renderer/main.ts` | pass the new flag at the `mainArea.render()` call site and handle `slate.update` inside `handleEvent` | 1 |
-| 13 | `src/renderer/slateView.ts` | **new** — Tier A only: delegate to `viewerKind()` / `mountFileView`; not named `slate.ts` (collides with the feature noun) | 1 |
+| 13 | ~~`src/renderer/slateView.ts`~~ → `src/renderer/slateDoc.ts` | **built differently** — no slate renderer was needed. The version file keeps its extension, so `mountFileView` + `viewerKind()` already render it (`slateGallery.ts:355` below said as much); `slateDoc.ts` is the small piece that *is* slate-specific: path → `{ session, id, version, ext }`, which the tab uses for its actions and its download name. Not named `slate.ts` (collides with the feature noun) | 1 |
 | 14 | `src/renderer/panels.ts` | Slates section with a version picker, **plus** a `'slate'` entry in `TOOL_GROUP_ORDER` (`:70`) and `TOOL_GROUP_LABELS` (`:84`) — see *Settings → Tools registration* | 1 |
 | 15 | `scripts/smoke.mjs` | end-to-end probe: create → event → list → open, in the shape of the knowledge-folder probe | 1 |
 | 16 | tests | `slates/store.test.ts` (versioning, confinement guard, cap refusals), `policy.test.ts` (the exemption and promote rules — see *Testing*), `docTabs.test.ts` (`SLATE_TAB`), `slateView.test.ts` (kind dispatch + approval matrix) | 1 |
 | 17 | `src/renderer/slateView.ts` + a host in `src/main/` | Tier B: sandboxed `WebContentsView`, `sandbox: true`, no preload, strict CSP; reuse the `pluginHost` / browser-dock pattern | 2 |
-| 18 | `src/renderer/slateView.ts`, `promote_slate` | Code ⇄ Preview toggle, copy, download; `promote_slate` writes through `evaluateFile` and raises an approval card | 2 |
+| 18 | `src/renderer/slateDoc.ts`, `src/renderer/clipboard.ts`, `promote_slate` | **done** — the slate version tab switches **Preview ⇄ Code** (the existing `view: 'source'` option, relabelled for a document the agent wrote), **Copies** its text (async clipboard, `execCommand` fallback) and **Downloads** it through a native save dialog (`beecode:save-file`, suggested name `<slug>-v<N>.<ext>`); `promote_slate` writes through `evaluateFile` and raises an approval card | 2 |
 | 19 | pipeline | auto-promote long fenced `html`/`svg` blocks into slates; streamed `slate.delta`; version diff | 3 |
 
 Phase 1 is roughly 450–600 LOC of new code plus wiring, against a repo with no

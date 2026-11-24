@@ -28,6 +28,23 @@ export interface DirectoryPickerOptions {
   defaultPath?: string;
 }
 
+/** Options for the native save dialog behind `saveFile`. */
+export interface SaveFileOptions {
+  /** File name the dialog opens with — the tab already knows a sensible one. */
+  suggestedName: string;
+  /** UTF-8 text written to the chosen path. */
+  content: string;
+  /** Dialog title; defaults to `Save file`. */
+  title?: string;
+}
+
+/** What `saveFile` did. A cancelled dialog is not an error. */
+export interface SaveFileResult {
+  saved: boolean;
+  /** The path that was written, when `saved` is true. */
+  path?: string;
+}
+
 /** Options for the native file picker behind `pickFiles`. */
 export interface FilePickerOptions {
   title?: string;
@@ -138,6 +155,12 @@ export interface BeeCodeBridge {
   getConfig(): Promise<BeeCodeConfig>;
   saveConfig(config: BeeCodeConfig): Promise<BeeCodeConfig>;
   pickDirectory(options?: DirectoryPickerOptions): Promise<string | undefined>;
+
+  /**
+   * Write text to a path the user picks in the native save dialog — the Download action
+   * on a document tab. Cancelling resolves `{ saved: false }`.
+   */
+  saveFile(options: SaveFileOptions): Promise<SaveFileResult>;
   openExternal(url: string): Promise<void>;
   onEvent(listener: (event: ServiceEvent) => void): () => void;
   onServiceStatus(listener: (status: ServiceStatusPayload) => void): () => void;

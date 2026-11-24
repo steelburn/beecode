@@ -1,9 +1,12 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
+import { writeFile } from 'node:fs/promises';
 import type { BrowserPanelCommand } from '../shared/browser';
 import {
   RENDERER_METHODS,
   type AppInfo,
   type FilePickerOptions,
+  type SaveFileOptions,
+  type SaveFileResult,
   type ServiceStatusPayload,
 } from '../shared/bridge';
 import type { BeeCodeConfig, PolicyDocument, RpcMethod, RpcRequests } from '../shared/protocol';
@@ -100,6 +103,31 @@ export function registerIpc(deps: IpcDeps): void {
     const result = win ? await dialog.showOpenDialog(win, dialogOptions) : await dialog.showOpenDialog(dialogOptions);
     return result.canceled ? undefined : result.filePaths[0];
   });
+
+  /**
+   * Save dialog + write, for the Download action on a document tab. The renderer sends the
+   * text it already has on screen and the user picks the destination, so nothing lands
+   * anywhere they did not choose.
+   */
+  ipcMain.handle(
+    'beecode:save-file',
+    async (_event, options: SaveFileOptions): Promise<SaveFileResult> => {
+      if (!options || typeof options.content !== 'string' || !options.suggestedName) {
+        throw new Error('saveFile needs a suggestedName and content');
+      }
+      const owner = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
+      const dialogOptions = {
+        title: options.title ?? 'Save file',
+        defaultPath: options.suggestedName,
+      };
+      const { canceled, filePath } = owner
+        ? await dialog.showSaveDialog(owner, dialogOptions)
+        : await dialog.showSaveDialog(dialogOptions);
+      if (canceled || !filePath) return { saved: false };
+      await writeFile(filePath, options.content, 'utf8');
+      return { saved: true, path: filePath };
+    },
+  );
 
   ipcMain.handle('beecode:open-external', async (_event, url: string) => {
     // Only http(s) — never let the page hand us a file:// or custom-scheme URI.

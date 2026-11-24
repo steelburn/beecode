@@ -685,6 +685,9 @@ async function runSmokeCheck(serviceReady: boolean): Promise<void> {
           out.tabs = document.querySelectorAll('.view-tab').length;
           const host = document.querySelector('#doc-pane .doc-rendered.html');
           out.isolated = Boolean(host && host.shadowRoot) && !document.querySelector('#doc-pane .doc-rendered.html style');
+          // Row 18: Copy and Download belong to a slate version, never to an ordinary
+          // workspace document — those are already a file on disk.
+          out.docActions = document.querySelectorAll('#doc-pane .doc-head .doc-action').length;
           out.rendered = Boolean(host && host.shadowRoot && host.shadowRoot.querySelector('.html-preview'));
           out.transcriptHidden =
             (document.querySelector('.transcript')?.getBoundingClientRect().height ?? 0) === 0;

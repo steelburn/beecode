@@ -47,6 +47,7 @@ All notable changes to beeCode will be documented in this file.
   `version` drops a single version as the escape hatch, and the gallery and the panel each
   gained a **Promote…** form that writes one version into the workspace tree through the
   same file policy a tool write passes.
+  The document tab closed phase 2: a slate version opens in an ordinary tab, so markdown,,  HTML and CSV keep the app's real viewers, and the tab head gained the two actions a,  document needs — **Copy** (async clipboard, with an `execCommand` fallback) and,  **Download…** (a native save dialog, suggested name `<slug>-v<N>.<ext>` from,  `slateDoc.ts`) — while the Rendered/Source toggle reads **Preview / Code** for a,  slate. There is no `slateView.ts`: the version file keeps its extension, so,  `mountFileView` renders it and only the actions are slate-specific.,  `src/renderer/slateDoc.test.ts` covers the path decoding, and the Electron smoke,  check asserts a plain workspace document shows none of these actions.
 
 - **Knowledge folders — shared, read-only shelves a workspace can read.** A workspace may
   now reference one or more knowledge folders beside its root (Files panel → **Knowledge

@@ -12,6 +12,7 @@ import {
   type DocTheme,
 } from './docTabs';
 import { canSwitchView, type FileView } from './preview';
+import { slateDocFromPath, slateExportName, type SlateDocRef } from './slateDoc';
 import { renderSlateGallery, type SlateGalleryView } from './slateGallery';
 
 /**
@@ -39,6 +40,10 @@ export interface MainAreaHandlers {
   removeSlate(id: string): void;
   /** Write one slate version into the workspace tree as a real file. */
   promoteSlate(id: string, version: number, path: string): void;
+  /** Put a document tab's text on the clipboard. */
+  copyDoc(path: string): void;
+  /** Save a document tab's text to a path the user picks. */
+  downloadDoc(path: string): void;
 }
 
 /** Everything below the strip needs besides the tab state itself. */
@@ -195,6 +200,7 @@ function renderDoc(
   theme: DocTheme,
   handlers: MainAreaHandlers,
 ): void {
+  const slate = slateDocFromPath(tab.path);
   clear(pane);
   pane.append(
     h(
@@ -207,7 +213,8 @@ function renderDoc(
         h('span', { class: 'doc-path', text: tab.path, title: tab.path }),
       ),
       h('span', { class: 'doc-size', text: formatBytes(tab.size) }),
-      canSwitchView(tab.kind) && !tab.binary ? viewToggle(tab, handlers) : null,
+      slateDocActions(tab, slate, handlers),
+      canSwitchView(tab.kind) && !tab.binary ? viewToggle(tab, handlers, slate) : null,
       h('button', {
         type: 'button',
         class: 'btn ghost small',
@@ -220,8 +227,36 @@ function renderDoc(
   );
 }
 
+/**
+ * Copy and Download, for a slate version: the two ways to get the document out of the app.
+ * Shown on slate tabs only — the store's own version number is what makes a download name
+ * meaningful, and a plain document already has the file it came from.
+ */
+function slateDocActions(
+  tab: DocTab,
+  slate: SlateDocRef | undefined,
+  handlers: MainAreaHandlers,
+): HTMLElement | null {
+  if (!slate || tab.binary || tab.text == null) return null;
+  const action = (label: string, title: string, onClick: () => void): HTMLElement =>
+    h('button', { type: 'button', class: 'doc-action', title, text: label, on: { click: onClick } });
+  return h(
+    'div',
+    { class: 'doc-actions' },
+    action('Copy', `Copy ${tab.name} to the clipboard`, () => handlers.copyDoc(tab.path)),
+    action('Download…', `Save ${slateExportName(slate)} to a folder you pick`, () =>
+      handlers.downloadDoc(tab.path),
+    ),
+  );
+}
+
+
 /** Rendered / source, for the kinds where both answers exist. */
-function viewToggle(tab: DocTab, handlers: MainAreaHandlers): HTMLElement {
+function viewToggle(tab: DocTab, handlers: MainAreaHandlers, slate?: SlateDocRef): HTMLElement {
+  // A slate is a document the agent wrote, so its two views are the code and the page.
+  const labels = slate
+    ? { rendered: 'Preview', source: 'Code' }
+    : { rendered: 'Rendered', source: 'Source' };
   const button = (view: FileView, label: string): HTMLElement =>
     h('button', {
       type: 'button',
@@ -232,8 +267,8 @@ function viewToggle(tab: DocTab, handlers: MainAreaHandlers): HTMLElement {
   return h(
     'div',
     { class: 'doc-viewtoggle', role: 'group', title: 'View mode' },
-    button('rendered', 'Rendered'),
-    button('source', 'Source'),
+    button('rendered', labels.rendered),
+    button('source', labels.source),
   );
 }
 

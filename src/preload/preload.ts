@@ -33,6 +33,9 @@ const bridge: BeeCodeBridge = {
 
   pickDirectory: (options) => ipcRenderer.invoke('beecode:pick-directory', options),
 
+  saveFile: (options) => ipcRenderer.invoke('beecode:save-file', options),
+
+
   pickFiles: (options?: FilePickerOptions) => ipcRenderer.invoke('beecode:pick-files', options),
 
   copyIntoWorkspace: (paths: string[], targetDir?: string): Promise<CopyIntoWorkspaceResult> =>
