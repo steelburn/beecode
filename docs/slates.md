@@ -1,6 +1,6 @@
 # Slates
 
-> **Status: phases 1–3 implemented; Tier B started** — the store, the three slate tools,
+> **Status: phases 1–3 and Tier B (live slates) implemented** — the store, the three slate tools,
 > the transcript card, the SLATE_TAB gallery, the Slates panel, promote, the document tab's
 > Copy / Download / Preview ⇄ Code, and the pipeline: a long fenced `html` / `svg` block is
 > auto-promoted out of the transcript (`src/shared/slateFence.ts`, `src/service/slatePromote.ts`),
@@ -9,7 +9,7 @@
 > `src/renderer/slateDiffView.ts`). The store itself (/src/service/slates.ts), the three caps
 > (*Size and retention caps*) and the promote form in both panes are in the tree too.
 >
-> **Tier B, part 2 — the sandbox — is implemented too**: a live slate runs in its own
+> **Tier B — live slates — is implemented**: a live slate runs in its own
 > `WebContentsView` (`src/main/slate/host.ts`) on a per-slate *in-memory* partition with
 > `sandbox: true` and **no preload**, so the page has no bridge to the app, no filesystem reach
 > and no cookies that outlive the run. The document is served from memory over
@@ -514,14 +514,11 @@ Kept here so the next reader does not re-inherit them:
 
 ## Open decisions
 
-1. **Streaming in v1?** Default: no — show the slate when the tool call completes. Partial
-   tool-JSON plumbing buys little for documents this size.
-2. **Does a slate get a `recipe`?** Recommended yes (§ *Data sources*): it is what makes a
+1. **Does a slate get a `recipe`?** Recommended yes (§ *Data sources*): it is what makes a
    snapshot replayable and is the honest answer to "can it stay current". Costs a little
    phase-1 scope.
 
 **Resolved during review** (recorded so they are not reopened):
-
 * *CSV / chart in v1* — yes for CSV, and Markdown with `chart` fences, because
   `viewerKind()` (`fileView.ts:89`) maps the version file by its real extension.
 * *Own dispatch vs `viewerKind()`* — reuse `viewerKind()`, so no slate-specific renderer
@@ -542,3 +539,9 @@ Kept here so the next reader does not re-inherit them:
   (*Settings → Tools registration*).
 * Mermaid stays out of v1: there is no renderer and no dependency for it anywhere in
   `src/`.
+* *Streaming in v1* — yes, as of phase 3. `slate.delta` carries the open fence’s text so
+  far and the gallery patches only that tile in place (a remount would lose the reader’s
+  scroll); `slate.update` retires the live tile once the version file exists. The original
+  "partial tool-JSON plumbing buys little" argument assumed tool JSON was the only route —
+  promoting fenced blocks directly means the streamed text is never parsed back out of a
+  half-written tool call.
