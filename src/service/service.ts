@@ -658,6 +658,29 @@ export class BeeCodeService {
         };
       }
 
+      /**
+       * The sink. Its only caller is the live host, on behalf of a page it is hosting;
+       * the agent reads what landed here with the slate_submissions tool.
+       */
+      case 'slate.submit': {
+        return this.slates.submit({
+          ...this.slateLocation(args),
+          id: this.requireString(args, 'id'),
+          version: Number(args.version),
+          submissionId: this.requireString(args, 'submissionId'),
+          payload: args.payload,
+        });
+      }
+
+      case 'slate.submissions': {
+        const submissions = await this.slates.submissions({
+          ...this.slateLocation(args),
+          id: this.requireString(args, 'id'),
+          since: typeof args.since === 'number' ? args.since : undefined,
+        });
+        return { submissions };
+      }
+
       case 'slate.live': {
         const id = this.requireString(args, 'id');
         const location = this.slateLocation(args);

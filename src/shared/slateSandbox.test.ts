@@ -6,6 +6,7 @@ import {
   isSlateOriginAllowed,
   normaliseSlateOrigin,
   normaliseSlateOrigins,
+  parseSlateLiveSubmitUrl,
   parseSlateLiveUrl,
   slateLiveCsp,
   slateLiveUrl,
@@ -96,4 +97,40 @@ test('origin matching is exact on origin, not on prefix', () => {
   assert.equal(isSlateOriginAllowed('http://api.example.com/', origins), false);
   assert.equal(isSlateOriginAllowed('nonsense', origins), false);
   assert.equal(isSlateOriginAllowed('https://api.example.com/', []), false);
+});
+
+test('a form adds the page own origin to connect-src and nothing else', () => {
+  const csp = slateLiveCsp(['https://api.example.com'], { submit: true });
+  assert.match(csp, /connect-src https:\/\/api\.example\.com 'self'/);
+  assert.match(csp, /form-action 'none'/);
+  assert.match(csp, /default-src 'none'/);
+});
+
+test('a form-only slate reaches its own origin and no other', () => {
+  assert.equal(slateLiveCsp([], { submit: true }).includes("connect-src 'self'"), true);
+  assert.equal(slateLiveCsp([], { submit: true }).includes("connect-src 'none'"), false);
+  assert.match(slateLiveCsp([]), /connect-src 'none'/);
+});
+
+test('the submit URL is the served URL one path deeper', () => {
+  const url = slateLiveUrl('session-1', 'sales q3', 2);
+  assert.deepEqual(parseSlateLiveUrl(url), {
+    sessionId: 'session-1',
+    id: 'sales q3',
+    version: 2,
+  });
+  assert.deepEqual(parseSlateLiveSubmitUrl(url + '/submit'), {
+    sessionId: 'session-1',
+    id: 'sales q3',
+    version: 2,
+  });
+});
+
+test('anything that is not <hosted>/v<N>/submit is not a submit URL', () => {
+  assert.equal(parseSlateLiveSubmitUrl('slate://live/s/i/v1'), undefined);
+  assert.equal(parseSlateLiveSubmitUrl('slate://live/s/i/v1/submit/x'), undefined);
+  assert.equal(parseSlateLiveSubmitUrl('slate://live/s/i/v0/submit'), undefined);
+  assert.equal(parseSlateLiveSubmitUrl('slate://live/s/i/submit'), undefined);
+  assert.equal(parseSlateLiveSubmitUrl('slate://elsewhere/s/i/v1/submit'), undefined);
+  assert.equal(parseSlateLiveSubmitUrl('https://live/s/i/v1/submit'), undefined);
 });

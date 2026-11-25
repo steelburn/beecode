@@ -318,3 +318,60 @@ test('refresh_slate says so when a version records no recipe', async () => {
     await rm(cwd, { recursive: true, force: true });
   }
 });
+
+test('create_slate can declare a form, and slate_submissions reads the sink', async () => {
+  const cwd = await workspace();
+  try {
+    const { call, tool } = harness(cwd);
+    const submit = { fields: [{ name: 'hours', type: 'number', required: true }] };
+    const created = await call('create_slate', {
+      title: 'Hours',
+      kind: 'html',
+      content: '<form id="f"></form>',
+      submit,
+    });
+    assert.equal(created.failed, undefined);
+    assert.equal((created.meta?.slate as { id?: string } | undefined)?.id, 'hours');
+
+    const readTool = tool('slate_submissions');
+    assert.equal(readTool?.mutating, false);
+
+    const empty = await call('slate_submissions', { id: 'hours' });
+    assert.deepEqual(JSON.parse(String(empty.content)).submissions, []);
+
+    const store = new SlateStore();
+    await store.submit({
+      cwd,
+      sessionId: 'session-1',
+      id: 'hours',
+      version: 1,
+      submissionId: 'k1',
+      payload: { fields: { hours: 6 } },
+    });
+
+    const posted = await call('slate_submissions', { id: 'hours' });
+    const payload = JSON.parse(String(posted.content));
+    assert.equal(payload.submissions.length, 1);
+    assert.deepEqual(payload.submissions[0].fields, { hours: 6 });
+    assert.equal(payload.submissions[0].version, 1);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test('a markdown slate refuses to declare a form', async () => {
+  const cwd = await workspace();
+  try {
+    const { call } = harness(cwd);
+    const result = await call('create_slate', {
+      title: 'Notes',
+      kind: 'markdown',
+      content: '# notes',
+      submit: { fields: [{ name: 'hours' }] },
+    });
+    assert.equal(result.failed, true);
+    assert.match(String(result.content), /cannot take a form/);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});

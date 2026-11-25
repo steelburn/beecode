@@ -1,0 +1,14 @@
+{
+  "slate": { "id": "contact-intake", "version": 1, "kind": "html" },
+  "origins": [],
+  "submit": {
+    "fields": [
+      { "name": "name", "label": "Name", "type": "text", "required": true, "maxLength": 120 },
+      { "name": "email", "label": "Email", "type": "text", "required": true, "maxLength": 200 },
+      { "name": "plan", "label": "Plan", "type": "select", "required": true, "options": ["basic", "pro", "enterprise"] },
+      { "name": "seats", "label": "Seats", "type": "number", "required": true },
+      { "name": "newsletter", "label": "Send me the newsletter", "type": "checkbox" },
+      { "name": "notes", "label": "Anything else?", "type": "textarea", "maxLength": 2000 }
+    ]
+  }
+}

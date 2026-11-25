@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Contact intake — slate mini-app</title>
+    <style>
+      :root { color-scheme: light dark; }
+      body { font: 15px/1.5 system-ui, sans-serif; margin: 0; padding: 32px; max-width: 34rem; }
+      h1 { font-size: 1.25rem; margin: 0 0 4px; }
+      p.lede { margin: 0 0 24px; opacity: 0.7; }
+      label { display: block; margin: 14px 0 4px; font-weight: 600; }
+      input[type="text"], input[type="number"], select, textarea {
+        width: 100%; box-sizing: border-box; padding: 8px; font: inherit;
+        border: 1px solid color-mix(in srgb, currentColor 30%, transparent); border-radius: 6px;
+        background: transparent; color: inherit;
+      }
+      textarea { min-height: 5rem; resize: vertical; }
+      .row { display: flex; gap: 8px; align-items: center; font-weight: 400; margin-top: 18px; }
+      button { margin-top: 22px; padding: 9px 18px; font: inherit; font-weight: 600; border-radius: 6px;
+               border: 1px solid color-mix(in srgb, currentColor 30%, transparent); background: color-mix(in srgb, currentColor 10%, transparent); color: inherit; cursor: pointer; }
+      button[disabled] { opacity: 0.5; cursor: default; }
+      #status { margin-top: 18px; min-height: 1.5rem; white-space: pre-wrap; }
+      #status[data-kind="ok"] { color: #1a7f37; }
+      #status[data-kind="error"] { color: #c93c37; }
+      .error { font-weight: 600; }
+    </style>
+  </head>
+  <body>
+    <h1>Contact intake</h1>
+    <p class="lede">
+      An exported slate: same html as the live slate, no host baked in. The form posts to
+      <code>submit</code> — a relative URL — so it works under any host implementing the contract.
+    </p>
+
+    <form id="form" novalidate>
+      <label for="name">Name</label>
+      <input id="name" name="name" type="text" autocomplete="name" />
+
+      <label for="email">Email</label>
+      <input id="email" name="email" type="text" inputmode="email" autocomplete="email" />
+
+      <label for="plan">Plan</label>
+      <select id="plan" name="plan">
+        <option value="basic">Basic</option>
+        <option value="pro">Pro</option>
+        <option value="enterprise">Enterprise</option>
+      </select>
+
+      <label for="seats">Seats</label>
+      <input id="seats" name="seats" type="number" min="1" value="1" />
+
+      <div class="row">
+        <input id="newsletter" name="newsletter" type="checkbox" />
+        <label for="newsletter" style="margin: 0">Send me the newsletter</label>
+      </div>
+
+      <label for="notes">Anything else?</label>
+      <textarea id="notes" name="notes"></textarea>
+
+      <button type="submit" id="send">Send</button>
+      <p id="status" role="status"></p>
+    </form>
+
+    <script>
+      const form = document.getElementById('form');
+      const status = document.getElementById('status');
+      const send = document.getElementById('send');
+
+      function show(kind, text) {
+        status.dataset.kind = kind;
+        status.textContent = text;
+      }
+
+      form.addEventListener('submit', async (event) => {
+        event.preventDefault(); // form-action is 'none': fetch is the only way out
+        send.disabled = true;
+        show('', 'Sending…');
+
+        // Types matter: the schema is never coerced, so a number has to arrive as a number
+        // and a checkbox as a boolean.
+        const fields = {
+          name: form.name.value.trim(),
+          email: form.email.value.trim(),
+          plan: form.plan.value,
+          seats: Number(form.seats.value),
+          newsletter: form.newsletter.checked,
+          notes: form.notes.value.trim(),
+        };
+
+        try {
+          const response = await fetch('submit', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            // A stable id per attempt makes a retry a replay, not a second submission.
+            body: JSON.stringify({ submissionId: crypto.randomUUID(), fields }),
+          });
+          const result = await response.json();
+
+          if (result.ok) {
+            show('ok', `Recorded as submission #${result.n}.`);
+            form.reset();
+          } else {
+            const lines = (result.errors ?? []).map((entry) =>
+              entry.field ? `${entry.field}: ${entry.message}` : entry.message,
+            );
+            show('error', lines.join('\n') || 'Rejected.');
+          }
+        } catch (error) {
+          show('error', `Could not reach the host: ${error.message}`);
+        } finally {
+          send.disabled = false;
+        }
+      });
+    </script>
+  </body>
+</html>

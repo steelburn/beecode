@@ -15,6 +15,8 @@
  * consent, and the approval card has to be able to print every entry.
  */
 
+import type { SlateSubmitSchema } from './slateSubmit';
+
 export const SLATE_LIVE_SCHEME = 'slate';
 export const SLATE_LIVE_HOST = 'live';
 
@@ -89,9 +91,17 @@ export function canSlateGoLive(kind: string): boolean {
 /**
  * The page CSP. It is a whitelist in every direction: nothing loads that is not inline or
  * data:, and the network is exactly the allowlist — `connect-src 'none'` when it is empty.
+ *
+ * A slate that declares a form adds `'self'` and nothing else: posting to its own
+ * `slate://live/...` origin is not a new capability, it is the app answering its own
+ * page. `form-action` stays `'none'`, so the form has to be posted with `fetch` from a
+ * submit handler — which is also what keeps the target pinned to this version.
  */
-export function slateLiveCsp(origins: readonly string[]): string {
-  const connect = origins.length ? origins.join(' ') : "'none'";
+export function slateLiveCsp(
+  origins: readonly string[],
+  options: { submit?: boolean } = {},
+): string {
+  const connect = [...origins, ...(options.submit ? ["'self'"] : [])].join(' ') || "'none'";
   return [
     "default-src 'none'",
     "script-src 'unsafe-inline'",
@@ -139,6 +149,27 @@ export function parseSlateLiveUrl(raw: string): SlateLiveTarget | undefined {
   return { sessionId, id, version: Number(match[1]) };
 }
 
+/**
+ * `slate://live/<session>/<id>/v<version>/submit` — where a live page posts its form.
+ * One path deeper on the origin that served it, so the page needs no token, no port and
+ * no CORS: `fetch(location.pathname + '/submit', ...)` is the whole protocol.
+ */
+export function parseSlateLiveSubmitUrl(raw: string): SlateLiveTarget | undefined {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return undefined;
+  }
+  if (url.protocol !== `${SLATE_LIVE_SCHEME}:` || url.host !== SLATE_LIVE_HOST) return undefined;
+  const parts = url.pathname.split('/').filter(Boolean);
+  if (parts.length !== 4 || parts[3] !== 'submit') return undefined;
+  const [sessionId, id, versionPart] = parts.slice(0, 3).map(decodeURIComponent);
+  const match = /^v([1-9][0-9]{0,2})$/.exec(versionPart);
+  if (!match) return undefined;
+  return { sessionId, id, version: Number(match[1]) };
+}
+
 /** Is this URL inside the slate's allowlist? Used to police anything script tries to open. */
 /** The rectangle the renderer reserves for the live view, in window coordinates. */
 export interface SlateLiveBounds {
@@ -170,8 +201,13 @@ export interface SlateLiveDocument {
   text: string;
   /** The version actually read — the store's current one when none was asked for. */
   version: number;
-  /** The allowlist as persisted. Empty means the slate may not run. */
+  /** The allowlist as persisted. Empty means the slate may reach nothing. */
   origins: string[];
+  /**
+   * The form this version declares, if any. Present means the page may post to
+   * `<this url>/submit` and `connect-src` carries `'self'`.
+   */
+  submit?: SlateSubmitSchema;
   live: boolean;
 }
 

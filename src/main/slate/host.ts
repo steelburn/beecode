@@ -22,6 +22,7 @@ import {
   SLATE_LIVE_HOST,
   SLATE_LIVE_PARTITION_PREFIX,
   SLATE_LIVE_SCHEME,
+  parseSlateLiveSubmitUrl,
   parseSlateLiveUrl,
   slateLiveCsp,
   slateLiveUrl,
@@ -29,7 +30,9 @@ import {
   type SlateLiveCommand,
   type SlateLiveDocument,
   type SlateLiveState,
+  type SlateLiveTarget,
 } from '../../shared/slateSandbox';
+import { SLATE_SUBMIT_LIMITS, type SlateSubmission, type SlateSubmitError, type SlateSubmitSchema } from '../../shared/slateSubmit';
 
 export interface SlateLiveHostDeps {
   /** Read one version through the service — never from disk. */
@@ -42,6 +45,22 @@ export interface SlateLiveHostDeps {
   getWindow(): BrowserWindow | null;
   /** Called after every state change so the renderer can follow it. */
   onState?(state: SlateLiveState): void;
+  /**
+   * Hand one form post to the sink. It goes through the service, so the store stays the
+   * only thing that decides where a slate lives and which version is current.
+   */
+  recordSubmission(params: {
+    sessionId: string;
+    id: string;
+    version: number;
+    submissionId: string;
+    /** The page's `{ fields }` object, exactly as posted. */
+    payload: unknown;
+    cwd?: string;
+  }): Promise<
+    | { ok: true; submission: SlateSubmission; total: number }
+    | { ok: false; errors: SlateSubmitError[] }
+  >;
 }
 
 interface Hosted {
@@ -51,6 +70,10 @@ interface Hosted {
   sessionId: string;
   id: string;
   version: number;
+  /** The form this version declared; absent means no submit endpoint exists. */
+  submit?: SlateSubmitSchema;
+  /** Where the store should look when the session is not one the service knows. */
+  cwd?: string;
 }
 
 export class SlateLiveHost {
@@ -69,14 +92,115 @@ export class SlateLiveHost {
   }
 
   /**
+   * The one write path a slate has: its own form posting back to its own origin.
+   *
+   * It answers the page and nothing else — `{ ok: true, n }` or `{ ok: false, errors }` —
+   * and only for the version that is actually hosted, so a page cannot post against a
+   * schema the user never saw. Same origin means no token, no port and no CSRF surface:
+   * nothing but this page can reach this URL.
+   */
+  private async handleSubmit(
+    target: SlateLiveTarget,
+    request: Request,
+    headers: Record<string, string>,
+  ): Promise<Response> {
+    const hosted = this.hosted;
+    const matches =
+      hosted !== null &&
+      target.sessionId === hosted.sessionId &&
+      target.id === hosted.id &&
+      target.version === hosted.version;
+    if (!matches || !hosted?.submit) {
+      return this.json(
+        { ok: false, errors: [{ field: '', message: 'no live slate is hosted at this address' }] },
+        404,
+        headers,
+      );
+    }
+    if (request.method !== 'POST') {
+      return this.json(
+        { ok: false, errors: [{ field: '', message: 'submit with POST' }] },
+        405,
+        headers,
+      );
+    }
+    const declared = Number(request.headers.get('content-length') ?? 0);
+    if (declared > SLATE_SUBMIT_LIMITS.bytes) {
+      return this.json(
+        { ok: false, errors: [{ field: '', message: 'the submission is too large' }] },
+        413,
+        headers,
+      );
+    }
+
+    let parsed: { submissionId?: unknown; payload?: unknown };
+    try {
+      const body = await request.text();
+      if (Buffer.byteLength(body, 'utf8') > SLATE_SUBMIT_LIMITS.bytes) {
+        return this.json(
+          { ok: false, errors: [{ field: '', message: 'the submission is too large' }] },
+          413,
+          headers,
+        );
+      }
+      const raw = JSON.parse(body) as { submissionId?: unknown; fields?: unknown };
+      parsed = { submissionId: raw?.submissionId, payload: { fields: raw?.fields } };
+    } catch {
+      return this.json(
+        { ok: false, errors: [{ field: '', message: 'the submission is not JSON' }] },
+        400,
+        headers,
+      );
+    }
+
+    const submissionId = typeof parsed.submissionId === 'string' ? parsed.submissionId : '';
+    if (!submissionId) {
+      return this.json(
+        { ok: false, errors: [{ field: '', message: 'the submission needs an id' }] },
+        400,
+        headers,
+      );
+    }
+
+    let result: Awaited<ReturnType<SlateLiveHostDeps['recordSubmission']>>;
+    try {
+      result = await this.deps.recordSubmission({
+        sessionId: target.sessionId,
+        id: target.id,
+        version: target.version,
+        submissionId,
+        payload: parsed.payload,
+        ...(hosted.cwd ? { cwd: hosted.cwd } : {}),
+      });
+    } catch (error) {
+      return this.json(
+        { ok: false, errors: [{ field: '', message: messageOf(error) }] },
+        500,
+        headers,
+      );
+    }
+    if (!result.ok) return this.json({ ok: false, errors: result.errors }, 422, headers);
+    return this.json({ ok: true, n: result.submission.n }, 200, headers);
+  }
+
+  private json(body: unknown, status: number, headers: Record<string, string>): Response {
+    return new Response(JSON.stringify(body), {
+      status,
+      headers: { ...headers, 'content-type': 'application/json; charset=utf-8' },
+    });
+  }
+
+  /**
    * Answer one `slate://` request. Anything that is not the exact hosted version gets a
    * 404 with no body: the host serves what it was asked to show, not what a URL asks for.
    */
-  handleRequest(request: Request): Response {
+  handleRequest(request: Request): Response | Promise<Response> {
     const headers: Record<string, string> = {
       'cache-control': 'no-store',
       'x-content-type-options': 'nosniff',
     };
+    const submitTarget = parseSlateLiveSubmitUrl(request.url);
+    if (submitTarget) return this.handleSubmit(submitTarget, request, headers);
     const hosted = this.hosted;
     const target = parseSlateLiveUrl(request.url);
     const matches =
@@ -94,7 +218,7 @@ export class SlateLiveHost {
         ...headers,
         'content-type': 'text/html; charset=utf-8',
         // The allowlist as a response header: the document cannot widen or remove it.
-        'content-security-policy': slateLiveCsp(hosted.origins),
+        'content-security-policy': slateLiveCsp(hosted.origins, { submit: Boolean(hosted.submit) }),
         'referrer-policy': 'no-referrer',
       },
     });
@@ -131,12 +255,25 @@ export class SlateLiveHost {
     // Belt and braces: the store already refuses a non-html live slate, and the consent
     // switch already withdrew these origins. Checked here because this is where it costs.
     if (!doc.live) return this.fail(command.id, 'this slate has no execution permission');
-    if (doc.origins.length === 0) {
-      return this.fail(command.id, 'this slate allows no origins, so there is nothing it may load');
+    // A slate with no origins can still be live if it declares a form: the only thing it
+    // may reach is its own origin, and only to post back.
+    if (doc.origins.length === 0 && !doc.submit) {
+      return this.fail(
+        command.id,
+        'this slate allows no origins and takes no submissions, so there is nothing it may do',
+      );
     }
 
     const url = slateLiveUrl(command.sessionId, command.id, doc.version);
-    this.hosted = { url, text: doc.text, origins: doc.origins, ...target, version: doc.version };
+    this.hosted = {
+      url,
+      text: doc.text,
+      origins: doc.origins,
+      ...target,
+      version: doc.version,
+      ...(doc.submit ? { submit: doc.submit } : {}),
+      ...(command.cwd ? { cwd: command.cwd } : {}),
+    };
 
     const view = this.ensureView(command.id);
     if (!view) return this.fail(command.id, 'there is no window to show this slate in');
@@ -338,9 +475,10 @@ export const SLATE_LIVE_SCHEME_PRIVILEGES = {
   privileges: {
     standard: true,
     secure: true,
-    // No fetch API, no CORS, no service workers: the document may run script, and its
-    // `connect-src` allowlist is the only way out.
-    supportFetchAPI: false,
+    // The fetch API is on because a page has to reach its own origin to post a form; CORS
+    // and service workers stay off, and `connect-src` is still the only way out — `'self'`
+    // is added there for slates that declared a form, and for nothing else.
+    supportFetchAPI: true,
     corsEnabled: false,
     allowServiceWorkers: false,
     bypassCSP: false,

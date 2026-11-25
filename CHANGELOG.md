@@ -4,6 +4,47 @@ All notable changes to beeCode will be documented in this file.
 
 ## [Unreleased]
 
+- **A slate can be exported as a mini-app, and the contract is written down (slates, export).**
+  Exporting a slate is not copying an app. Three layers, and only one travels: the document
+  (`index.html`), a sidecar `slate.json` (`slate: { id, version, kind }`, the declared
+  `origins`, the `submit` schema) and optionally the compiled validator; **not** the approval,
+  the origin allowlist or the `submissions.jsonl` sink, which belong to the machine that made
+  them. `docs/slates.md` now states the wire contract — `POST <base>/submit` with
+  `{ submissionId, fields }`, `200 { ok, n }` / `400 { ok: false, errors }`, a replay for a
+  repeated `submissionId`, and nothing beyond that — plus what a host must do (publish
+  `slateLiveCsp(origins, { submit: true })` as a **response header**, validate with
+  `validateSlateSubmission`, persist append-only with a ceiling that refuses) and must not do
+  (submission as RPC, inherited trust, a public read endpoint). The page keeps
+  `fetch('submit')` **relative**: that single rule is what lets one document run unchanged
+  under `slate://live/<session>/<id>/v<N>/` and under `https://`.
+- **Reference host: `scripts/slate-host/mini-app-host.mjs`.** A Node server that serves the
+  bundle, publishes the slate CSP, validates with the app's *own* compiled validator and
+  persists to **SQLite** via `node:sqlite` (a builtin — still no dependency) or to JSONL with
+  `--sink=jsonl`, falling back to JSONL with a warning wherever `node:sqlite` is missing. It
+  binds `127.0.0.1` only, requires `content-type: application/json` (a cross-site html form
+  cannot send it), rejects a foreign `Origin`, and hides `GET /submissions` behind `--token`.
+  `scripts/build.mjs` gained a fifth target emitting `dist/host/slateSubmit.mjs` and
+  `dist/host/slateSandbox.mjs`, so a host re-implements neither the validator nor the CSP.
+  There is still no export tool that assembles the bundle — the prototype is what a host, and
+  whoever writes one by hand, is held to.
+
+- **A live slate can post its own form back to the app (slates, submit sink).** A Tier B slate
+  had exactly one way out — an origin on its allowlist — and no way back in that did not need a
+  server. `POST slate://live/<session>/<id>/v<N>/submit` is now the second channel: the same
+  origin the page was served from, one path deeper, so there is no port to open and no token to
+  leak. The form is declared where the origins are — `version.submit`, normalised by
+  `normaliseSlateSubmit` — and it is what the approval card prints ("may send form results back
+  to the app"), what the host validates against, and what decides whether `connect-src` gains
+  `'self'` at all: a slate that declares no form keeps `connect-src 'none'` and, with no
+  origins either, is still not live. Accepted submissions are appended to
+  `<slate folder>/submissions.jsonl` (one JSON object per line, capped at 200 per slate — a
+  refusal, never a prune), addressed by a page-side `submissionId` so a retry is one row, and
+  read back with the read-only `slate_submissions` tool. The answer to the page is `{ ok, n }`
+  or `{ ok: false, errors }`: one endpoint, one payload shape, and deliberately not an RPC — a
+  page that could name a method would be a client for every tool in the service. `form-action`
+  stays `'none'`, so the form posts with `fetch` from its submit handler; the payload is
+  validated against the schema of the version it came from and the host answers only for the
+  version it is hosting, so `update_slate` cannot move the ground under a rendered page.
 - **Pinned the one vulnerable build dependency (minimatch, GHSA-g3hv-75wg-m249).**
   `electron-builder` 26.18.0 — the latest — still asks `app-builder-lib` for `minimatch ^10.2.5`,
   and every `10.x` sits inside the advisory's range (`>= 7.0.0, < 11.0.1`), so an `overrides`

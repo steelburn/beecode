@@ -1,6 +1,6 @@
 # Slates
 
-> **Status: phases 1–3, Tier B (live slates) and references-only recipes implemented** — the store,
+> **Status: phases 1–3, Tier B (live slates and form submissions) and references-only recipes implemented** — the store,
 > the four slate tools,
 > the transcript card, the SLATE_TAB gallery, the Slates panel, promote, the document tab's
 > Copy / Download / Preview ⇄ Code, and the pipeline: a long fenced `html` / `svg` block is
@@ -230,8 +230,14 @@ New group `'slate'`, registered in `buildToolRegistry()` in `src/service/tools/i
 next to `skillTools(...)`:
 
 ```ts
-create_slate { title: string; kind: 'markdown' | 'html' | 'csv'; content: string }
-update_slate { id: string; content: string; note?: string }   // appends a version; kind is fixed
+create_slate { title, kind: 'markdown' | 'html' | 'csv', content, origins?, submit? }
+update_slate { id, content, submit? }   // appends a version; kind is fixed
+slate_submissions { id, since? }        // read-only: what a form posted back
+
+`submit` declares the form a live `html` slate accepts (see *Form submissions — one
+endpoint, one sink*). On `update_slate` it is carried forward when omitted and withdrawn
+with `null`, the same shape `recipe` uses. `slate_submissions` is read-only and therefore
+belongs in `SUBAGENT_TOOL_ALLOWLIST` if subagents ever get the slate group.
 ```
 
 Both are `mutating: true`. `create_slate` returns the new id and version so the model can
@@ -355,8 +361,36 @@ content, and `excel_export` (`tableExport.ts:112`) accepts a `csv` string or a `
 path and writes a real `.xlsx` (bundled OOXML writer, no dependencies). A slug with a
 *Download as PDF / XLSX* action therefore needs only the plugin call already registered.
 
-### If a live slate is ever built (Tier B)
+### Form submissions — one endpoint, one sink
 
+A live slate can already POST to an origin on its allowlist. It can also post **back to
+the app**, which is what makes it usable as a form without running any server:
+
+- **Endpoint.** `POST slate://live/<session>/<id>/v<N>/submit` — the URL the page was
+  served from, one path deeper. Same origin, so there is no token, no port and no CSRF
+  surface, and nothing else on the machine can reach it. `slateLiveCsp` adds `'self'` to
+  `connect-src` **only** for a slate that declared a form; every other slate keeps
+  `connect-src 'none'`. The scheme privilege `supportFetchAPI` is on for this reason.
+- **Payload.** `{ submissionId, fields }`, capped at 64 KB. `form-action` stays `'none'`,
+  so the page posts with `fetch` from a submit handler — which is also what keeps the
+  target pinned to the version that rendered it: the host answers only for the version
+  it is currently hosting.
+- **Schema.** The form is declared where the origins are — on the slate version
+  (`version.submit`, normalised by `normaliseSlateSubmit` in `src/shared/slateSubmit.ts`).
+  It is what the approval card prints ("may send form results back to the app") and what
+  the sink validates with. A submission is checked against the schema of the version it
+  came from, so updating the form cannot move the ground under a rendered page.
+- **Sink.** `<slate folder>/submissions.jsonl`, append-only, one JSON object per line,
+  capped at 200 per slate (a refusal, never a prune). A replayed `submissionId` returns
+  the row that already exists instead of appending a second one.
+
+The answer is `{ ok: true, n }` or `{ ok: false, errors: [{ field, message }] }` and
+nothing else. It is deliberately **not** an RPC: the moment a page can name a method,
+authored HTML becomes a client for every tool in the service and the "no preload,
+therefore no bridge" argument inverts. Orchestration stays with the agent — the slate
+renders, the user types, the sink records, the agent acts.
+
+### Risks that remain in the live tier
 1. **Exfiltration** — agent-authored JS with a network path can POST workspace content
    anywhere. Mitigation: a per-slate origin allowlist stored in `meta.json` and shown at
    approval time; never `connect-src *`.
@@ -364,6 +398,118 @@ path and writes a real `.xlsx` (bundled OOXML writer, no dependencies). A slug w
    baked into a version file. Route it through the service, never through the document.
 3. **MCP trust boundary** — an MCP server's tools become agent-invocable in general, so
    adding one to reach a database widens what the agent can do everywhere, not just in slates.
+
+## Export — a slate as a mini-app
+
+A slate is already a document with an origin, so exporting it is not about copying an app:
+it is about making that document meaningful where the app is not. Three layers, and only
+the first travels.
+
+| Layer | Travels | Why |
+| --- | --- | --- |
+| **Document** — `html`, `kind`, declared `origins`, `submit` schema, recipe refs | yes | it is a file plus a small sidecar |
+| **Approval and origin allowlist** | no | it belongs to the machine that approved it; a shared app must never inherit the author's allowlist |
+| **Submission sink** — the `slate://` route and `submissions.jsonl` | no | app-local state, next to the conversation that produced it |
+
+### The bundle
+
+| File | Contents |
+| --- | --- |
+| `index.html` | the version's html, byte for byte |
+| `slate.json` | `{ slate: { id, version, kind }, origins, submit }` — the sidecar that makes the document mean something elsewhere |
+| `slateSubmit.mjs` | optional: the compiled validator (`dist/host/slateSubmit.mjs`, built from `src/shared/slateSubmit.ts`) |
+
+The sidecar is `meta.json` reduced to what a host needs:
+
+```json
+{
+  "slate": { "id": "contact-intake", "version": 1, "kind": "html" },
+  "origins": ["https://api.example.com"],
+  "submit": { "fields": [{ "name": "email", "type": "text", "required": true }] }
+}
+```
+
+`origins` is **declared intent**, not permission: it tells the host what the page wants to
+reach, and the host (or its user) decides whether that is granted.
+
+### The wire contract
+
+One route, one payload, identical to the live host:
+
+| | |
+| --- | --- |
+| Request | `POST <app base>/submit`, `content-type: application/json`, `{ submissionId, fields }`, 64 KB |
+| Accepted | `200 { "ok": true, "n": 3 }` |
+| Rejected | `400 { "ok": false, "errors": [{ "field": "email", "message": "this field is required" }] }` |
+| Replayed | the same `submissionId` again returns the **existing** row instead of appending a second one |
+| Never | anything beyond ok/errors — no method names, no state, no autocompletion of what the page may ask for |
+
+The page keeps `fetch('submit', …)` **relative**. That single rule is why an export works:
+nothing in the document names a host, so the same html runs under
+`slate://live/<session>/<id>/v<N>/` and under `https://app.example.com/`. Absolute
+`slate://` URLs, session ids or version numbers baked into a page are exactly what has to
+be rewritten per host — so a slate that is meant to be shared must not contain them.
+
+### What a host must implement
+
+1. **Serve the document** with the slate CSP as a response header —
+   `slateLiveCsp(origins, { submit: true })`. The CSP is set at serve time, not embedded in
+   the html, so an exported page carries no containment with it: a host that omits the
+   header silently loses every guarantee the live tier makes.
+2. **Accept `POST /submit`** and refuse every other write. `form-action` stays `'none'`, so
+   a page that relies on `<form action>` does nothing — that is the rule, not a bug.
+3. **Validate with `validateSlateSubmission(schema, fields)`** — the same function, unchanged.
+   It is pure (no Electron, no `fs`, no `slate://`), so it runs as-is in a Node server, a
+   worker or an edge function. A second validator is a second set of bugs.
+4. **Persist append-only**, unique on `(slateId, submissionId)`, with a ceiling that refuses
+   rather than prunes.
+
+### What a host must not implement
+
+- **Submission as RPC.** If the page can name a method, authored html becomes a client for
+  everything the host can do. One route, one shape.
+- **Inherited trust.** A shared app is re-approved where it runs; `origins` travels as a
+  declaration, never as a grant.
+- **A public read endpoint.** Submissions are the owner's data: gate reads behind a token or
+  leave them to the agent (`slate_submissions`).
+
+### The prototype
+
+`scripts/slate-host/mini-app-host.mjs` is a reference host: it serves the bundle, publishes
+`slateLiveCsp`, validates with the app's own compiled validator, and persists to **SQLite**
+via `node:sqlite` — a Node builtin, so still no dependency — or to JSONL with
+`--sink=jsonl` (a Node build without `node:sqlite` says so and falls back).
+
+```
+npm run build                                                                    # dist/host/*
+node scripts/slate-host/mini-app-host.mjs scripts/slate-host/example --sink=sqlite
+```
+
+It binds `127.0.0.1` only (there is no `--host` flag on purpose), requires
+`content-type: application/json` — a cross-site html form posts urlencoded, so that alone
+blocks the classic CSRF shape — rejects a foreign `Origin`, and exposes
+`GET /submissions` only when a `--token` is configured. Reads come back as
+`{ n, id, at, version, fields }` under either sink: the storage shape (a row, or a jsonl line
+carrying `slateId`/`submissionId`) is the sink's own business, never the route's.
+
+SQLite appears **here** because a hosted app is a different artifact from an in-app slate.
+The app's own sink stays `submissions.jsonl`: append-only, diffable, and written while the
+user is watching the page.
+
+### The tier change to be deliberate about
+
+A static host keeps the Tier A/B story: it serves a document and stores nothing. A host with
+a sink **leaves the sandbox** — data persists without the user watching, identity exists, and
+a shared app can affect a recipient before they interact with it. That needs its own review
+story instead of an extension of the live-tier rules, and it is much cheaper to decide while
+the contract has exactly one implementation.
+
+### Known gap
+
+There is no export tool yet. `promote_slate` writes the document into the workspace and the
+panel can download the html, but nothing emits `slate.json` next to it and nothing computes
+a bundle. Until something does, the contract above is what a host — or a human assembling a
+bundle by hand — has to satisfy.
 
 ## Renderer
 

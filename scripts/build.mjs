@@ -27,6 +27,17 @@ const targets = [
   { ...common, entryPoints: [resolve(root, 'src/preload/preload.ts')], outfile: resolve(out, 'preload.js'), platform: 'node', format: 'cjs' },
   { ...common, entryPoints: [resolve(root, 'src/service/index.ts')], outfile: resolve(out, 'service.js'), platform: 'node', format: 'cjs' },
   {
+    // The two helpers a *host* needs, as plain ESM: publish the slate CSP, validate the
+    // post. Neither imports Electron, so this bundle also runs under a bare Node server.
+    ...common,
+    entryPoints: [resolve(root, 'src/shared/slateSubmit.ts'), resolve(root, 'src/shared/slateSandbox.ts')],
+    outdir: resolve(out, 'host'),
+    platform: 'node',
+    format: 'esm',
+    outExtension: { '.js': '.mjs' },
+    external: [],
+  },
+  {
     ...common,
     entryPoints: [resolve(root, 'src/renderer/main.ts')],
     outfile: resolve(out, 'renderer', 'renderer.js'),

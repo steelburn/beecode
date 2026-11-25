@@ -601,3 +601,211 @@ test('a recipe that replays a write, or records nothing, is refused', async () =
     await rm(cwd, { recursive: true, force: true });
   }
 });
+
+const form = {
+  note: 'sends the hours',
+  fields: [
+    { name: 'hours', type: 'number', required: true },
+    { name: 'comment', type: 'textarea', maxLength: 4000 },
+  ],
+};
+
+async function htmlWithForm(cwd: string) {
+  const store = new SlateStore();
+  const meta = await store.create({
+    cwd,
+    sessionId: 'session-1',
+    title: 'Hours',
+    kind: 'html',
+    content: '<form id="f"></form>',
+    submit: form,
+  });
+  return { store, meta };
+}
+
+test('an html slate can declare a form, and the form is part of the version', async () => {
+  const cwd = await workspace();
+  try {
+    const { meta } = await htmlWithForm(cwd);
+    assert.deepEqual(meta.versions[0].submit, form);
+    const raw = JSON.parse(
+      await readFile(join(cwd, '.beecode', 'slates', 'session-1', 'hours', 'meta.json'), 'utf8'),
+    );
+    assert.equal(raw.versions[0].submit.note, 'sends the hours');
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test('a slate that cannot run script cannot take a form either', async () => {
+  const cwd = await workspace();
+  try {
+    const store = new SlateStore();
+    await assert.rejects(
+      () =>
+        store.create({
+          cwd,
+          sessionId: 'session-1',
+          title: 'Notes',
+          kind: 'markdown',
+          content: '# notes',
+          submit: form,
+        }),
+      /cannot take a form/,
+    );
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test('a new version keeps the form unless it is replaced or withdrawn', async () => {
+  const cwd = await workspace();
+  try {
+    const { store, meta } = await htmlWithForm(cwd);
+    const kept = await store.update({
+      cwd,
+      sessionId: 'session-1',
+      id: meta.id,
+      content: '<form id="f">v2</form>',
+    });
+    assert.deepEqual(kept.versions[1].submit, form);
+    const withdrawn = await store.update({
+      cwd,
+      sessionId: 'session-1',
+      id: meta.id,
+      content: '<form id="f">v3</form>',
+      submit: null,
+    });
+    assert.equal(withdrawn.versions[2].submit, undefined);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test('a submission is validated, appended once, and replayed by id', async () => {
+  const cwd = await workspace();
+  try {
+    const { store, meta } = await htmlWithForm(cwd);
+    const first = await store.submit({
+      cwd,
+      sessionId: 'session-1',
+      id: meta.id,
+      version: 1,
+      submissionId: 'k1',
+      payload: { fields: { hours: 8 } },
+    });
+    assert.equal(first.ok, true);
+    assert.equal(first.ok === true && first.submission.n, 1);
+
+    const replay = await store.submit({
+      cwd,
+      sessionId: 'session-1',
+      id: meta.id,
+      version: 1,
+      submissionId: 'k1',
+      payload: { fields: { hours: 8 } },
+    });
+    assert.equal(replay.ok === true && replay.submission.n, 1);
+    assert.equal((await store.submissions({ cwd, sessionId: 'session-1', id: meta.id })).length, 1);
+
+    const second = await store.submit({
+      cwd,
+      sessionId: 'session-1',
+      id: meta.id,
+      version: 1,
+      submissionId: 'k2',
+      payload: { fields: { hours: 3, comment: 'late' } },
+    });
+    assert.equal(second.ok === true && second.submission.n, 2);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test('the sink answers a bad post with field errors instead of throwing', async () => {
+  const cwd = await workspace();
+  try {
+    const { store, meta } = await htmlWithForm(cwd);
+    assert.deepEqual(
+      await store.submit({
+        cwd,
+        sessionId: 'session-1',
+        id: meta.id,
+        version: 1,
+        submissionId: 'k1',
+        payload: { fields: {} },
+      }),
+      { ok: false, errors: [{ field: 'hours', message: 'this field is required' }] },
+    );
+    const wrongVersion = await store.submit({
+      cwd,
+      sessionId: 'session-1',
+      id: meta.id,
+      version: 9,
+      submissionId: 'k2',
+      payload: { fields: { hours: 1 } },
+    });
+    assert.equal(wrongVersion.ok, false);
+    const noId = await store.submit({
+      cwd,
+      sessionId: 'session-1',
+      id: meta.id,
+      version: 1,
+      submissionId: '',
+      payload: { fields: { hours: 1 } },
+    });
+    assert.equal(noId.ok, false);
+    assert.deepEqual(await store.submissions({ cwd, sessionId: 'session-1', id: meta.id }), []);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test('since skips what was already read', async () => {
+  const cwd = await workspace();
+  try {
+    const { store, meta } = await htmlWithForm(cwd);
+    for (const hours of [1, 2, 3]) {
+      await store.submit({
+        cwd,
+        sessionId: 'session-1',
+        id: meta.id,
+        version: 1,
+        submissionId: 'k' + hours,
+        payload: { fields: { hours } },
+      });
+    }
+    const tail = await store.submissions({ cwd, sessionId: 'session-1', id: meta.id, since: 2 });
+    assert.deepEqual(
+      tail.map((entry) => entry.fields.hours),
+      [3],
+    );
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test('a slate without a form takes no submissions at all', async () => {
+  const cwd = await workspace();
+  try {
+    const store = new SlateStore();
+    const meta = await store.create({
+      cwd,
+      sessionId: 'session-1',
+      title: 'Plain',
+      kind: 'html',
+      content: '<p>hi</p>',
+    });
+    const refused = await store.submit({
+      cwd,
+      sessionId: 'session-1',
+      id: meta.id,
+      version: 1,
+      submissionId: 'k1',
+      payload: { fields: { hours: 1 } },
+    });
+    assert.equal(refused.ok, false);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});

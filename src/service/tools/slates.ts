@@ -11,6 +11,11 @@ import {
   type SlateRecipeStep,
 } from '../../shared/slateRecipe';
 import { errorResult, jsonResult, requireStr, str } from './registry';
+import {
+  SLATE_SUBMIT_FIELD_TYPES,
+  normaliseSlateSubmit,
+  slateSubmitLabel,
+} from '../../shared/slateSubmit';
 
 interface SlateToolDeps {
   store: SlateStore;
@@ -60,8 +65,75 @@ function slateResult(meta: SlateMeta, action: 'created' | 'updated'): ToolResult
  */
 function liveLabel(args: Record<string, unknown>): string {
   const origins = Array.isArray(args.origins) ? args.origins.map((o) => String(o)) : [];
-  return origins.length ? `, live, may call ${origins.join(', ')}` : '';
+  const submit = declaredSubmit(args);
+  const parts: string[] = [];
+  if (origins.length || submit) parts.push('live');
+  if (origins.length) parts.push(`may call ${origins.join(', ')}`);
+  if (submit) parts.push(slateSubmitLabel(submit));
+  return parts.length ? `, ${parts.join(', ')}` : '';
 }
+
+function submitLabel(args: Record<string, unknown>): string {
+  const submit = declaredSubmit(args);
+  if (!submit) return '';
+  return `, takes ${submit.fields.length} form field${submit.fields.length === 1 ? '' : 's'}`;
+}
+
+/** The declared form, or undefined — a schema that does not parse is not announced. */
+function declaredSubmit(args: Record<string, unknown>) {
+  try {
+    return normaliseSlateSubmit(args.submit);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The form a slate takes, described the same way on create and on update. It is the
+ * contract the page posts against and the sink validates with, so it is spelled out
+ * here rather than left to the document.
+ */
+const SUBMIT_SCHEMA = {
+  type: 'object',
+  description:
+    'Only for html slates: the form this slate takes. The page posts it back to the same slate:// origin it was served from, and the app appends it to the slate sink, which you read with slate_submissions. Declaring it is what puts "may send form results" on the approval card.' +
+    ' From the page: fetch(location.pathname + "/submit", { method: "POST", body: JSON.stringify({ submissionId: crypto.randomUUID(), fields }) }) and read the { ok, errors } answer. A native form action is blocked by CSP, so preventDefault and post from the submit handler.',
+  properties: {
+    note: {
+      type: 'string',
+      description: 'One line for the approval card, e.g. "Sends the weekly hours to the agent".',
+    },
+    fields: {
+      type: 'array',
+      description: 'At most 24 fields. `select` needs `options`; everything else is free text.',
+      items: {
+        type: 'object',
+        properties: {
+          name: {
+            type: 'string',
+            description:
+              'The key the page posts back: lowercase letters, digits and _, starting with a letter.',
+          },
+          label: { type: 'string', description: 'Shown next to the input.' },
+          type: {
+            type: 'string',
+            enum: [...SLATE_SUBMIT_FIELD_TYPES],
+            description: 'Defaults to text.',
+          },
+          required: { type: 'boolean', description: 'Reject the submission when it is empty.' },
+          options: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'select only: the accepted values.',
+          },
+          maxLength: { type: 'number', description: 'text and textarea only.' },
+        },
+        required: ['name'],
+      },
+    },
+  },
+  required: ['fields'],
+};
 
 export function slateTools(deps: SlateToolDeps): ToolDefinition[] {
   const { store } = deps;
@@ -100,6 +172,7 @@ export function slateTools(deps: SlateToolDeps): ToolDefinition[] {
             description:
               'Only for html slates: the origins the document may call (e.g. "https://api.example.com"). A wildcard is never allowed.',
           },
+          submit: SUBMIT_SCHEMA,
           recipe: {
             type: 'array',
             description:
@@ -129,6 +202,7 @@ export function slateTools(deps: SlateToolDeps): ToolDefinition[] {
             kind: requireStr(args, 'kind'),
             content: requireStr(args, 'content'),
             origins,
+            submit: args.submit,
           });
           const attached = await attachRecipe(store, ctx, meta.id, normaliseSlateRecipe(args.recipe));
           if (attached.error) {
@@ -150,7 +224,7 @@ export function slateTools(deps: SlateToolDeps): ToolDefinition[] {
       group: 'slate',
       preview: (args) => ({
         requiresApproval: false,
-        summary: `Update slate "${str(args, 'id') ?? ''}" (new version)`,
+        summary: `Update slate "${str(args, 'id') ?? ''}" (new version)${submitLabel(args)}`,
         reason: 'appends a version to a slate that was already approved; earlier versions stay on disk',
       }),
       inputSchema: {
@@ -172,6 +246,11 @@ export function slateTools(deps: SlateToolDeps): ToolDefinition[] {
               required: ['tool'],
             },
           },
+          submit: {
+            ...SUBMIT_SCHEMA,
+            description:
+              'The form the new version takes. Omit it to carry the previous form forward (revise the body, keep the inputs); pass null to withdraw it; send a schema to replace it.',
+          },
         },
         required: ['id', 'content'],
       },
@@ -182,6 +261,7 @@ export function slateTools(deps: SlateToolDeps): ToolDefinition[] {
             sessionId: ctx.sessionId,
             id: requireStr(args, 'id'),
             content: requireStr(args, 'content'),
+            submit: args.submit,
           });
           const attached = await attachRecipe(store, ctx, meta.id, normaliseSlateRecipe(args.recipe));
           if (attached.error) {
@@ -332,6 +412,48 @@ export function slateTools(deps: SlateToolDeps): ToolDefinition[] {
               'Replay these steps yourself, then call update_slate with the same recipe and the rebuilt document. Replay appends v' +
               (meta.versions.length + 1) +
               '; it does not edit the version it came from.',
+          });
+        } catch (err) {
+          return errorResult(message(err));
+        }
+      },
+    },
+    {
+      name: 'slate_submissions',
+      description:
+        'Read what was submitted through a slate form. A live html slate that declared a submit schema posts its form back to the app, and the entries land in an append-only sink in the slate folder — nothing else about the slate changes. Returns them oldest first; pass since to read only the new ones.',
+      mutating: false,
+      group: 'slate',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          id: { type: 'string', description: 'Slate id returned by create_slate.' },
+          since: {
+            type: 'number',
+            description: 'Return only submissions after this n (1-based); omit for all of them.',
+          },
+        },
+        required: ['id'],
+      },
+      handler: async (args, ctx) => {
+        try {
+          const submissions = await store.submissions({
+            cwd: ctx.cwd,
+            sessionId: ctx.sessionId,
+            id: requireStr(args, 'id'),
+            since: typeof args.since === 'number' ? args.since : undefined,
+          });
+          if (!submissions.length) {
+            return jsonResult({
+              submissions,
+              note:
+                'Nothing submitted yet. A form only posts while the slate is live and on screen, and only when it declared a submit schema.',
+            });
+          }
+          return jsonResult({
+            submissions,
+            note:
+              'Oldest first. Act on them, then answer in chat or update_slate with the outcome; the sink is append-only.',
           });
         } catch (err) {
           return errorResult(message(err));

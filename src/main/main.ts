@@ -130,9 +130,21 @@ async function bootstrap(): Promise<void> {
         version: read.version.n,
         origins: read.origins ?? [],
         live: read.live === true,
+        ...(read.version.submit ? { submit: read.version.submit } : {}),
       };
       return doc;
     },
+    // A form post travels the same route as the document it came from: through the
+    // service, so the store stays the only judge of where a slate lives.
+    recordSubmission: (params) =>
+      supervisor.request('slate.submit', {
+        sessionId: params.sessionId,
+        id: params.id,
+        version: params.version,
+        submissionId: params.submissionId,
+        payload: params.payload,
+        ...(params.cwd ? { cwd: params.cwd } : {}),
+      }),
     getWindow: () => mainWindow,
     onState: (state) => {
       const win = mainWindow;

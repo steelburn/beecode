@@ -1,8 +1,16 @@
-import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { SLATE_LIMITS } from '../shared/protocol';
 import { canSlateGoLive, normaliseSlateOrigins } from '../shared/slateSandbox';
 import { normaliseSlateRecipe, type SlateRecipeStep } from '../shared/slateRecipe';
+import {
+  SLATE_SUBMIT_LIMITS,
+  normaliseSlateSubmit,
+  validateSlateSubmission,
+  type SlateSubmission,
+  type SlateSubmitError,
+  type SlateSubmitSchema,
+} from '../shared/slateSubmit';
 
 /**
  * A slate is a document the agent writes for the app to render in its own tab, next to
@@ -33,6 +41,12 @@ export interface SlateVersion {
   createdAt: string;
   /** What the version was built from — references only, no payloads. */
   recipe?: SlateRecipeStep[];
+  /**
+   * The form this version accepts, if any. It belongs to the version and not to the
+   * slate: a submission is validated against the schema of the version the page was
+   * served, so updating the form cannot move the ground under a rendered page.
+   */
+  submit?: SlateSubmitSchema;
 }
 
 export interface SlateMeta {
@@ -150,6 +164,14 @@ function versionFile(n: number, id: string, kind: SlateKind): string {
   return `${String(n).padStart(3, '0')}-${id}.${EXTENSION[kind]}`;
 }
 
+/** The sink: one JSON object per line, appended in arrival order. */
+const SUBMISSIONS_FILE = 'submissions.jsonl';
+
+const rejectSubmission = (message: string): { ok: false; errors: SlateSubmitError[] } => ({
+  ok: false,
+  errors: [{ field: '', message }],
+});
+
 export class SlateStore {
   /** `<cwd>/.beecode/slates` — the parent of the per-session folders. */
   root(cwd: string): string {
@@ -182,10 +204,20 @@ export class SlateStore {
 
   /** Creates the slate and its first version, `001-<id>.<ext>`. */
   async create(
-    input: SlateLocation & { title: string; kind: string; content: string; origins?: string[] },
+    input: SlateLocation & {
+      title: string;
+      kind: string;
+      content: string;
+      origins?: string[];
+      submit?: unknown;
+    },
   ): Promise<SlateMeta> {
     const kind = normaliseKind(input.kind);
     assertSize(input.content);
+    const submit = normaliseSlateSubmit(input.submit);
+    if (submit && kind !== "html") {
+      throw new Error('a ' + kind + ' slate cannot take a form — only html slates have script to submit from');
+    }
     const title = input.title.trim() || 'Untitled slate';
     const sessionRoot = this.sessionRoot(input);
     await mkdir(sessionRoot, { recursive: true });
@@ -206,7 +238,15 @@ export class SlateStore {
       title,
       kind,
       current: 1,
-      versions: [{ n: 1, file, bytes: Buffer.byteLength(input.content, 'utf8'), createdAt: now }],
+      versions: [
+        {
+          n: 1,
+          file,
+          bytes: Buffer.byteLength(input.content, 'utf8'),
+          createdAt: now,
+          ...(submit ? { submit } : {}),
+        },
+      ],
       createdAt: now,
       updatedAt: now,
     };
@@ -223,7 +263,9 @@ export class SlateStore {
    * Appends the next version and moves `meta.current` to it. Existing version files are
    * never rewritten, so an older version stays byte-identical.
    */
-  async update(input: SlateLocation & { id: string; content: string }): Promise<SlateMeta> {
+  async update(
+    input: SlateLocation & { id: string; content: string; submit?: unknown },
+  ): Promise<SlateMeta> {
     assertSize(input.content);
     const meta = await this.meta(input);
     if (meta.versions.length >= MAX_SLATE_VERSIONS) {
@@ -236,7 +278,20 @@ export class SlateStore {
     const n = meta.versions.reduce((max, version) => Math.max(max, version.n), 0) + 1;
     const file = versionFile(n, meta.id, meta.kind);
     await writeFile(join(dir, file), input.content, 'utf8');
-    meta.versions.push({ n, file, bytes: Buffer.byteLength(input.content, 'utf8'), createdAt: now });
+    // `submit` omitted keeps the previous form (revise the body, keep the input), `null`
+    // withdraws it, an object replaces it — the same shape `recipe` uses.
+    const carried = meta.versions.find((version) => version.n === meta.current)?.submit;
+    const submit = input.submit === undefined ? carried : normaliseSlateSubmit(input.submit);
+    if (submit && meta.kind !== "html") {
+      throw new Error('a ' + meta.kind + ' slate cannot take a form — only html slates have script to submit from');
+    }
+    meta.versions.push({
+      n,
+      file,
+      bytes: Buffer.byteLength(input.content, 'utf8'),
+      createdAt: now,
+      ...(submit ? { submit } : {}),
+    });
     meta.current = n;
     meta.updatedAt = now;
     await this.writeMeta(dir, meta);
@@ -421,6 +476,94 @@ export class SlateStore {
     meta.updatedAt = new Date().toISOString();
     await this.writeMeta(this.slateDir(input), meta);
     return meta;
+  }
+
+  /**
+   * Append one submission to the sink, after validating it against the schema of the
+   * version it came from. A rejection is returned rather than thrown: the payload is
+   * untrusted page input, so a bad post is a normal answer and not a failure.
+   */
+  async submit(
+    input: SlateLocation & {
+      id: string;
+      version: number;
+      submissionId: string;
+      payload: unknown;
+    },
+  ): Promise<
+    | { ok: true; submission: SlateSubmission; total: number }
+    | { ok: false; errors: SlateSubmitError[] }
+  > {
+    const meta = await this.meta(input);
+    const version = meta.versions.find((entry) => entry.n === input.version);
+    if (!version) {
+      return rejectSubmission(`version ${input.version} of slate "${meta.id}" does not exist`);
+    }
+    if (!version.submit) {
+      return rejectSubmission(`slate "${meta.id}" version ${version.n} takes no submissions`);
+    }
+    const submissionId = input.submissionId.trim();
+    if (!submissionId || submissionId.length > SLATE_SUBMIT_LIMITS.idLength) {
+      return rejectSubmission(
+        `submissionId must be 1-${SLATE_SUBMIT_LIMITS.idLength} characters`,
+      );
+    }
+
+    const checked = validateSlateSubmission(version.submit, input.payload);
+    if (!checked.ok) return checked;
+
+    const existing = await this.readSubmissions(this.slateDir(input));
+    const already = existing.find((entry) => entry.id === submissionId);
+    // Replayed post (a double click, a retry after a dropped answer): same answer, no
+    // second row. This is what the page-side idempotency key is for.
+    if (already) return { ok: true, submission: already, total: existing.length };
+    if (existing.length >= SLATE_SUBMIT_LIMITS.submissions) {
+      return rejectSubmission(
+        `slate "${meta.id}" already holds ${existing.length} submissions — the limit is` +
+          ` ${SLATE_SUBMIT_LIMITS.submissions}; promote them into a document and start a new slate for more`,
+      );
+    }
+
+    const submission: SlateSubmission = {
+      n: existing.length + 1,
+      id: submissionId,
+      at: new Date().toISOString(),
+      version: version.n,
+      fields: checked.fields,
+    };
+    await appendFile(join(this.slateDir(input), SUBMISSIONS_FILE), JSON.stringify(submission) + '\n', 'utf8');
+    return { ok: true, submission, total: submission.n };
+  }
+
+  /** Every submission in arrival order; `since` skips the first `since` of them. */
+  async submissions(
+    input: SlateLocation & { id: string; since?: number },
+  ): Promise<SlateSubmission[]> {
+    await this.meta(input);
+    const all = await this.readSubmissions(this.slateDir(input));
+    const since = Number.isFinite(input.since) ? Number(input.since) : 0;
+    return all.filter((entry) => entry.n > since);
+  }
+
+  /** One JSON object per line; a torn line is skipped, never fatal. */
+  private async readSubmissions(dir: string): Promise<SlateSubmission[]> {
+    let raw: string;
+    try {
+      raw = await readFile(join(dir, SUBMISSIONS_FILE), 'utf8');
+    } catch {
+      return [];
+    }
+    const out: SlateSubmission[] = [];
+    for (const line of raw.split("\n")) {
+      if (!line.trim()) continue;
+      try {
+        const entry = JSON.parse(line) as SlateSubmission;
+        if (entry && typeof entry.n === "number" && typeof entry.at === "string") out.push(entry);
+      } catch {
+        // Half-written append from a crash: keep the rest of the file.
+      }
+    }
+    return out;
   }
 
   private async writeMeta(dir: string, meta: SlateMeta): Promise<void> {

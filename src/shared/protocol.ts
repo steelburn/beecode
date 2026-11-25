@@ -1,4 +1,5 @@
 import type { SlateDiff } from './slateDiff';
+import type { SlateSubmission, SlateSubmitError, SlateSubmitSchema } from './slateSubmit';
 import type { SlateRecipeStep } from './slateRecipe';
 
 /**
@@ -844,6 +845,11 @@ export interface SlateVersionInfo {
    * version was written without one — slates promoted from a fenced block have none.
    */
   recipe?: SlateRecipeStep[];
+  /**
+   * The form this version accepts, if any. Present means the live page may post to its own
+   * `<url>/submit` and `connect-src` carries 'self'.
+   */
+  submit?: SlateSubmitSchema;
 }
 
 /** What the transcript card and the slate gallery need: identity plus the version list. */
@@ -952,6 +958,28 @@ export interface RpcRequests {
   'scheduler.run': { params: { id: string }; result: { sessionId: string } };
 
   'slate.list': { params: { cwd?: string; sessionId?: string }; result: { slates: SlateSummary[] } };
+  /**
+   * A live slate posting its own form back to the app. Called by the live host, never by
+   * the agent: one endpoint, one payload shape, and no answer beyond ok/errors.
+   */
+  'slate.submit': {
+    params: {
+      sessionId: string;
+      id: string;
+      version: number;
+      submissionId: string;
+      payload: unknown;
+      cwd?: string;
+    };
+    result:
+      | { ok: true; submission: SlateSubmission; total: number }
+      | { ok: false; errors: SlateSubmitError[] };
+  };
+  /** What the sink holds, oldest first. Read by the slate_submissions tool. */
+  'slate.submissions': {
+    params: { id: string; since?: number; cwd?: string; sessionId?: string };
+    result: { submissions: SlateSubmission[] };
+  };
   'slate.diff': {
     params: { id: string; from?: number; to?: number; cwd?: string; sessionId?: string };
     result: SlateDiff;
