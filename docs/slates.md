@@ -139,6 +139,27 @@ by its own script and the inert preview strips it.
 * `SLATE_LIVE_LIMITS.textBytes` (4 MB) is the ceiling: above it the bar is not offered at all,
   because a Run button whose only outcome is a refusal is worse than none.
 
+## The scheme is registered on the view's own session — nowhere else
+
+`serveSlateLive()` used to call `protocol.handle(SLATE_LIVE_SCHEME, …)` from the
+`electron` module, which registers on the **default** session only. But `harden()` gives
+every live view its own in-memory partition (`session.fromPartition`, no cache),
+so the page that loaded `slate://…` had no handler for that scheme at all: Chromium
+aborted the navigation with `ERR_FAILED (-2)`, the orchestrator reported a live page that
+"did not attach", and every script-built slate stayed empty in the app while testing fine
+in a browser.
+
+Two rules follow, and both are load-bearing:
+
+* **Register the scheme on the session that loads it** — `ses.protocol.handle(…)` inside
+  `harden()`, the one place the partition is created. A registration on the default
+  session is never consulted by a partitioned view, whatever the URL says.
+* **Gate on the settled load, not the optimistic state.** `show()` publishes
+  `{ visible: true }` before it awaits `loadURL`, so a smoke assertion that waits for
+  `visible` passes while the failure is still in flight. `scripts/smoke.mjs` now waits for
+  the load to settle and requires `loadError === ''`, recording the whole state sequence
+  when it does not.
+
 ## Non-goals
 
 | Not in scope | Why |

@@ -1,4 +1,6 @@
 import type { AppInfo, BeeCodeBridge, ServiceStatusPayload } from '../shared/bridge';
+import { updateNotice, type UpdateStatus } from '../shared/update';
+import { paintUpdateBadge, renderUpdateSection } from './updateBadge';
 import { AGENT_MODES, MODE_LABELS, describeMode } from '../shared/modes';
 import type {
   AgentInfo,
@@ -252,6 +254,8 @@ liveSlates: LiveSlates;
   panel: PanelTab;
   /** App-wide configuration: it opens over the session instead of taking a panel tab. */
   settings: { open: boolean; section: SettingsSection };
+  /** What the main process last read about published installers. */
+  update: UpdateStatus;
   /** The terminal drawer at the bottom of the chat column. */
   terminalOpen: boolean;
   ready: boolean;
@@ -288,6 +292,8 @@ const state: State = {
   fileLiveOrigins: {},
   panel: 'subagents',
   settings: { open: false, section: 'general' },
+  /** Is there a newer published installer? Painted by `paintUpdates`. */
+  update: { state: 'idle' } as UpdateStatus,
   terminalOpen: false,
   ready: false,
 };
@@ -317,6 +323,7 @@ const els = {
   attachments: document.getElementById('composer-attachments') as HTMLElement,
   serviceDot: document.getElementById('service-dot') as HTMLElement,
   serviceText: document.getElementById('service-text') as HTMLElement,
+  updateBadge: document.getElementById('update-badge') as HTMLButtonElement,
   restart: document.getElementById('restart-service') as HTMLButtonElement,
   newSession: document.getElementById('new-session') as HTMLButtonElement,
   panel: document.getElementById('panel') as HTMLElement,
@@ -402,6 +409,22 @@ async function boot(): Promise<void> {
     },
   );
   renderMainArea();
+  // The status the main process holds is the truth: the subscription is how a background
+  // check reaches the badge without the renderer polling, and the first read covers a check
+  // that finished before this window existed.
+  api.updates.onStatus((status) => {
+    state.update = status;
+    paintUpdates();
+  });
+  els.updateBadge.addEventListener('click', () => void api.updates.open());
+  void api.updates
+    .status()
+    .then((status) => {
+      state.update = status;
+      paintUpdates();
+    })
+    .catch(() => undefined);
+
   api.browser.onState((next) => {
     browserShown = next.visible;
     // A browser the host closed cannot stay the active tab: go back to the chat.
@@ -1214,6 +1237,32 @@ function handleEvent(event: import('../shared/protocol').ServiceEvent): void {
 
 /* ------------------------------------------------------------- rendering */
 
+/**
+ * Updates are app-wide, so they surface in two places and nowhere else: a badge in the rail
+ * foot that exists only while something can be installed, and Settings → General, which also
+ * offers the manual check. A background check the app started itself must stay quiet — the
+ * badge is the whole of its voice.
+ */
+function paintUpdates(): void {
+  paintUpdateBadge(els.updateBadge, state.update);
+  if (state.settings.open && state.settings.section === 'general') {
+    renderUpdateSection(els.settingsBody, state.update, {
+      version: state.info?.version ?? '',
+      onCheck: () => void checkForUpdates(),
+      onDownload: () => void api.updates.open(),
+    });
+  }
+}
+
+/** A person asked, so this check reports back — including "you are up to date". */
+async function checkForUpdates(): Promise<void> {
+  state.update = { state: 'checking' };
+  paintUpdates();
+  state.update = await api.updates.check();
+  paintUpdates();
+  setHint(updateNotice(state.update) ?? '');
+}
+
 function renderStatus(): void {
   const label =
     state.status === 'ready'
@@ -2005,7 +2054,12 @@ function renderPanels(): void {
       .catch((error: unknown) => setHint(`Could not read the config: ${(error as Error).message}`));
   };
 
-  if (state.settings.open) renderSettingsSection();
+  if (state.settings.open) {
+      renderSettingsSection();
+      // The update row is painted after the config form, not woven into it: it writes no
+      // config, and the form is rebuilt from a draft on every keystroke.
+      paintUpdates();
+    }
   else if (state.panel === 'subagents') renderSubagents(host, state.subagents, state.agents, callbacks);
   else if (state.panel === 'explorer') {
     // First visit reads the workspace root; after that the listing is re-read when the tab

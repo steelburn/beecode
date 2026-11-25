@@ -4,6 +4,27 @@ All notable changes to beeCode will be documented in this file.
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-11-25
+
+- **beeCode says when a newer installer has been published.** On start, every six hours,
+  and on demand from **Check now** in the notice, the main process reads
+  `releases/latest` from GitHub, compares the tag with the running version and, when it
+  is newer, shows a clickable rail badge and a **Download x.y.z** button at the bottom of
+  **Settings**. Nothing is downloaded or installed by the check — opening the release page
+  is the whole action. A failed check is reported as *failed*, never as *up to date*,
+  because a network blip must not withdraw an update the app already knows about.
+- **Fixed: the live page attached to nothing — `ERR_FAILED (-2)`.** `serveSlateLive()`
+  registered `slate://` on the default session, but `harden()` gives each live view its own
+  in-memory partition and a `protocol.handle` from the `electron` module only ever
+  registers on the default session. The partitioned page therefore had no handler for its
+  own scheme and Chromium aborted the navigation before a line of the slate ran — which is
+  why an interactive deck previewed blank in 0.1.3. The scheme is now registered on the
+  session that will load it, in the one place that creates the partition.
+- The smoke gate can no longer pass on that failure. `show()` publishes `visible: true`
+  before it awaits `loadURL`, so a gate that waits only for `visible` was satisfied by the
+  optimistic state while the `ERR_FAILED` arrived as a second state nobody read. It now
+  waits for the load to settle and requires `loadError === ''`.
+
 ## [0.1.3] - 2026-11-25
 
 - **A plain workspace `.html` file now gets the live page too, not just a slate.** The same

@@ -1,4 +1,6 @@
-import { app, BrowserWindow, globalShortcut, Menu, nativeImage, net, protocol, shell, Tray } from 'electron';
+import { app, BrowserWindow, dialog, globalShortcut, Menu, nativeImage, net, protocol, shell, Tray } from 'electron';
+import { UPDATE_CHECK_INTERVAL_MS, RELEASES_PAGE_URL, UPDATE_REPO, formatUpdateSize, updateDownloadUrl, updateNotice } from '../shared/update';
+import { UpdateChecker, githubJsonFetcher } from './updateCheck';
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { basename, dirname, extname, join, relative, resolve, isAbsolute } from 'node:path';
@@ -41,6 +43,7 @@ let mainWindow: BrowserWindow | null = null;
 /** The sandboxed page a *live* slate runs in — the only web contents a slate owns. */
 let slateLiveHost: SlateLiveHost | null = null;
 let tray: Tray | null = null;
+let updates: UpdateChecker;
 let quitting = false;
 let supervisor: ServiceSupervisor;
 let browserHost: BrowserHost | null = null;
@@ -153,11 +156,27 @@ async function bootstrap(): Promise<void> {
   });
   serveSlateLive(slateLiveHost);
 
+  // One checker per run. It holds the status the badge renders and answers a repeated
+  // question from what it last read; the request itself goes out over Electron's own network
+  // stack, so a system proxy is honoured and the renderer needs no `connect-src`.
+  updates = new UpdateChecker({
+    currentVersion: app.getVersion(),
+    fetchJson: githubJsonFetcher(
+      (url, init) => net.fetch(url, init),
+      `beeCode/${app.getVersion()} (+https://github.com/${UPDATE_REPO})`,
+    ),
+    onChange: (status) => {
+      const win = mainWindow;
+      if (win && !win.isDestroyed()) win.webContents.send('beecode:update-status', status);
+    },
+  });
+
   registerIpc({
     supervisor,
     getWindow: () => mainWindow,
     workspace,
     terminal,
+    updates,
     browserCommand: (command) => browserHost?.command(command),
     slateLive: (command) => {
       const host = slateLiveHost;
@@ -180,11 +199,13 @@ async function bootstrap(): Promise<void> {
     workspace,
     browserCommand: (command) => browserHost?.command(command),
     terminal,
+    updates,
     restartService: async () => ({ ok: false }),
   });
 
   createWindow();
   createTray();
+  scheduleUpdateChecks();
 
   // The background service starts independently of the window — closing the UI keeps
   // the agent runtime alive so long-running tasks and subagents are not interrupted.
@@ -371,6 +392,75 @@ async function refreshBrowserConfig(): Promise<void> {
   }
 }
 
+/**
+ * Notice a newly published installer without being asked. It runs only in a packaged build —
+ * a dev tree's version is not what users install — and `BEECODE_UPDATE_CHECK=force` turns it
+ * on when the check itself is what is being exercised. Neither timer is allowed to keep the
+ * app alive: an unanswered request must not outlive the window it was fetched for.
+ */
+function scheduleUpdateChecks(): void {
+  if (!app.isPackaged && process.env.BEECODE_UPDATE_CHECK !== 'force') return;
+  // The smoke run is an offline gate; a check that leaves the machine would be a flaky one.
+  if (process.argv.includes('--smoke')) return;
+  const later = (ms: number) => {
+    (setTimeout(() => void updates.check(), ms) as unknown as { unref?: () => void }).unref?.();
+  };
+  // Late enough that the first screen and the service start are not competing with it.
+  later(5000);
+  const every = () => later(UPDATE_CHECK_INTERVAL_MS);
+  (setInterval(every, UPDATE_CHECK_INTERVAL_MS) as unknown as { unref?: () => void }).unref?.();
+}
+
+/** A dialog that works with the window hidden — the tray can be used that way. */
+async function notifyUpdate(title: string, detail: string, buttons: string[]): Promise<number> {
+  const options = {
+    type: 'info' as const,
+    title: 'beeCode',
+    message: title,
+    detail,
+    buttons,
+    defaultId: 0,
+    cancelId: buttons.length - 1,
+    noLink: true,
+  };
+  const win = mainWindow;
+  const result = win && !win.isDestroyed()
+    ? await dialog.showMessageBox(win, options)
+    : await dialog.showMessageBox(options);
+  return result.response;
+}
+
+/**
+ * "Check for updates" from the tray. A check the app schedules itself stays silent — nobody
+ * asked it to interrupt — but this one was asked for, so both answers are spoken: an update
+ * with a Download button, and "up to date" / the reason the check failed.
+ */
+async function checkForUpdatesFromMenu(): Promise<void> {
+  const status = await updates.check(true);
+  if (status.state === 'available') {
+    const size = formatUpdateSize(status.release.asset?.size ?? 0);
+    const detail = [
+      `You are running ${status.version}.`,
+      size ? `The published installer is ${size}.` : 'The release carries no installer yet.',
+      '',
+      'Downloading opens the release page in your browser — beeCode does not fetch or run the installer itself.',
+    ].join('\n');
+    if ((await notifyUpdate(`beeCode ${status.release.version} is available`, detail, ['Download', 'Later'])) === 0) {
+      await shell.openExternal(updateDownloadUrl(status) ?? RELEASES_PAGE_URL);
+    }
+    return;
+  }
+  if (status.state === 'current') {
+    await notifyUpdate(
+      `beeCode ${status.version} is up to date`,
+      `The latest published release is ${status.latest}.`,
+      ['OK'],
+    );
+    return;
+  }
+  await notifyUpdate('Could not check for updates', updateNotice(status) ?? 'The check failed.', ['OK']);
+}
+
 function createTray(): void {
   const image = nativeImage.createFromPath(iconPath());
   tray = new Tray(image.isEmpty() ? nativeImage.createEmpty() : image.resize({ width: 16, height: 16 }));
@@ -378,6 +468,7 @@ function createTray(): void {
   tray.setContextMenu(
     Menu.buildFromTemplate([
       { label: 'Open beeCode', click: () => showWindow() },
+      { label: 'Check for updates…', click: () => void checkForUpdatesFromMenu() },
       { label: 'Hide window', click: () => mainWindow?.hide() },
       { type: 'separator' },
       {
@@ -586,6 +677,16 @@ async function runSmokeCheck(serviceReady: boolean): Promise<void> {
             const wsRoot = (await window.beeCode.invoke('config.get', {})).workspace.root;
             window.beeCode.slateLive.show({ sessionId: 'smoke-live', id: 'smoke-demo', cwd: wsRoot, bounds });
             const shown = await waitState((s) => s.visible === true || typeof s.error === 'string');
+            // show() publishes its state BEFORE it awaits the navigation, so the first
+            // state is not evidence the page arrived -- a navigation that fails publishes
+            // a second state carrying the error. Waiting only for the first is how a
+            // slate:// URL this session could not route passed this gate while the shipped
+            // page stayed blank, so the load is given time to settle and the last state
+            // for the slate is what counts.
+            await sleep(800);
+            const settled = states.filter((s) => s.slateId === 'smoke-demo');
+            const failed = settled.filter((s) => typeof s.error === 'string').pop();
+            const last = settled[settled.length - 1];
             window.beeCode.slateLive.hide();
             const hidden = await waitState((s) => s.visible === false);
             // Without consent there is no page to show, and it must say so rather than go blank.
@@ -595,7 +696,9 @@ async function runSmokeCheck(serviceReady: boolean): Promise<void> {
             off();
             const url = String((shown && shown.url) || '');
             return {
-              attached: !!(shown && shown.visible === true),
+              attached: !!(last && last.visible === true) && !failed,
+              loadError: String((failed && failed.error) || ''),
+              states: settled.length,
               version: (shown && shown.version) || 0,
               origins: (shown && shown.origins) || [],
               scheme: url.indexOf(':') > 0 ? url.slice(0, url.indexOf(':')) : '',
@@ -873,6 +976,19 @@ async function runSmokeCheck(serviceReady: boolean): Promise<void> {
         // The chat is not shown at the same time, the composer keeps its place, and the theme
         // toggle restates the document surface without restyling the app around it. Every
         // selector is written without backticks: this script is itself a template literal.
+        // Update checking. The badge must exist and must stay hidden when nothing newer is
+        // published; the network is not touched here — smoke runs offline and the check
+        // itself is unit-tested — so only the surface and the bridge are gated.
+        updates: await (async () => {
+          const badge = document.getElementById('update-badge');
+          return {
+            badge: Boolean(badge),
+            hidden: Boolean(badge && badge.hidden),
+            bridge: typeof window.beeCode?.updates?.check === 'function',
+            download: typeof window.beeCode?.updates?.open === 'function',
+          };
+        })().catch((err) => ({ error: String(err) })),
+
         mainArea: await (async () => {
           const out = { tab: false };
           const opener = document.querySelector('.explorer-preview .btn[title^="Open in the main area"]');

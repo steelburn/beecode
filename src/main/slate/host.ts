@@ -502,6 +502,12 @@ export class SlateLiveHost {
     // No service workers or shared workers: a slate runs while it is on screen, and no
     // longer, so it must not be able to leave something running behind it.
     ses.setPreloads([]);
+    // The scheme has to be handled by THIS session, not only by the default one. The live
+    // view runs in its own partition, and `protocol.handle` from the electron module only
+    // registers on the default session: without this line the navigation to
+    // `slate://live/...` dies as ERR_FAILED (-2) before the handler is ever called, so the
+    // page is never served — a blank pane that looks exactly like a slate with no scripts.
+    ses.protocol.handle(SLATE_LIVE_SCHEME, (request) => this.handleRequest(request));
     return ses;
   }
 }

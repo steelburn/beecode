@@ -3,6 +3,7 @@ import { readdir, writeFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import type { BrowserPanelCommand } from '../shared/browser';
 import type { SlateLiveCommand, SlateLiveState } from '../shared/slateSandbox';
+import { RELEASES_PAGE_URL, updateDownloadUrl } from '../shared/update';
 import {
   RENDERER_METHODS,
   type AppInfo,
@@ -17,6 +18,7 @@ import { beeCodeHome } from '../shared/tools';
 import type { ServiceSupervisor } from './serviceSupervisor';
 import type { WorkspaceTerminal } from './terminal';
 import { copyIntoWorkspace } from './workspaceFiles';
+import type { UpdateChecker } from './updateCheck';
 
 export interface IpcDeps {
   supervisor: ServiceSupervisor;
@@ -25,6 +27,11 @@ export interface IpcDeps {
   getWindow: () => BrowserWindow | null;
   workspace: string;
   restartService: () => Promise<{ ok: boolean }>;
+  /**
+   * The one update checker for this run. It holds the status the renderer renders, so a
+   * manual check and the background one cannot disagree about what is published.
+   */
+  updates: UpdateChecker;
   /** Panel geometry and chrome commands for the internal browser view. */
   browserCommand: (command: BrowserPanelCommand) => void;
   /**
@@ -261,6 +268,19 @@ export function registerIpc(deps: IpcDeps): void {
       ? await dialog.showOpenDialog(win, dialogOptions)
       : await dialog.showOpenDialog(dialogOptions);
     return result.canceled ? undefined : result.filePaths[0];
+  });
+
+  // Is there a newer published installer? `force` is the difference between the background
+  // check (which honours the six-hour interval) and a person clicking "check now".
+  ipcMain.handle('beecode:update-check', async (_event, force?: boolean) =>
+    deps.updates.check(force === true),
+  );
+
+  // The URL is never taken from the renderer: it is derived from the status this process
+  // fetched, so a compromised renderer cannot turn this into an open-anything link.
+  ipcMain.handle('beecode:update-open', async () => {
+    const url = updateDownloadUrl(deps.updates.status) ?? RELEASES_PAGE_URL;
+    await shell.openExternal(url);
   });
 
   ipcMain.handle('beecode:open-external', async (_event, url: string) => {

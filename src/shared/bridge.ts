@@ -1,6 +1,7 @@
 import type { BrowserPanelApi } from './browser';
 import type { SlateLiveBounds, SlateLiveState } from './slateSandbox';
 import type { TerminalApi } from './terminal';
+import type { UpdateStatus } from './update';
 import type {
   BeeCodeConfig,
   PolicyDocument,
@@ -189,6 +190,20 @@ export interface SlateLiveApi {
   onState(listener: (state: SlateLiveState) => void): () => void;
 }
 
+export interface UpdateApi {
+  /**
+   * The last status the main process holds, without asking GitHub: the renderer asks once on
+   * boot so a check that ran before the window was ready is not lost.
+   */
+  status(): Promise<UpdateStatus>;
+  /** Ask now, ignoring the interval — what a person clicking "check for updates" means. */
+  check(): Promise<UpdateStatus>;
+  /** Open the published installer (or the release page) in the default browser. */
+  open(): Promise<void>;
+  /** A background check finished — the badge appears without the user doing anything. */
+  onStatus(callback: (status: UpdateStatus) => void): void;
+}
+
 export interface BeeCodeBridge {
   appInfo(): Promise<AppInfo>;
   serviceStatus(): Promise<ServiceStatusPayload>;
@@ -231,6 +246,8 @@ export interface BeeCodeBridge {
    * The workspace terminal. Unlike the browser view it lives entirely in the main process
    * and streams its scrollback back over IPC; the renderer only renders it.
    */
+  updates: UpdateApi;
+
   terminal: TerminalApi;
 
   /**

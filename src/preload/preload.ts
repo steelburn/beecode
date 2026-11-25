@@ -8,6 +8,7 @@ import type {
 } from '../shared/bridge';
 import type { TerminalState } from '../shared/terminal';
 import type { SlateLiveState } from '../shared/slateSandbox';
+import type { UpdateStatus } from '../shared/update';
 import type { RpcMethod, RpcRequests, ServiceEvent } from '../shared/protocol';
 
 /**
@@ -104,6 +105,22 @@ const bridge: BeeCodeBridge = {
       const handler = (_e: unknown, state: SlateLiveState) => listener(state);
       ipcRenderer.on('beecode:slate-live-state', handler);
       return () => ipcRenderer.removeListener('beecode:slate-live-state', handler);
+    },
+  },
+
+  // Is there a newer published installer? The question is asked in the main process — this
+  // document's CSP has no connect-src, and opening the download needs the shell.
+  updates: {
+    status: () => ipcRenderer.invoke('beecode:update-check', false),
+
+    check: () => ipcRenderer.invoke('beecode:update-check', true),
+
+    open: () => ipcRenderer.invoke('beecode:update-open'),
+
+    onStatus: (listener: (status: UpdateStatus) => void) => {
+      const handler = (_e: unknown, status: UpdateStatus) => listener(status);
+      ipcRenderer.on('beecode:update-status', handler);
+      return () => ipcRenderer.removeListener('beecode:update-status', handler);
     },
   },
 

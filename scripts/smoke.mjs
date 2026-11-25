@@ -77,6 +77,10 @@ const slates = report.dom?.slates ?? {};
 const liveSlate = report.dom?.slateLive ?? {};
 const liveSlateOk =
   liveSlate.attached === true &&
+  // A load that failed publishes a second state AFTER the optimistic one; smoke used to
+  // read the first and call an unroutable slate:// URL attached.
+  liveSlate.loadError === '' &&
+  liveSlate.states >= 1 &&
   liveSlate.scheme === 'slate' &&
   liveSlate.version === 1 &&
   Array.isArray(liveSlate.origins) &&
@@ -287,7 +291,18 @@ const railOk =
   rail.expandedItems === 2 &&
   rail.collapsedBodies === 1;
 
-const terminal = report.dom?.terminal ?? {};const terminalOk =
+// The update surface: the badge exists and is hidden while nothing newer is published, and
+// the bridge exposes both the check and the download. The check itself never runs here —
+// smoke is offline by design and the checker has its own unit tests.
+const updates = report.dom?.updates ?? {};
+const updatesOk =
+  updates.badge === true &&
+  updates.hidden === true &&
+  updates.bridge === true &&
+  updates.download === true;
+
+const terminal = report.dom?.terminal ?? {};
+const terminalOk =
   terminal.drawer === true &&
   terminal.mounted === true &&
   terminal.ranCommand === true &&
@@ -362,7 +377,8 @@ const ok =
   tabsFitOk &&
   tabMenuOk &&
   railOk &&
-  terminalOk;
+  terminalOk &&
+  updatesOk;
 if (!columnsOk) console.error(`[smoke] side column check failed: ${JSON.stringify(columns)}`);
 if (!slatesOk) console.error(`[smoke] slate check failed: ${JSON.stringify(slates)}`);
 if (!liveSlateOk) console.error(`[smoke] live slate check failed: ${JSON.stringify(liveSlate)}`);
@@ -391,6 +407,7 @@ if (!tabsFitOk)
   console.error(`[smoke] browser tab strip check failed: ${JSON.stringify(tabStrip)}`);
 if (!railOk) console.error(`[smoke] session rail grouping check failed: ${JSON.stringify(rail)}`);
 if (!terminalOk) console.error(`[smoke] terminal drawer check failed: ${JSON.stringify(terminal)}`);
+if (!updatesOk) console.error(`[smoke] update surface check failed: ${JSON.stringify(updates)}`);
 if (!composerUiOk)
   console.error(`[smoke] composer icon check failed: ${JSON.stringify(composerUi)}`);
 if (!composerOk) {

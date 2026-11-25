@@ -105,6 +105,15 @@ directory falls back to the default, and a config with no usable preset is rejec
 working directory is pushed into the policy engine as the filesystem root and created if it
 does not exist. Existing sessions keep the directory they were created with.
 
+### Updates
+
+beeCode checks `releases/latest` on GitHub at start and every six hours; a newer
+published version shows as a clickable badge at the foot of the rail and as a **Download
+x.y.z** button at the bottom of this dialog. **Check now** repeats the check on demand.
+The check is read-only: no download, no install, no telemetry — it opens the release page
+and you decide. If GitHub cannot be reached the notice says so (and keeps any update it
+already found) rather than claiming you are up to date.
+
 ### Where the key lives
 
 `~/.beecode/config.json` is shareable user state, so a key is never written there. Three

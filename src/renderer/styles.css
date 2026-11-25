@@ -2072,3 +2072,13 @@ body.dragging-browser-dock { cursor: row-resize; user-select: none; }
 .slate-live-origins:disabled { opacity: 0.5; }
 .slate-live-actions { display: flex; align-items: center; gap: 8px; }
 .slate-live-error { color: var(--danger); font-size: 12px; }
+
+/* The rail foot carries one badge, and only while an installer to replace this build exists:
+   an always-visible version number would be chrome for a decision nobody is making. */
+.update-badge {
+  display: inline-flex; align-items: center; gap: 4px; border: 1px solid var(--amber-dim);
+  background: #241c05; color: var(--amber); border-radius: 999px; cursor: pointer;
+  font-family: var(--mono); font-size: 11px; padding: 2px 8px; line-height: 1.4;
+}
+.update-badge:hover { border-color: var(--amber); }
+.update-badge[hidden] { display: none; }
