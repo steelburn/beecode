@@ -4,6 +4,8 @@ All notable changes to beeCode will be documented in this file.
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-11-25
+
 - **A plain workspace `.html` file now gets the live page too, not just a slate.** The same
   Preview bar and the same sandbox are offered for any `.html`/`.htm` file whose page its own
   script builds: `fileDocLiveTarget` offers it, and the host runs it as
