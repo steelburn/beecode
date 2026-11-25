@@ -4,6 +4,7 @@
   "version": "0.1.2",
   "description": "beeCode — agentic desktop application with a background agent service, a permissioned desktop-control layer and subagent delegation",
   "license": "MIT",
+  "author": { "name": "Khairulnizam Hasan", "email": "steelburn@gmail.com"},
   "main": "dist/main.js",
   "type": "commonjs",
   "private": true,
