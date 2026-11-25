@@ -92,6 +92,10 @@ const bridge: BeeCodeBridge = {
   slateLive: {
     show: (request) => ipcRenderer.send('beecode:slate-live', { kind: 'show', ...request }),
 
+    // A document tab's own .html file: the same host and the same sandbox, given the text
+    // instead of the path so the page cannot reach the folder it came from.
+    showFile: (request) => ipcRenderer.send('beecode:slate-live', { kind: 'showFile', ...request }),
+
     setBounds: (bounds) => ipcRenderer.send('beecode:slate-live', { kind: 'bounds', bounds }),
 
     hide: () => ipcRenderer.send('beecode:slate-live', { kind: 'hide' }),
@@ -103,7 +107,7 @@ const bridge: BeeCodeBridge = {
     },
   },
 
-  // The terminal is a main-process command runner  // The terminal is a main-process command runner: fire a command, then follow the state
+  // The terminal is a main-process command runner: fire a command, then follow the state
   // it pushes back. Nothing is spawned from here — the renderer is sandboxed.
   terminal: {
     state: () => ipcRenderer.invoke('beecode:terminal-state'),

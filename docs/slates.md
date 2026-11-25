@@ -89,7 +89,8 @@ scripting carries no banner.
 
 A slate version shown as **Preview** is the one document that also gets Tier B, in place.
 `docLiveBar` (`src/renderer/mainArea.ts`) sits between the tab's head and its body, and the
-body underneath is the rectangle the sandboxed page covers once it runs.
+body underneath is the rectangle the sandboxed page covers once it runs. The same bar is
+offered for a plain workspace `.html` file — see the next section.
 
 * The bar is the *same* grant the tile in the Slates tab asks for — **Allow scripts (live)**,
   the origins it may fetch from, and Run/Stop — because a live page is the same grant wherever
@@ -102,7 +103,7 @@ body underneath is the rectangle the sandboxed page covers once it runs.
   an html version, the Preview view, a slate of the session on screen, and a summary the
   renderer actually holds — the consent and the origins live in it. Code view, markdown and a
   tab from another session keep the inert preview with no bar.
-* `slateDocHoldsLive` matches session, slate **and version**: the host runs one page at a time,
+* `docLiveHoldsLive` matches session, slate **and version**: the host runs one page at a time,
   so switching that tab to Code, closing it or opening another version takes the page down
   (`liveOnScreen()` in `src/renderer/main.ts`) instead of leaving it floating over the chat.
 * The rectangle is not automatic — a native view does not reflow. `renderDoc` publishes it
@@ -113,6 +114,30 @@ body underneath is the rectangle the sandboxed page covers once it runs.
   the kind that most needs its scripts — the only kind that could not run. What it may reach is
   the CSP baked into the response, so an empty allowlist means the code runs and every
   connection is refused.
+
+## A plain workspace file gets the same page
+
+The live host is not slate-only. A workspace `.html` file opened in a document tab gets the
+same bar and the same sandbox, because it has exactly the same failure mode: the page is built
+by its own script and the inert preview strips it.
+
+* `fileDocLiveTarget` (`src/renderer/slateDocLive.ts`) offers it for a `.html`/`.htm` file in
+  the Preview view whose text the tab already holds — and never for a slate version, which has
+  its own target because it also has a store to remember consent in.
+* The page is served from memory over `slate://live/file/<hash>/v1`, never from its folder:
+  `showFile` hands the *text* to the host and the id is a hash of path and bytes, so the URL
+  names no folder and an edited file is a different page. The consequence is honest and stated
+  in the bar — a page loading a sibling `style.css`, `app.js` or an image looks unstyled or
+  half-built here, while a browser shows it finished.
+* **One click, not two.** A slate's consent lives in the store, so it is ticked once and
+  re-checked on every run; a file's grant lives only as long as the run, so the Run button *is*
+  the grant and there is no consent switch. A repaint therefore never loses a tick, and a
+  running page never has to be stopped to be granted again.
+* `docLiveHoldsLive` compares the path the host reports (`live.filePath`) with the tab's, so
+  switching that tab to Code, closing it, or re-running an edited file takes the page down
+  instead of leaving it floating over the chat.
+* `SLATE_LIVE_LIMITS.textBytes` (4 MB) is the ceiling: above it the bar is not offered at all,
+  because a Run button whose only outcome is a refusal is worse than none.
 
 ## Non-goals
 

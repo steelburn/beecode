@@ -3,16 +3,18 @@ import { test } from 'node:test';
 import type { SlateSummary } from '../shared/protocol';
 import {
   parseSlateOrigins,
-  slateDocHoldsLive,
+  docLiveHoldsLive,
+  fileDocLiveTarget,
   slateDocLiveTarget,
   slateLiveBoundsOf,
 } from './slateDocLive';
 
 /**
  * The document tab may only offer the live page where running it is possible and permitted:
- * an html slate version, in Preview, of the session whose slates the renderer holds. These
- * tests pin that down, because the alternative is a Run button whose only outcome is a
- * refusal from the host.
+ * an html slate version, in Preview, of the session whose slates the renderer holds — or a
+ * plain workspace .html file, in Preview, whose text the tab already holds. These tests pin
+ * that down, because the alternative is a Run button whose only outcome is a refusal from the
+ * host.
  */
 
 const session = 'session-1';
@@ -38,6 +40,7 @@ test('an html slate shown as Preview is a live target', () => {
       slates: [summary({ live: true, origins: ['https://api.example.com'] })],
     }),
     {
+      kind: 'slate',
       sessionId: session,
       id: 'slides',
       version: 3,
@@ -96,14 +99,14 @@ test('an ordinary file in the workspace is not a live target', () => {
 test('the live page belongs to a tab only for the same session, slate and version', () => {
   const target = slateDocLiveTarget(path, 'rendered', { sessionId: session, slates: [summary()] });
   const live = { visible: true, sessionId: session, slateId: 'slides', version: 3 };
-  assert.equal(slateDocHoldsLive(live, target), true);
+  assert.equal(docLiveHoldsLive(live, target), true);
   // A new version is a different page: the tab of v2 must not move or keep the v3 page.
-  assert.equal(slateDocHoldsLive({ ...live, version: 4 }, target), false);
-  assert.equal(slateDocHoldsLive({ ...live, slateId: 'other' }, target), false);
-  assert.equal(slateDocHoldsLive({ ...live, sessionId: 'session-2' }, target), false);
-  assert.equal(slateDocHoldsLive({ ...live, visible: false }, target), false);
-  assert.equal(slateDocHoldsLive(undefined, target), false);
-  assert.equal(slateDocHoldsLive(live, undefined), false);
+  assert.equal(docLiveHoldsLive({ ...live, version: 4 }, target), false);
+  assert.equal(docLiveHoldsLive({ ...live, slateId: 'other' }, target), false);
+  assert.equal(docLiveHoldsLive({ ...live, sessionId: 'session-2' }, target), false);
+  assert.equal(docLiveHoldsLive({ ...live, visible: false }, target), false);
+  assert.equal(docLiveHoldsLive(undefined, target), false);
+  assert.equal(docLiveHoldsLive(live, undefined), false);
 });
 
 test('a DOM rect becomes the window rectangle the native view is placed on', () => {
@@ -121,4 +124,59 @@ test('origins are typed one per line or comma-separated', () => {
     ['https://a.example.com', 'https://b.example.com', 'https://c.example.com'],
   );
   assert.deepEqual(parseSlateOrigins('   '), []);
+});
+
+test('a plain workspace html file is a live target in Preview', () => {
+  const html = '<div id="app"></div><script>render()</script>';
+  assert.deepEqual(fileDocLiveTarget('notes/demo.html', 'rendered', html), {
+    kind: 'file',
+    path: 'notes/demo.html',
+    text: html,
+    origins: [],
+  });
+  // .htm counts, and a Windows path is a path like any other.
+  assert.equal(fileDocLiveTarget('C:\\work\\demo.htm', 'rendered', '<p>x</p>')?.kind, 'file');
+  // What the user typed for the last run comes back with the target, so a repaint keeps it.
+  assert.deepEqual(
+    fileDocLiveTarget('notes/demo.html', 'rendered', html, {
+      origins: ['https://api.example.com'],
+    })?.origins,
+    ['https://api.example.com'],
+  );
+});
+
+test('a file is offered live only where there is a page to run', () => {
+  const html = '<div id="app"></div>';
+  // Code shows the source a reader can already read; that needs no sandbox.
+  assert.equal(fileDocLiveTarget('notes/demo.html', 'source', html), undefined);
+  assert.equal(fileDocLiveTarget('notes/readme.md', 'rendered', '# notes'), undefined);
+  assert.equal(fileDocLiveTarget('notes/demo.html', 'rendered', ''), undefined);
+  assert.equal(fileDocLiveTarget('notes/demo.html', 'rendered', null), undefined);
+  assert.equal(fileDocLiveTarget('notes/demo.html', 'rendered', html, { binary: true }), undefined);
+  // Above the host's own limit the bar could only ever refuse, so it is not offered at all.
+  assert.equal(
+    fileDocLiveTarget('notes/demo.html', 'rendered', 'x'.repeat(4 * 1024 * 1024 + 1)),
+    undefined,
+  );
+});
+
+test('a slate version is never offered as a plain file', () => {
+  // The slate target carries the consent the store remembers; a file target carries none.
+  assert.equal(fileDocLiveTarget(path, 'rendered', '<p>x</p>'), undefined);
+});
+
+test('the live page of a file belongs to the tab showing that file', () => {
+  const target = fileDocLiveTarget('notes/demo.html', 'rendered', '<p>x</p>');
+  const live = { visible: true, filePath: 'notes/demo.html' };
+  assert.equal(docLiveHoldsLive(live, target), true);
+  assert.equal(docLiveHoldsLive({ ...live, filePath: 'notes/other.html' }, target), false);
+  assert.equal(docLiveHoldsLive({ ...live, visible: false }, target), false);
+  // The host runs one page at a time: a slate page on screen is not this file's, and a file's
+  // page is not a slate tab's — neither may claim the rectangle the other one holds.
+  const slate = slateDocLiveTarget(path, 'rendered', { sessionId: session, slates: [summary()] });
+  assert.equal(docLiveHoldsLive(live, slate), false);
+  assert.equal(
+    docLiveHoldsLive({ visible: true, sessionId: session, slateId: 'slides', version: 3 }, target),
+    false,
+  );
 });

@@ -1,5 +1,9 @@
 import type { SlateSummary } from '../shared/protocol';
-import type { SlateLiveBounds, SlateLiveState } from '../shared/slateSandbox';
+import {
+  SLATE_LIVE_LIMITS,
+  type SlateLiveBounds,
+  type SlateLiveState,
+} from '../shared/slateSandbox';
 import type { FileView } from './preview';
 import { slateDocFromPath } from './slateDoc';
 
@@ -19,6 +23,8 @@ import { slateDocFromPath } from './slateDoc';
  */
 
 export interface SlateDocLiveTarget {
+  /** Discriminates a slate's target from a plain file's. */
+  kind: 'slate';
   /** The session the slate belongs to: a tab outlives the session it was opened in. */
   sessionId: string;
   id: string;
@@ -49,6 +55,7 @@ export function slateDocLiveTarget(
   const summary = options.slates.find((slate) => slate.id === doc.id);
   if (!summary) return undefined;
   return {
+    kind: 'slate',
     sessionId: doc.session,
     id: doc.id,
     version: doc.version,
@@ -58,16 +65,67 @@ export function slateDocLiveTarget(
 }
 
 /**
+ * A document tab showing a plain workspace HTML file.
+ *
+ * The same problem as a slate version, without a store behind it: the file's own script builds
+ * the page and the inert preview strips it. The target carries the *text* the tab is showing,
+ * because the host must serve the page from memory — a `file://` page would reach its whole
+ * folder, which is exactly what this sandbox exists to prevent.
+ */
+export interface FileDocLiveTarget {
+  kind: 'file';
+  /** The path, kept as a label and as the host state a tab compares itself against. */
+  path: string;
+  /** The HTML the tab holds, handed to the host for this run. */
+  text: string;
+  /** Origins granted the last time this file ran, so the bar keeps what the user typed. */
+  origins: string[];
+}
+
+export type DocLiveTarget = SlateDocLiveTarget | FileDocLiveTarget;
+
+/** Whether a path is a page a browser would run scripts for. */
+export function isHtmlLivePath(path: string): boolean {
+  return /\.html?$/i.test(path.split(/[\\/]/).pop() ?? '');
+}
+
+/**
+ * When the live host is offered for a plain file.
+ *
+ * Deliberately narrow: a slate has its own target, only Preview shows a page (Code shows the
+ * source a reader can already read), and an empty or oversized file would only produce a bar
+ * whose Run always refuses.
+ */
+export function fileDocLiveTarget(
+  path: string,
+  view: FileView,
+  text: string | null | undefined,
+  options: { binary?: boolean; origins?: readonly string[] } = {},
+): FileDocLiveTarget | undefined {
+  if (slateDocFromPath(path)) return undefined;
+  if (view !== 'rendered') return undefined;
+  if (options.binary === true) return undefined;
+  if (!isHtmlLivePath(path)) return undefined;
+  if (typeof text !== 'string' || text.trim().length === 0) return undefined;
+  if (text.length > SLATE_LIVE_LIMITS.textBytes) return undefined;
+  return { kind: 'file', path, text, origins: [...(options.origins ?? [])] };
+}
+
+/**
  * Whether the live page on screen is *this* tab's.
  *
- * All three parts are compared: the host runs one page at a time, and a session, slate or
- * version mismatch means the rectangle it is covering belongs to someone else.
+ * For a slate all three parts are compared — the host runs one page at a time, and a session,
+ * slate or version mismatch means the rectangle it is covering belongs to someone else. A file
+ * has no session and no version, so its path is the whole answer.
  */
-export function slateDocHoldsLive(
+export function docLiveHoldsLive(
   live: SlateLiveState | undefined,
-  target: SlateDocLiveTarget | undefined,
+  target: DocLiveTarget | undefined,
 ): boolean {
   if (!live || live.visible !== true || !target) return false;
+  // A file has no session and no version: the host reports the path it was handed, and a tab
+  // showing another file — or the same file after an edit — must not claim the page on screen.
+  if (target.kind === 'file') return live.filePath === target.path;
   return (
     live.sessionId === target.sessionId &&
     live.slateId === target.id &&

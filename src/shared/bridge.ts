@@ -167,6 +167,16 @@ export const RENDERER_METHODS: RpcMethod[] = [
  * knows whether the page actually attached, so the answer arrives through `onState`.
  */
 export interface SlateLiveApi {
+  /**
+   * Run a plain workspace HTML file in the same sandbox. The document is handed over as text,
+   * so the page is served from memory and never reaches the folder it came from.
+   */
+  showFile(request: {
+    path: string;
+    text: string;
+    origins?: string[];
+    bounds: SlateLiveBounds;
+  }): void;
   show(request: {
     sessionId: string;
     id: string;

@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
+  SLATE_LIVE_FILE_SESSION,
+  SLATE_LIVE_FILE_VERSION,
   SLATE_LIVE_LIMITS,
   canSlateGoLive,
   isSlateOriginAllowed,
@@ -133,4 +135,17 @@ test('anything that is not <hosted>/v<N>/submit is not a submit URL', () => {
   assert.equal(parseSlateLiveSubmitUrl('slate://live/s/i/submit'), undefined);
   assert.equal(parseSlateLiveSubmitUrl('slate://elsewhere/s/i/v1/submit'), undefined);
   assert.equal(parseSlateLiveSubmitUrl('https://live/s/i/v1/submit'), undefined);
+});
+
+test('the URL a plain file page is served under parses back to its target', () => {
+  // The host matches a request by parsing it and comparing session, id and version with what it
+  // was asked to show. A file page reuses that route, so the synthetic session must survive the
+  // round trip: if it did not, every request would be a 404 and the document would go blank.
+  const id = 'a'.repeat(32);
+  const url = slateLiveUrl(SLATE_LIVE_FILE_SESSION, id, SLATE_LIVE_FILE_VERSION);
+  assert.deepEqual(parseSlateLiveUrl(url), {
+    sessionId: 'file',
+    id,
+    version: 1,
+  });
 });

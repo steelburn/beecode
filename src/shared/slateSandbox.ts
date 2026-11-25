@@ -30,7 +30,21 @@ export const SLATE_LIVE_PARTITION_PREFIX = 'slate-live:';
 export const SLATE_LIVE_LIMITS = {
   /** Origins one slate may call. */
   origins: 8,
+  /** The largest page that may be served: a slate version, or a plain HTML file. */
+  textBytes: 4 * 1024 * 1024,
 } as const;
+
+/**
+ * The synthetic session and version a page hosted from a plain file is served under:
+ * `slate://live/file/<id>/v1`.
+ *
+ * A document tab's own HTML file needs exactly the isolation a slate gets — a real origin, no
+ * filesystem reachability, the same CSP — so it reuses this host and this URL parser instead
+ * of growing a second sandbox that could drift from it. `<id>` is a hash of the file's path
+ * and bytes, so the URL never names a folder and an edited file is a different page.
+ */
+export const SLATE_LIVE_FILE_SESSION = 'file';
+export const SLATE_LIVE_FILE_VERSION = 1;
 
 /**
  * One origin, normalised, or a refusal that says what to write instead. Errors are the
@@ -193,6 +207,16 @@ export type SlateLiveCommand =
       cwd?: string;
       bounds: SlateLiveBounds;
     }
+  | {
+      kind: 'showFile';
+      /** The file the page came from: a label for the bar and the host's state, never a source. */
+      path: string;
+      /** The HTML the document tab is showing — served from memory, like a slate version. */
+      text: string;
+      /** What the user granted for this one run. Empty is the common case: a self-contained page. */
+      origins?: string[];
+      bounds: SlateLiveBounds;
+    }
   | { kind: 'bounds'; bounds: SlateLiveBounds }
   | { kind: 'hide' };
 
@@ -222,6 +246,8 @@ export interface SlateLiveState {
   version?: number;
   url?: string;
   origins?: string[];
+  /** Set when the page came from a plain file rather than a slate version. */
+  filePath?: string;
   error?: string;
 }
 

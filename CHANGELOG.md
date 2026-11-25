@@ -4,6 +4,17 @@ All notable changes to beeCode will be documented in this file.
 
 ## [Unreleased]
 
+- **A plain workspace `.html` file now gets the live page too, not just a slate.** The same
+  Preview bar and the same sandbox are offered for any `.html`/`.htm` file whose page its own
+  script builds: `fileDocLiveTarget` offers it, and the host runs it as
+  `slate://live/file/<hash>/v1` — from the tab's *text*, so the page has an origin but no
+  reachability to its folder, and the id is a hash of path and bytes, so an edited file is a
+  different page. One deliberate difference: a file's grant lives only as long as the run, so
+  the Run button is the grant and there is no consent switch to re-tick after a repaint.
+  `docLiveHoldsLive` (was `slateDocHoldsLive`) takes the page down on a switch to Code, a close,
+  or a different file. Because the page is served from memory, a file that loads a sibling
+  `style.css`, `app.js` or an image looks unstyled there — the bar says so; the smoke run now
+  asserts the bar, the Run button and the absence of a consent switch on an ordinary document.
 - **A slate's document tab now runs the page instead of merely describing it.** The live slate
   host (`slate://live/…`, a sandboxed `WebContentsView`) was only reachable from the Slates
   tab, so a slate that builds its DOM in JavaScript was still unviewable from the tab it opened

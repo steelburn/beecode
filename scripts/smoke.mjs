@@ -248,7 +248,9 @@ const previewOk =
 
 // Main-area tabs: a rendered document opens in the column as a tab, the theme toggle
 // restates only the document surface, and the browser tab fills the column with the composer
-// still clear underneath.
+// still clear underneath. The document's own live bar is present for that page — with a Run
+// button and no consent switch, because a plain file's grant lasts only as long as the run —
+// and the page itself is not attached until the button is pressed.
 const mainArea = report.dom?.mainArea ?? {};
 const mainAreaOk =
   mainArea.strip === true &&
@@ -256,7 +258,9 @@ const mainAreaOk =
   mainArea.rendered === true &&
   mainArea.isolated === true &&
   mainArea.docActions === 0 &&
-  mainArea.docLiveBar === 0 &&
+  mainArea.docLiveBar === 1 &&
+  mainArea.docLiveRun === 1 &&
+  mainArea.docLiveConsent === 0 &&
   mainArea.transcriptHidden === true &&
   mainArea.composerVisible === true &&
   mainArea.light === true &&

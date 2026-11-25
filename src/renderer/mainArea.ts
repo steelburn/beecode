@@ -14,11 +14,12 @@ import {
 import { canSwitchView, type FileView } from './preview';
 import { slateDocFromPath, slateExportName, type SlateDocRef } from './slateDoc';
 import {
+  docLiveHoldsLive,
+  fileDocLiveTarget,
   parseSlateOrigins,
-  slateDocHoldsLive,
   slateDocLiveTarget,
   slateLiveBoundsOf,
-  type SlateDocLiveTarget,
+  type DocLiveTarget,
 } from './slateDocLive';
 import { renderSlateGallery, type SlateGalleryView } from './slateGallery';
 import type { SlateLiveBounds, SlateLiveState } from '../shared/slateSandbox';
@@ -59,6 +60,11 @@ diffSlate(id: string, from: number, to: number): Promise<SlateDiff>;
    * document body — and keep it on the rectangle handed back by `boundsSlateLive`.
    */
   runSlateLive(id: string, version: number, bounds: SlateLiveBounds, sessionId?: string): void;
+  /**
+   * Run the HTML file this tab shows. The text comes from the tab, so the page is served from
+   * memory: it cannot read its own folder and only the origins typed in the bar are reachable.
+   */
+  runFileLive(path: string, text: string, origins: string[], bounds: SlateLiveBounds): void;
   boundsSlateLive(bounds: SlateLiveBounds): void;
   stopSlateLive(): void;
   /** Write one slate version into the workspace tree as a real file. */
@@ -72,6 +78,8 @@ diffSlate(id: string, from: number, to: number): Promise<SlateDiff>;
 /** Everything below the strip needs besides the tab state itself. */
 export interface MainAreaView extends SlateGalleryView {
   browserVisible: boolean;
+  /** Origins granted the last time a plain file ran live, keyed by path, so a repaint keeps them. */
+  liveOrigins?: Record<string, string[]>;
   /** The session on screen: a slate tab may only run a slate of the session it was opened in. */
   sessionId?: string;
 }
@@ -247,13 +255,18 @@ function renderDoc(
   handlers: MainAreaHandlers,
 ): void {
   const slate = slateDocFromPath(tab.path);
-  // A slate's page is built by its own script, which the inert preview strips — so a slate
-  // version shown as Preview is also the one document that gets the live host, right above
-  // the body that page will cover. Every other tab stays exactly as inert as before.
-  const target = slateDocLiveTarget(tab.path, tab.view, {
-    sessionId: view.sessionId,
-    slates: view.slates,
-  });
+  // A page its own script builds — a slate version, or a plain workspace .html file — is
+  // stripped by the inert preview, so a Preview tab is the one surface that also gets the live
+  // host, laid over the body it will cover. Every other tab stays exactly as inert as before.
+  const target: DocLiveTarget | undefined =
+    slateDocLiveTarget(tab.path, tab.view, {
+      sessionId: view.sessionId,
+      slates: view.slates,
+    }) ??
+    fileDocLiveTarget(tab.path, tab.view, tab.text, {
+      binary: tab.binary,
+      origins: view.liveOrigins?.[tab.path],
+    });
   clear(pane);
   const body = h('div', { class: `doc-body ${docThemeClass(state.theme)}` }, ...docPaneBody(tab));
   const head = h(
@@ -281,7 +294,9 @@ function renderDoc(
   liveStageSync = target
     ? () => handlers.boundsSlateLive(slateLiveBoundsOf(body.getBoundingClientRect()))
     : undefined;
-  if (slateDocHoldsLive(view.liveView, target)) liveStageSync?.();
+  // Republish the rectangle now when the page is already up: a fresh render has just moved
+  // the body under a native view that does not reflow with the document by itself.
+  if (docLiveHoldsLive(view.liveView, target)) liveStageSync?.();
 }
 
 /**
@@ -294,17 +309,22 @@ function renderDoc(
  * the failure this bar exists to fix.
  */
 function docLiveBar(
-  target: SlateDocLiveTarget,
+  target: DocLiveTarget,
   liveView: SlateLiveState | undefined,
   handlers: MainAreaHandlers,
   stage: HTMLElement,
 ): HTMLElement {
-  const running = slateDocHoldsLive(liveView, target);
+  const running = docLiveHoldsLive(liveView, target);
+  // A slate's grant is remembered by the store: ticked once, kept, and re-checked on every run.
+  // A file has nothing to remember — its page lives only as long as the run — so the Run button
+  // is the grant. A consent box there would be a box to re-tick after every repaint, and a
+  // running page would have to be stopped before it could be ticked again.
+  const file = target.kind === 'file';
 
   const consent = document.createElement('input');
   consent.type = 'checkbox';
   consent.className = 'doc-live-consent';
-  consent.checked = target.allowed;
+  consent.checked = file ? running : target.allowed;
 
   const origins = document.createElement('textarea');
   origins.className = 'slate-live-origins doc-live-origins';
@@ -312,16 +332,25 @@ function docLiveBar(
   origins.spellcheck = false;
   origins.placeholder = 'origins it may fetch from, one per line — empty for a page that talks to itself';
   origins.value = target.origins.join('\n');
-  origins.disabled = !consent.checked;
+  origins.disabled = !file && !consent.checked;
 
   const run = document.createElement('button');
   run.type = 'button';
   run.className = 'doc-live-run';
   run.textContent = running ? 'Stop live' : 'Run live';
-  run.disabled = !consent.checked;
+  run.disabled = !file && !consent.checked;
   run.addEventListener('click', () => {
     if (running) {
       handlers.stopSlateLive();
+      return;
+    }
+    if (target.kind === 'file') {
+      handlers.runFileLive(
+        target.path,
+        target.text,
+        parseSlateOrigins(origins.value),
+        slateLiveBoundsOf(stage.getBoundingClientRect()),
+      );
       return;
     }
     handlers.runSlateLive(
@@ -333,6 +362,7 @@ function docLiveBar(
   });
 
   consent.addEventListener('change', () => {
+    if (target.kind !== 'slate') return;
     origins.disabled = !consent.checked;
     run.disabled = !consent.checked;
     // Withdrawing consent while the page is up has to take the page down with it.
@@ -342,7 +372,7 @@ function docLiveBar(
       .catch(() => undefined);
   });
   origins.addEventListener('change', () => {
-    if (!consent.checked) return;
+    if (target.kind !== 'slate' || !consent.checked) return;
     void handlers
       .setSlateLive(target.id, true, parseSlateOrigins(origins.value), target.sessionId)
       .catch(() => undefined);
@@ -351,19 +381,27 @@ function docLiveBar(
   return h(
     'div',
     { class: `doc-live-bar${running ? ' running' : ''}` },
-    h(
-      'label',
-      { class: 'doc-live-consent-label' },
-      consent,
-      h('span', { text: 'Allow scripts (live)' }),
-    ),
+    ...(file
+      ? []
+      : [
+          h(
+            'label',
+            { class: 'doc-live-consent-label' },
+            consent,
+            h('span', { text: 'Allow scripts (live)' }),
+          ),
+        ]),
     h('p', {
       class: 'doc-live-note',
       text: running
-        ? "Live: this page runs the slate's own scripts inside a sandbox — it reaches only the origins above."
+        ? file
+          ? 'Live: this page runs its own scripts in a sandbox served from memory — it cannot read its folder, load sibling files or reach any origin but the ones above.'
+          : "Live: this page runs the slate's own scripts inside a sandbox — it reaches only the origins above."
         : liveView?.error && !running
           ? `The live page did not attach: ${liveView.error}. The inert preview below is what it can show without scripts.`
-          : "This page builds its content with JavaScript, which the inert preview strips. Run it live to see it.",
+          : file
+            ? 'This page builds its content with JavaScript, which the inert preview strips. Run it live to see it — the page runs from memory, so its own files and fonts will not load.'
+            : "This page builds its content with JavaScript, which the inert preview strips. Run it live to see it.",
     }),
     origins,
     h('div', { class: 'doc-live-actions' }, run),

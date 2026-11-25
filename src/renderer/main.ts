@@ -35,7 +35,7 @@ import { slateDocFromPath, slateExportName } from './slateDoc';
 import { copyText } from './clipboard';
 import type { DocTab } from './docTabs';
 import { activeDoc, SLATE_TAB } from './docTabs';
-import { slateDocHoldsLive, slateDocLiveTarget } from './slateDocLive';
+import { docLiveHoldsLive, fileDocLiveTarget, slateDocLiveTarget } from './slateDocLive';
 import type { SlateLiveState } from '../shared/slateSandbox';
 import { initColumns } from './columns';
 import { clear, formatJsonForDisplay, h, renderMarkdown } from './dom';
@@ -245,6 +245,8 @@ interface State {
   slates: SlateSummary[];
   /** Slates still streaming in, keyed by the transcript entry writing them. */
 liveSlates: LiveSlates;
+  /** Origins granted per file path, so the live bar of a document tab survives a repaint. */
+  fileLiveOrigins: Record<string, string[]>;
   /** Set when `slate.list` failed, so the gallery can say why it is empty. */
   slateError?: string;
   panel: PanelTab;
@@ -283,6 +285,7 @@ const state: State = {
   docs: emptyDocTabs(readDocTheme()),
   slates: [],
   liveSlates: {},
+  fileLiveOrigins: {},
   panel: 'subagents',
   settings: { open: false, section: 'general' },
   terminalOpen: false,
@@ -375,6 +378,13 @@ async function boot(): Promise<void> {
         // whose folder the renderer resolved this slate from.
         const cwd = sessionId === state.current?.id ? state.current?.cwd : undefined;
         api.slateLive.show({ sessionId, id, version, ...(cwd ? { cwd } : {}), bounds });
+      },
+      runFileLive: (path, text, origins, bounds) => {
+        // The tab's own text, not its path: the host serves the page from memory, so it never
+        // reaches the folder the file came from. The grant lasts only as long as the run, which
+        // is why the origins are kept here — a repaint builds the bar again from scratch.
+        state.fileLiveOrigins[path] = origins;
+        api.slateLive.showFile({ path, text, origins, bounds });
       },
       boundsSlateLive: (bounds) => {
         if (state.slateLive.visible) api.slateLive.setBounds(bounds);
@@ -2285,12 +2295,20 @@ function liveOnScreen(): boolean {
   if (state.docs.active === SLATE_TAB) return true;
   const doc = activeDoc(state.docs);
   if (!doc) return false;
-  return slateDocHoldsLive(
+  // A slate version and a plain HTML file ask the same question of the same host: is the page
+  // on screen the one this tab is looking at? A tab that switched to Code answers no, so the
+  // page comes down instead of floating over the chat.
+  const slate = slateDocLiveTarget(doc.path, doc.view, {
+    sessionId: state.current?.id,
+    slates: state.slates,
+  });
+  return docLiveHoldsLive(
     state.slateLive,
-    slateDocLiveTarget(doc.path, doc.view, {
-      sessionId: state.current?.id,
-      slates: state.slates,
-    }),
+    slate ??
+      fileDocLiveTarget(doc.path, doc.view, doc.text, {
+        binary: doc.binary,
+        origins: state.fileLiveOrigins[doc.path],
+      }),
   );
 }
 
@@ -2305,6 +2323,7 @@ function renderMainArea(): void {
     live: liveSlateList(state.liveSlates),
     // The gallery's Run/Stop switch and the document tab's live bar both paint from this.
     liveView: state.slateLive,
+    liveOrigins: state.fileLiveOrigins,
     sessionId: state.current?.id,
   });
 }

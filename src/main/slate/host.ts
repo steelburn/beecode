@@ -17,11 +17,16 @@
  * guard stays the single source of truth for what a slate is and which version is current.
  */
 
+import { createHash } from 'node:crypto';
 import { protocol, session, WebContentsView, type BrowserWindow, type Session } from 'electron';
 import {
+  SLATE_LIVE_FILE_SESSION,
+  SLATE_LIVE_FILE_VERSION,
   SLATE_LIVE_HOST,
+  SLATE_LIVE_LIMITS,
   SLATE_LIVE_PARTITION_PREFIX,
   SLATE_LIVE_SCHEME,
+  normaliseSlateOrigin,
   parseSlateLiveSubmitUrl,
   parseSlateLiveUrl,
   slateLiveCsp,
@@ -67,6 +72,8 @@ interface Hosted {
   url: string;
   text: string;
   origins: string[];
+  /** Set when the page came from a plain file rather than a slate version. */
+  filePath?: string;
   sessionId: string;
   id: string;
   version: number;
@@ -229,6 +236,8 @@ export class SlateLiveHost {
     switch (command.kind) {
       case 'show':
         return this.show(command);
+      case 'showFile':
+        return this.showFile(command);
       case 'bounds':
         this.setBounds(command.bounds);
         return this.getState();
@@ -289,6 +298,62 @@ export class SlateLiveHost {
       await view.webContents.loadURL(url);
     } catch (error) {
       // A CSP refusal of the document itself shows up here; the page is not on screen.
+      this.state = { ...this.state, visible: false, error: messageOf(error) };
+      this.publish();
+    }
+    return this.getState();
+  }
+
+  /**
+   * Run a document tab's own HTML file.
+   *
+   * The page is served from memory on the same route as a slate version: it gets an origin,
+   * no filesystem reachability, no preload and the same CSP. That last part is the honest
+   * caveat — a file that loads a sibling `style.css`, `app.js` or an image will look
+   * unstyled or half-empty here even though a browser shows it finished, because those files
+   * are exactly what serving from memory refuses. What the page *may* reach is the allowlist
+   * the user typed for this one run; empty means it can talk only to itself.
+   */
+  private async showFile(
+    command: Extract<SlateLiveCommand, { kind: 'showFile' }>,
+  ): Promise<SlateLiveState> {
+    this.bounds = normaliseBounds(command.bounds);
+    const text = command.text;
+    const id = slateFileLiveId(command.path, text);
+    const target = { sessionId: SLATE_LIVE_FILE_SESSION, id, version: SLATE_LIVE_FILE_VERSION };
+    if (!text.trim()) return this.fail(id, 'this file is empty — there is no page to run');
+    if (text.length > SLATE_LIVE_LIMITS.textBytes) {
+      return this.fail(id, 'this file is too large to run live');
+    }
+    let origins: string[];
+    try {
+      origins = (command.origins ?? []).map((origin) => normaliseSlateOrigin(origin));
+    } catch (error) {
+      return this.fail(id, messageOf(error));
+    }
+    if (origins.length > SLATE_LIVE_LIMITS.origins) {
+      return this.fail(id, `a page may fetch from at most ${SLATE_LIVE_LIMITS.origins} origins`);
+    }
+    const url = slateLiveUrl(target.sessionId, id, target.version);
+    this.hosted = { url, text, origins, ...target, filePath: command.path };
+
+    const view = this.ensureView(id);
+    if (!view) return this.fail(id, 'there is no window to show this page in');
+    this.attach();
+    this.state = {
+      visible: this.attached,
+      ...target,
+      slateId: id,
+      url,
+      origins: [...origins],
+      filePath: command.path,
+    };
+    this.publish();
+    try {
+      await view.webContents.loadURL(url);
+    } catch (error) {
+      // A load that fails after the view is up is a page error, not a host crash: the body of
+      // the document itself shows up here; the page is not on screen.
       this.state = { ...this.state, visible: false, error: messageOf(error) };
       this.publish();
     }
@@ -481,5 +546,20 @@ export const SLATE_LIVE_SCHEME_PRIVILEGES = {
     bypassCSP: false,
   },
 } as const;
+
+/**
+ * The id a plain file's page is served under.
+ *
+ * Derived from the path *and* the bytes, so the URL carries no folder and an edited file is a
+ * different page: every run shows what the user just looked at, never an earlier version of it.
+ */
+function slateFileLiveId(path: string, text: string): string {
+  return createHash('sha256')
+    .update(path)
+    .update('\n')
+    .update(text)
+    .digest('hex')
+    .slice(0, 32);
+}
 
 export { SLATE_LIVE_HOST };
