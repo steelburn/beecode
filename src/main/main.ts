@@ -505,6 +505,32 @@ async function runSmokeCheck(serviceReady: boolean): Promise<void> {
     await seedOne('smoke-inert', 'Smoke inert', false);
   }
 
+  // The explorer previews whatever the working directory holds, and a real workspace can
+  // contain no Markdown or HTML at all. Without a file to open the preview, main-area and
+  // send-to-knowledge probes silently reported null, so seed the two names they look for
+  // and remove them again below.
+  const smokePreviewMd = smokeSlateRoot ? join(smokeSlateRoot, 'beecode-smoke-preview.md') : '';
+  const smokePreviewHtml = smokeSlateRoot
+    ? join(smokeSlateRoot, 'beecode-smoke-preview.html')
+    : '';
+  const smokePreviewFiles = [smokePreviewMd, smokePreviewHtml].filter(Boolean);
+  if (smokePreviewMd && smokePreviewHtml) {
+    await writeFile(
+      smokePreviewMd,
+      '# Smoke preview\n\nA Markdown file that exists only while the smoke runs.\n',
+      'utf8',
+    ).catch(() => undefined);
+    await writeFile(
+      smokePreviewHtml,
+      '<!doctype html>\n<html><head><title>Smoke preview</title>'
+        + '<style>body { color: rgb(1, 2, 3); }</style>'
+        + '<script>window.beecodeSmokeInjected = true;</script></head>'
+        + '<body><h1>Smoke preview</h1>'
+        + '<p>An HTML file that exists only while the smoke runs.</p></body></html>\n',
+      'utf8',
+    ).catch(() => undefined);
+  }
+
   let dom: Record<string, unknown> = { error: 'window unavailable' };
   try {
     dom = (await win?.webContents.executeJavaScript(
@@ -650,6 +676,13 @@ async function runSmokeCheck(serviceReady: boolean): Promise<void> {
           };
           // Fold the dialog away again so the probes after it see the side panel as the
           // user would; the next probe opens it on its own section.
+          // The installed-app scan is asynchronous: poll until the select is populated (or
+          // give up) so the capture reports the real list rather than the loading state.
+          for (let attempt = 0; attempt < 40; attempt += 1) {
+            const select = Array.from(body.querySelectorAll('.app-rule select')).pop();
+            if (select && select.querySelectorAll('option').length > 1) break;
+            await new Promise((resolve) => setTimeout(resolve, 200));
+          }
           document.getElementById('close-settings')?.click();
           return out;
         })(),
@@ -695,6 +728,42 @@ async function runSmokeCheck(serviceReady: boolean): Promise<void> {
             dialog: dialogOpen,
             cards: body.querySelectorAll('.card').length,
             appRules: body.querySelectorAll('.app-rule').length,
+            // The add-app form must offer the installed-app list and a browse escape hatch,
+            // never three empty text boxes.
+            // The Start Menu scan reaches the picker asynchronously (up to ~3 s on a cold
+            // cache). Wait for the "Reading the apps…" placeholder to be replaced, otherwise
+            // this probe reports the loading state and can never fail.
+            addApp: await (async () => {
+              let settled = false;
+              for (let i = 0; i < 60 && !settled; i += 1) {
+                const probe = body.querySelector(".app-rule select");
+                settled = Boolean(
+                  probe && !/^Reading the apps/.test((probe.querySelector("option")?.textContent ?? "").trim()),
+                );
+                if (!settled) await new Promise((resolve) => setTimeout(resolve, 150));
+              }
+              const forms = Array.from(body.querySelectorAll('.app-rule'));
+              const form = forms[forms.length - 1];
+              const select = form?.querySelector('select');
+              return {
+                select: Boolean(select),
+                options: select?.querySelectorAll('option').length ?? 0,
+                settled,
+                apps: Array.from(select?.querySelectorAll('option') ?? []).filter(
+                  (option) => option.value,
+                ).length,
+                firstOption: (select?.querySelectorAll('option')[0]?.textContent ?? '').trim(),
+                status: (form?.querySelector('p.sub:last-of-type')?.textContent ?? '').trim(),
+                browse: Array.from(form?.querySelectorAll('button') ?? []).some((button) =>
+                  /Browse for the program file/.test(button.textContent ?? ''),
+                ),
+                advanced: Boolean(form?.querySelector('details')),
+              };
+            })(),
+            // Read by the smoke check: the mode selector must read as a decision.
+            modeOptions: Array.from(document.querySelectorAll('#mode-select option')).map((option) =>
+              (option.textContent ?? '').trim(),
+            ),
             headings: Array.from(body.querySelectorAll('h4')).map((n) => (n.textContent ?? '').trim()),
           };
           document.getElementById('close-settings')?.click();
@@ -747,8 +816,14 @@ async function runSmokeCheck(serviceReady: boolean): Promise<void> {
           const out = {
             tab: true,
             listing: true,
-            markdown: names.find((n) => /\.(md|markdown)$/i.test(n)) || null,
-            html: names.find((n) => /\.html?$/i.test(n)) || null,
+            markdown:
+              names.find((n) => n === 'beecode-smoke-preview.md') ||
+              names.find((n) => /\.(md|markdown)$/i.test(n)) ||
+              null,
+            html:
+              names.find((n) => n === 'beecode-smoke-preview.html') ||
+              names.find((n) => /\.html?$/i.test(n)) ||
+              null,
           };
           if (out.markdown && pick(out.markdown)) {
             out.markdownRendered = await waitFor(() => Boolean(document.querySelector('.explorer-rendered')), 20000);
@@ -802,6 +877,7 @@ async function runSmokeCheck(serviceReady: boolean): Promise<void> {
           const out = { tab: false };
           const opener = document.querySelector('.explorer-preview .btn[title^="Open in the main area"]');
           if (!opener) return { tab: false, opener: false };
+          out.tab = true;
           opener.click();
           const bodyOf = () => document.querySelector('#doc-pane .doc-body');
           out.strip = await waitFor(() => Boolean(document.querySelector('.view-tabs:not([hidden])')), 20000);
@@ -831,8 +907,19 @@ async function runSmokeCheck(serviceReady: boolean): Promise<void> {
             () => (document.querySelector('.transcript')?.getBoundingClientRect().height ?? 0) > 0,
             20000,
           );
-          document.querySelector('.view-tabs .view-tab-close')?.click();
-          out.closed = await waitFor(() => !document.querySelector('.view-tabs:not([hidden])'), 20000);
+          const closeButton = document.querySelector('.view-tabs .view-tab-close');
+          closeButton?.click();
+          // A Slates or Browser tab keeps the strip on screen after the document closes,
+          // so check the document tab itself: one was there to close, none is left and
+          // chat shows again. Without the first term a missing button would pass.
+          out.closed =
+            Boolean(closeButton) &&
+            (await waitFor(
+              () =>
+                document.querySelectorAll('.view-tabs .view-tab-close').length === 0 &&
+                Boolean(document.querySelector('.workspace.view-chat')),
+              20000,
+            ));
           return out;
         })().catch((err) => ({ error: String(err) })),
         // Knowledge folders: attach a throwaway shelf, send the open file into it, create a
@@ -1041,6 +1128,9 @@ async function runSmokeCheck(serviceReady: boolean): Promise<void> {
   await supervisor.request('knowledge.remove', { path: smokeShelf }).catch(() => undefined);
   if (smokeSlateDir) {
     await rm(smokeSlateDir, { recursive: true, force: true }).catch(() => undefined);
+  }
+  for (const file of smokePreviewFiles) {
+    await rm(file, { force: true }).catch(() => undefined);
   }
   await rm(smokeShelf, { recursive: true, force: true }).catch(() => undefined);
 

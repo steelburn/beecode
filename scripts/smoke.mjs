@@ -123,8 +123,26 @@ const toolsOk =
 const permissions = report.dom?.permissions ?? {};
 const permissionsOk =
   permissions.dialog === true &&
-  (permissions.headings ?? []).includes('Permissible applications') &&
-  (permissions.headings ?? []).includes('Shell');
+  // The cards are titled for the decision the user makes, not for the policy fields behind
+  // them, so a rewrite that drops a card (or reverts to jargon) fails here.
+  (permissions.headings ?? []).includes('Apps beeCode may use') &&
+  (permissions.headings ?? []).includes('Terminal commands') &&
+  (permissions.headings ?? []).includes('Files and folders') &&
+  // The add-app form is a picker, not three empty text boxes: an installed-app list, a
+  // browse escape hatch for advanced users, and the raw fields behind a disclosure.
+  permissions.addApp?.select === true &&
+  // The Start Menu scan reaches the picker asynchronously: `settled` means the probe
+  // waited for it, and `apps` counts real entries (the "Choose an app…" row excluded).
+  // Without both, a snapshot of the loading placeholder would pass as a working picker.
+  permissions.addApp?.settled === true &&
+  permissions.addApp?.apps > 0 &&
+  permissions.addApp?.firstOption === 'Choose an app…' &&
+  permissions.addApp?.browse === true &&
+  permissions.addApp?.advanced === true &&
+  // The mode selector must read as a decision, not as prompt vocabulary.
+  ['Ask first', 'Plan only', 'Work on it', 'Hands off'].every((label) =>
+    (permissions.modeOptions ?? []).includes(label),
+  );
 
 // The MCP & skills section of the settings dialog must render from the service.
 const integrations = report.dom?.integrations ?? {};

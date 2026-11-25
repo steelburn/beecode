@@ -58,13 +58,10 @@
           <div class="topbar-controls">
             <button type="button" id="workspace-btn" class="btn ghost small" title="Switch workspace">⌂</button>
             <label class="field">
-              <span>mode</span>
-              <select id="mode-select">
-                <option value="ask">ask</option>
-                <option value="plan">plan</option>
-                <option value="act">act</option>
-                <option value="autonomous">autonomous</option>
-              </select>
+              <span>how much it decides</span>
+              <!-- Options are rendered at boot from src/shared/modes.ts, so the wording has
+                   one home; this select stays empty in the markup on purpose. -->
+              <select id="mode-select" title="How much beeCode decides on its own"></select>
             </label>
             <label class="field">
               <span>model</span>

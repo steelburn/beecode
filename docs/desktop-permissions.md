@@ -235,6 +235,34 @@ only as safe as the account and the machine.
 The store is pruned when a preset is removed, but nothing expires a key: **if a key is ever
 pasted into the wrong field or shared, rotating it is the only revocation.**
 
+## Words for everyone else
+
+The policy document is written for people who know what `deniedExe` or `workspaceOnly` means;
+the screen is not. **Every label in Settings → Permissions names the decision, not the field**,
+and each toggle carries its consequence in one line underneath. Keep that mapping when you
+touch the editor (`src/renderer/panels.ts`):
+
+| Policy field | What the user sees |
+| --- | --- |
+| `allowedApps` | *Apps beeCode may use* — "Apps that are not on this list are never opened or touched" |
+| `allowedApps[].actions` | Chips such as *See the window*, *Use buttons and menus*, *Click*; the raw id (`read`, `invoke`, `click`) is only a tooltip |
+| `allowedApps[].autoApprove` | *Do it without asking* |
+| `deniedExe` | *Programs that are never touched* |
+| `shell.*` | *Terminal commands*, explained as "the text window where commands are typed" |
+| `filesystem.workspaceOnly` | *Only work inside this project folder*, marked as the recommended setting |
+| `filesystem.writable` | *Allow beeCode to change files* — "Off means look but do not touch" |
+| `desktop.allowInput` | *Let beeCode move the mouse and type* |
+| `subagents.enabled` | *Let beeCode hand work to helper agents* |
+| `agent.autoApproveTools` | *Advanced: things beeCode may do without asking you first* |
+
+The approval card follows the same rule: it asks **"May I go ahead?"**, says that nothing
+happens until the user answers, offers *Yes, just this once* / *Yes, and do not ask again this
+session* / *No, do not do this*, and keeps the policy `reason` and the raw tool arguments
+behind the *"Why is it asking, and what exactly will it do?"* disclosure. That is why the
+`reason` strings in `src/service/tools/*` may stay technical: they are disclosure copy, while
+the headline is the tool's `summary`. `npm run smoke` asserts the card titles, so dropping a
+card or reverting to jargon fails the check.
+
 ## Recommendations
 
 * Keep `deniedExe` broad. Browsers and terminals are the highest-risk apps: anything they
@@ -243,3 +271,44 @@ pasted into the wrong field or shared, rotating it is the only revocation.**
 * Leave `autoApprove` **off** for anything that can spend money, send messages or change
   data. It is a convenience for scratchpads, not for line-of-business apps.
 * Review the audit log after any `autonomous` session.
+
+## Picking an app
+
+The add-app form is a picker, in this order:
+
+1. **The list.** `bridge.listInstalledApps()` scans the two Start Menu trees
+   (`%ProgramData%\Microsoft\Windows\Start Menu\Programs` and the per-user equivalent),
+   reads every `.lnk` with `shell.readShortcutLink` and keeps the targets that end in
+   `.exe`. The shortcut name is what the user reads; the target is what the policy
+   matches. Installer/updater shortcuts (`unins*`, `setup*`, `update*`) are dropped and
+   the scan is cached for five minutes. The scan publishes rows as it reads them and the
+   caller waits at most three seconds, so one shortcut on a dead network share shows up as
+   a missing row, not an empty picker. Until the list lands the field reads "Reading the
+   apps on this computer…"; the smoke check waits for that text to disappear and asserts a
+   non-zero app count, because a snapshot taken mid-scan made a broken picker look green.
+2. **Browse.** `bridge.pickExecutable()` opens a native dialog filtered to `.exe`, for a
+   program that has no Start Menu entry. This is the advanced route, not the default.
+3. **Advanced disclosure.** The raw `id` / display name / program-file fields, for several
+   file names (comma-separated) or a hand-written id.
+
+A new rule always starts read-only (`launch, focus, read, screenshot`); everything else is
+ticked in the list afterwards. Adding an app whose program file is already allowed is
+refused rather than silently duplicated.
+
+## Mode labels
+
+`src/shared/modes.ts` maps the wire ids to what the user reads — the ids themselves are
+unchanged, so prompts, schedules and the protocol keep working:
+
+| Mode id | Label | Meaning shown as a tooltip |
+| --- | --- | --- |
+| `ask` | Ask first | Reads and explains, stops to ask before changing anything |
+| `plan` | Plan only | Writes a step-by-step plan, changes nothing |
+| `act` | Work on it | Does the work, asks when the permission rules say so |
+| `autonomous` | Hands off | Finishes without stopping to ask — only for trusted work |
+
+The topbar selector is the field called **how much it decides**. Its options are rendered
+from this module at boot rather than written into `index.html`, so the labels above are the
+only copy: change a label here and the selector, the Settings "Default mode" field and the
+schedule editor all follow. Choosing a mode also prints its one-line explanation in the
+status line, because "Work on it" alone does not say whether beeCode still asks.

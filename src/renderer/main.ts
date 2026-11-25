@@ -1,4 +1,5 @@
 import type { AppInfo, BeeCodeBridge, ServiceStatusPayload } from '../shared/bridge';
+import { AGENT_MODES, MODE_LABELS, describeMode } from '../shared/modes';
 import type {
   AgentInfo,
   ApprovalRequest,
@@ -518,6 +519,8 @@ async function loadAll(): Promise<void> {
 /* ------------------------------------------------------------------ ui bindings */
 
 function bindUi(): void {
+  // Before any paint: the options live in shared/modes, not in index.html.
+  fillModeOptions();
   document.getElementById('workspace-btn')?.addEventListener('click', () => toggleWorkspaceMenu());
   els.composer.addEventListener('submit', (event) => {
     event.preventDefault();
@@ -561,6 +564,10 @@ function bindUi(): void {
     if (!state.current) return;
     const mode = els.modeSelect.value as SessionSnapshot['mode'];
     rememberMode(mode);
+    syncModeHint();
+    // A label cannot carry the difference between "asks first" and "does not ask", so
+    // say it once, in the line that already explains what the app is doing.
+    setHint(describeMode(mode));
     await api.invoke('session.setMode', { sessionId: state.current.id, mode });
     state.current.mode = mode;
   });
@@ -710,6 +717,7 @@ async function openSession(sessionId: string): Promise<void> {
     })
     .catch(() => undefined);
   els.modeSelect.value = snapshot.mode;
+  syncModeHint();
   els.modelSelect.value = snapshot.model;
   state.sessions = await api.invoke('session.list', {});
   renderSessions();
@@ -1721,26 +1729,36 @@ function renderApproval(): void {
   const card = h(
     'div',
     { class: 'approval' },
-    h('h3', null, h('span', { text: '⚠' }), h('span', { text: 'Approval required' })),
+    h('h3', null, h('span', { text: '⚠' }), h('span', { text: 'May I go ahead?' })),
+    h('p', {
+      class: 'lead',
+      text: 'beeCode wants to do something it is not allowed to do on its own. Nothing happens until you answer.',
+    }),
     h('div', { class: 'summary', text: approval.summary }),
-    h('div', { class: 'reason', text: approval.reason }),
-    h('pre', { text: formatJsonForDisplay(JSON.stringify(approval.toolArgs), 1200) }),
+    h(
+      'details',
+      { class: 'approval-details' },
+      h('summary', { text: 'Why is it asking, and what exactly will it do?' }),
+      h('p', { class: 'reason', text: 'Action: ' + approval.toolName }),
+      h('p', { class: 'reason', text: approval.reason }),
+      h('pre', { text: formatJsonForDisplay(JSON.stringify(approval.toolArgs), 1200) }),
+    ),
     h(
       'div',
       { class: 'actions' },
       h('button', {
         class: 'btn primary small',
-        text: 'Allow once',
+        text: 'Yes, just this once',
         on: { click: () => void respondApproval(approval.id, 'allow') },
       }),
       h('button', {
         class: 'btn ok small',
-        text: `Always allow “${approval.toolName}”`,
+        text: 'Yes, and do not ask again this session',
         on: { click: () => void respondApproval(approval.id, 'allow-session') },
       }),
       h('button', {
         class: 'btn danger small',
-        text: 'Deny',
+        text: 'No, do not do this',
         on: { click: () => void respondApproval(approval.id, 'deny') },
       }),
     ),
@@ -1795,6 +1813,8 @@ function renderPanels(): void {
       renderPanels();
     },
     pickDirectory: async () => api.pickDirectory(),
+    listInstalledApps: () => api.listInstalledApps(),
+    pickExecutable: () => api.pickExecutable(),
     cancelSubagent: async (runId: string) => {
       await api.invoke('subagent.cancel', { runId });
     },
@@ -2447,7 +2467,7 @@ function setHint(text: string): void {
 /* -------------------------------------------------------------- preferences */
 
 const MODE_KEY = 'beecode:last-mode';
-const MODES: readonly SessionSnapshot['mode'][] = ['ask', 'plan', 'act', 'autonomous'];
+const MODES: readonly SessionSnapshot['mode'][] = AGENT_MODES;
 
 /**
  * The permission mode the user last chose.
@@ -2466,6 +2486,37 @@ function rememberedMode(): SessionSnapshot['mode'] {
 /** Remember a mode as the one the next session starts in. */
 function rememberMode(mode: SessionSnapshot['mode'] | undefined): void {
   if (mode && MODES.includes(mode)) localStorage.setItem(MODE_KEY, mode);
+}
+
+/**
+ * Build the mode selector from `shared/modes` instead of from the markup.
+ *
+ * The words a user reads are then written once: the topbar, the settings "Default mode"
+ * field and the schedule editor all show the same labels and hints, so no surface can
+ * drift back to "act" and "autonomous".
+ */
+function fillModeOptions(): void {
+  clear(els.modeSelect);
+  // AGENT_MODES is imported, so this also works while boot() is still running: the
+  // module-level MODES list below is declared after the boot call.
+  for (const mode of AGENT_MODES) {
+    const entry = MODE_LABELS[mode];
+    const option = h('option', { text: entry.label });
+    option.value = mode;
+    option.title = entry.hint;
+    els.modeSelect.append(option);
+  }
+  syncModeHint();
+}
+
+/** Keep the tooltip and the screen-reader name on the mode actually chosen. */
+function syncModeHint(): void {
+  const mode = els.modeSelect.value as SessionSnapshot['mode'];
+  const entry = MODE_LABELS[mode];
+  if (!entry) return;
+  const text = describeMode(mode);
+  els.modeSelect.title = text;
+  els.modeSelect.setAttribute('aria-label', text);
 }
 
 let catalogueProbedAt = 0;

@@ -29,6 +29,20 @@ export interface DirectoryPickerOptions {
   defaultPath?: string;
 }
 
+/**
+ * One application found on this computer, for the picker in the permission editor. The
+ * name is what the user recognises (the Start Menu entry); the executable is the only
+ * thing the policy can actually match on.
+ */
+export interface InstalledApp {
+  /** Name shown in the list, e.g. "Microsoft Excel". */
+  name: string;
+  /** Program file name the policy matches, e.g. `excel.exe` (lower-cased). */
+  exe: string;
+  /** Full path of the program file, kept apart from the name only as a tooltip. */
+  path?: string;
+}
+
 /** Options for the native save dialog behind `saveFile`. */
 export interface SaveFileOptions {
   /** File name the dialog opens with — the tab already knows a sensible one. */
@@ -175,6 +189,13 @@ export interface BeeCodeBridge {
   getConfig(): Promise<BeeCodeConfig>;
   saveConfig(config: BeeCodeConfig): Promise<BeeCodeConfig>;
   pickDirectory(options?: DirectoryPickerOptions): Promise<string | undefined>;
+  /**
+   * Applications with a Start Menu entry, so nobody has to type an `.exe` name from
+   * memory. Empty when the platform has no such catalogue.
+   */
+  listInstalledApps(): Promise<InstalledApp[]>;
+  /** Native "choose a program" dialog; resolves to the picked path, or undefined if cancelled. */
+  pickExecutable(options?: { title?: string }): Promise<string | undefined>;
 
   /**
    * Write text to a path the user picks in the native save dialog — the Download action

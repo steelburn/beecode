@@ -38,6 +38,9 @@ const bridge: BeeCodeBridge = {
 
 
   pickFiles: (options?: FilePickerOptions) => ipcRenderer.invoke('beecode:pick-files', options),
+  listInstalledApps: () => ipcRenderer.invoke('beecode:list-installed-apps'),
+  pickExecutable: (options?: { title?: string }) =>
+    ipcRenderer.invoke('beecode:pick-executable', options),
 
   copyIntoWorkspace: (paths: string[], targetDir?: string): Promise<CopyIntoWorkspaceResult> =>
     ipcRenderer.invoke('beecode:copy-to-workspace', { paths, targetDir }),

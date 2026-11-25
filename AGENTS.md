@@ -28,6 +28,11 @@ the renderer dock.
 `browser.download` drives a real download against a loopback server in a throwaway
 workspace: the file must land in `<workspace>/Downloads`, a second save of the same name
 must not overwrite the first, and a run with no workspace must be refused.
+The Files-preview, main-area and knowledge checks need a Markdown and an HTML file in
+the **workspace root**, whatever the user's folder happens to contain, so the run
+seeds `beecode-smoke-preview.md` / `.html` there and deletes them at teardown. The
+previewed Markdown is also the file the knowledge probe sends into its throwaway
+shelf — take the seeding away and all three report `null` / `false` again.
 If Electron starts as plain Node, `ELECTRON_RUN_AS_NODE` is leaking from the shell —
 `scripts/smoke.mjs` already strips it; run that instead of `electron .` directly.
 

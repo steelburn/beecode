@@ -4,6 +4,57 @@ All notable changes to beeCode will be documented in this file.
 
 ## [Unreleased]
 
+- **The three long-standing smoke failures are fixed, and none of them was an app bug** —
+  which is why they survived next to a green typecheck. `dom.preview` reported
+  `markdown: null` / `html: null`, `dom.mainArea.closed` reported `false` and the knowledge
+  shelf reported `copyButton: false` / `copied: false`. The preview, main-area and knowledge
+  probes share one cause: the smoke previews *whatever the working directory holds*, and
+  this machine's workspace (`D:\Odyssey2-Workspace`) contains no Markdown or HTML, so there
+  was nothing to open — the knowledge probe then had no previewed file to send into its
+  shelf. The run now seeds `beecode-smoke-preview.md` / `.html` in the workspace root,
+  prefers them by name and removes them at teardown. `mainArea.closed` separately waited for
+  the whole tab strip to disappear, but a Slates (or Browser) tab legitimately keeps that
+  strip on screen, so the check could never pass once the session held a slate; it now
+  asserts the document tab itself closed and chat is showing, and requires that a close
+  button existed first, so a missing button cannot pass as success. Result: `npm run smoke`
+  exits 0 with `preview`, `knowledge` and `mainArea` green, and `AGENTS.md` records where the
+  fixtures live.
+- Permissions: apps are now added by **picking them from a list of installed
+  applications** (Start Menu shortcuts, resolved to the program file) instead of typing an
+  `.exe` name. Advanced users can still **browse for the executable** with a native
+  program dialog; the raw id/name/file fields moved behind an "Advanced" disclosure and a
+  duplicate app is refused with the reason. New rule: `bridge.listInstalledApps` /
+  `bridge.pickExecutable` plus the matching `ipc.ts` handlers. Confirmed in the smoke run:
+  the picker lists 131 Start Menu apps under a "Choose an app…" row. The earlier "the list
+  never populates" report was the probe, not the app — it snapshotted the picker while the
+  Start Menu scan was still running, so the loading placeholder counted as the one option
+  and the check could not fail. It now waits for the scan (bounded) and asserts `settled`
+  plus a real app count.
+- The mode selector reads as a decision instead of prompt vocabulary: **Ask first · Plan
+  only · Work on it · Hands off** (was ask / plan / act / autonomous), with a one-sentence
+  hint per mode on hover and the same labels in the default-mode and schedule pickers.
+  Labels live in `src/shared/modes.ts` and the topbar renders its options from there at
+  boot — `index.html` no longer carries a second copy — so the topbar, the default-mode
+  field and the schedule editor cannot drift apart; picking a mode also prints its
+  one-line explanation in the status line. The wire ids are unchanged.
+
+- **The permissions page and the approval prompt are written for a non-technical user.**
+  The editor was named after the policy document it writes ("Permissible applications",
+  "Denied executables", "Shell", "Workspace only", "Allow synthetic input",
+  "auto-approve (skip prompt)") and each app rule listed the raw action ids — `launch`,
+  `invoke`, `screenshot` — so the one screen that decides what beeCode may do on someone's
+  computer assumed the reader knew the protocol. It now opens with what the page is for
+  ("it starts with nothing allowed"), every card is titled for the decision ("Apps beeCode
+  may use", "Programs that are never touched", "Terminal commands", "Files and folders",
+  "Desktop control"), each toggle states its consequence in a line underneath, and the chips
+  read "See the window" / "Use buttons and menus" with the id kept as a tooltip. The approval
+  card has the same problem in its sharpest form: policy `reason` and the raw tool arguments
+  were the first thing on it. It now asks **"May I go ahead?"**, says nothing happens until you
+  answer, offers "Yes, just this once" / "Yes, and do not ask again this session" / "No, do not
+  do this", and moves the reason and the JSON behind a "Why is it asking, and what exactly will
+  it do?" disclosure. Copy and layout only — no policy default, gate or tool check changed.
+  `smoke.mjs` asserts the new card titles instead of the old jargon.
+
 - **Switching session now re-points the slate surfaces too (slates, panel).** `openSession`
   re-read `slate.list` but only repainted the main-area gallery, so with the **Slates panel**
   open the rows of the session you had just left stayed where they were: the panel was the one

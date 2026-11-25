@@ -1,10 +1,12 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
-import { writeFile } from 'node:fs/promises';
+import { readdir, writeFile } from 'node:fs/promises';
+import { basename, join } from 'node:path';
 import type { BrowserPanelCommand } from '../shared/browser';
 import type { SlateLiveCommand, SlateLiveState } from '../shared/slateSandbox';
 import {
   RENDERER_METHODS,
   type AppInfo,
+  type InstalledApp,
   type FilePickerOptions,
   type SaveFileOptions,
   type SaveFileResult,
@@ -35,6 +37,102 @@ export interface IpcDeps {
 }
 
 const allowed = new Set<string>(RENDERER_METHODS);
+
+/* ------------------------------------------------ installed applications */
+
+/**
+ * The Start Menu scan is deliberately incremental and never load-bearing: one shortcut on
+ * a dead network path must not keep the picker empty, so every entry that has been read is
+ * published immediately and the caller only ever waits a bounded time.
+ */
+let installedAppsCache: { at: number; apps: InstalledApp[] } | undefined;
+let installedAppsScan: Promise<void> | undefined;
+const INSTALLED_APPS_TTL_MS = 5 * 60_000;
+const INSTALLED_APPS_WALK_BUDGET_MS = 2500;
+const INSTALLED_APPS_WAIT_MS = 3000;
+
+const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Every application with a Start Menu shortcut, as `{ name, exe, path }`.
+ *
+ * The picker exists so nobody has to spell `excel.exe` from memory: the shortcut name is
+ * the name the user knows, and the shortcut target is the program file a policy rule has
+ * to name. Windows-only (`shell.readShortcutLink`); elsewhere the list stays empty and the
+ * editor falls back to browsing for the program file.
+ */
+function scanInstalledApps(): Promise<void> {
+  if (installedAppsScan) return installedAppsScan;
+  installedAppsScan = (async () => {
+    if (process.platform !== 'win32') {
+      installedAppsCache = { at: Date.now(), apps: [] };
+      return;
+    }
+    const roots = [process.env.ProgramData, process.env.APPDATA]
+      .filter((base): base is string => Boolean(base))
+      .map((base) => join(base, 'Microsoft', 'Windows', 'Start Menu', 'Programs'));
+    const shortcuts: string[] = [];
+    await Promise.race([
+      (async () => {
+        for (const root of roots) await collectShortcuts(root, shortcuts, 0);
+      })(),
+      delay(INSTALLED_APPS_WALK_BUDGET_MS),
+    ]);
+
+    const found = new Map<string, InstalledApp>();
+    const publish = (): void => {
+      installedAppsCache = {
+        at: Date.now(),
+        apps: [...found.values()].sort((a, b) => a.name.localeCompare(b.name)),
+      };
+    };
+    for (const shortcut of shortcuts) {
+      let target = '';
+      try {
+        target = shell.readShortcutLink(shortcut).target ?? '';
+      } catch {
+        // A broken or remote shortcut is simply not a program we can offer.
+        continue;
+      }
+      if (!/\.exe$/i.test(target)) continue;
+      const exe = basename(target).toLowerCase();
+      // Nobody wants beeCode to click "setup" or "uninstall".
+      if (/^(unins|uninstall|setup|update|updater)/i.test(exe)) continue;
+      if (found.has(exe)) continue;
+      found.set(exe, { name: basename(shortcut, '.lnk'), exe, path: target });
+      publish();
+    }
+    publish();
+  })().finally(() => {
+    installedAppsScan = undefined;
+  });
+  return installedAppsScan;
+}
+
+/** Depth-limited walk: Start Menu trees are shallow, and a junction must not hang us. */
+async function collectShortcuts(dir: string, out: string[], depth: number): Promise<void> {
+  if (depth > 4) return;
+  try {
+    const entries = await readdir(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      // Reparse points can target an offline share; a shortcut list does not need them.
+      if (entry.isSymbolicLink()) continue;
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) await collectShortcuts(full, out, depth + 1);
+      else if (/\.lnk$/i.test(entry.name)) out.push(full);
+    }
+  } catch {
+    return;
+  }
+}
+
+/** The cached catalogue, waiting at most `INSTALLED_APPS_WAIT_MS` for a cold scan. */
+async function installedApps(): Promise<InstalledApp[]> {
+  if (!installedAppsCache || Date.now() - installedAppsCache.at > INSTALLED_APPS_TTL_MS) {
+    await Promise.race([scanInstalledApps(), delay(INSTALLED_APPS_WAIT_MS)]);
+  }
+  return installedAppsCache?.apps ?? [];
+}
 
 /**
  * IPC surface between the sandboxed renderer and the main process.
@@ -142,6 +240,28 @@ export function registerIpc(deps: IpcDeps): void {
       return { saved: true, path: filePath };
     },
   );
+
+  ipcMain.handle('beecode:list-installed-apps', () => installedApps());
+
+  ipcMain.handle('beecode:pick-executable', async (_event, options?: { title?: string }) => {
+    const filters =
+      process.platform === 'win32'
+        ? [{ name: 'Programs', extensions: ['exe'] }]
+        : process.platform === 'darwin'
+          ? [{ name: 'Applications', extensions: ['app'] }]
+          : [];
+    const dialogOptions: Electron.OpenDialogOptions = {
+      title: options?.title ?? 'Choose the program to allow',
+      properties: ['openFile'],
+      ...(filters.length ? { filters } : {}),
+      ...(process.platform === 'win32' ? { defaultPath: process.env.ProgramFiles ?? '' } : {}),
+    };
+    const win = BrowserWindow.getFocusedWindow();
+    const result = win
+      ? await dialog.showOpenDialog(win, dialogOptions)
+      : await dialog.showOpenDialog(dialogOptions);
+    return result.canceled ? undefined : result.filePaths[0];
+  });
 
   ipcMain.handle('beecode:open-external', async (_event, url: string) => {
     // Only http(s) — never let the page hand us a file:// or custom-scheme URI.

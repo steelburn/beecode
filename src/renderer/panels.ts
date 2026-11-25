@@ -22,9 +22,10 @@ import type {
   SubagentRunInfo,
   ToolInfo,
 } from '../shared/protocol';
+import { MODE_LABELS } from '../shared/modes';
 import { DESKTOP_ACTIONS } from '../shared/protocol';
 import { describeSchedule, formatMoment } from '../shared/schedule';
-import type { DirectoryPickerOptions } from '../shared/bridge';
+import type { DirectoryPickerOptions, InstalledApp } from '../shared/bridge';
 import { clear, h } from './dom';
 import { defaultSlatePath } from './slateTarget';
 
@@ -40,6 +41,10 @@ export interface PanelCallbacks {
     apiKey?: string;
   }): Promise<{ models: string[]; warning?: string }>;
   pickDirectory?(options?: DirectoryPickerOptions): Promise<string | undefined>;
+  /** Applications installed on this computer, for the add-app picker. */
+  listInstalledApps?(): Promise<InstalledApp[]>;
+  /** Native "choose a program" dialog; undefined when it is cancelled. */
+  pickExecutable?(): Promise<string | undefined>;
   /** Create (no `id`) or update (with `id`) a schedule; `scheduler.changed` carries it back. */
   saveSchedule?(input: ScheduleInput): Promise<void>;
   removeSchedule?(id: string): Promise<void>;
@@ -226,6 +231,24 @@ export function renderTools(
 /* -------------------------------------------------------------- permissions */
 
 /**
+ * Plain-language names for the desktop actions. The ids are what the service enforces and
+ * mean nothing to the person deciding what to allow, so the editor shows these labels and
+ * keeps the raw id only as a tooltip.
+ */
+const DESKTOP_ACTION_LABELS: Record<DesktopAction, string> = {
+  launch: 'Open the app',
+  focus: 'Bring to the front',
+  close: 'Close the app',
+  read: 'See the window',
+  invoke: 'Use buttons and menus',
+  click: 'Click',
+  type: 'Type text',
+  key: 'Press keys',
+  screenshot: 'Take a screenshot',
+  resize: 'Resize the window',
+};
+
+/**
  * Permission editor. Every change is written straight through to the service policy,
  * which is the same document the PolicyEngine enforces — there is no second source of
  * truth, and nothing here can grant an action the tool layer does not re-check.
@@ -248,16 +271,32 @@ export function renderPermissions(
     void cb.savePolicy(draft);
   };
 
+  host.append(
+    h(
+      'div',
+      { class: 'card' },
+      h('h4', { text: 'What beeCode may do' }),
+      h('p', {
+        class: 'sub',
+        text: 'These rules decide what beeCode is allowed to do on your computer. It starts with nothing allowed: it can only use the apps you add below, and only for the tasks you tick next to them.',
+      }),
+      h('p', {
+        class: 'sub',
+        text: 'Anything else is refused, and when beeCode wants to do something outside these rules it stops and asks you first. You can change or undo all of it at any time — the more you allow, the less often you are interrupted.',
+      }),
+    ),
+  );
+
   const appsCard = h(
     'div',
     { class: 'card' },
-    h('h4', { text: 'Permissible applications' }),
+    h('h4', { text: 'Apps beeCode may use' }),
     h('p', {
       class: 'sub',
-      text: 'Deny by default. The agent can only see and drive the apps listed here, and only the actions you tick. Enforced in the service, not by the prompt.',
+      text: 'Apps that are not on this list are never opened or touched. For each app, tick only the things you are comfortable with beeCode doing.',
     }),
     ...policy.allowedApps.map((rule) => renderAppRule(rule, update)),
-    renderAddApp(update),
+    renderAddApp(update, cb),
   );
   host.append(appsCard);
 
@@ -265,8 +304,11 @@ export function renderPermissions(
     h(
       'div',
       { class: 'card' },
-      h('h4', { text: 'Denied executables' }),
-      h('p', { class: 'sub', text: 'Always refused, even if an app rule would match. One per line.' }),
+      h('h4', { text: 'Programs that are never touched' }),
+      h('p', {
+        class: 'sub',
+        text: 'Blocked even when the app is allowed above — useful for programs you want beeCode to keep away from entirely. Type one program name per line, for example cmd.exe.',
+      }),
       textArea(policy.deniedExe.join('\n'), (value) =>
         update((draft) => {
           draft.deniedExe = value
@@ -282,13 +324,17 @@ export function renderPermissions(
     h(
       'div',
       { class: 'card' },
-      h('h4', { text: 'Shell' }),
-      toggle('Enabled', policy.shell.enabled, (checked) =>
+      h('h4', { text: 'Terminal commands' }),
+      h('p', {
+        class: 'sub',
+        text: 'A terminal is the text window where commands are typed. Leaving this off stops beeCode from running commands on your computer; most people never need it.',
+      }),
+      toggle('Let beeCode run terminal commands', policy.shell.enabled, (checked) =>
         update((draft) => {
           draft.shell.enabled = checked;
         }),
       ),
-      h('p', { class: 'sub', text: 'Allowed command prefixes (one per line). Every run is still confirmed unless the session is autonomous.' }),
+      h('p', { class: 'sub', text: 'Commands beeCode may run, one per line — for example git or npm. Anything not listed is refused.' }),
       textArea(policy.shell.allowedCommands.join('\n'), (value) =>
         update((draft) => {
           draft.shell.allowedCommands = value
@@ -297,7 +343,7 @@ export function renderPermissions(
             .filter(Boolean);
         }),
       ),
-      h('p', { class: 'sub', text: 'Blocked substrings' }),
+      h('p', { class: 'sub', text: 'Words that must never appear in a command, one per line. A second safety net on top of the list above.' }),
       textArea(policy.shell.blocked.join('\n'), (value) =>
         update((draft) => {
           draft.shell.blocked = value
@@ -313,21 +359,29 @@ export function renderPermissions(
     h(
       'div',
       { class: 'card' },
-      h('h4', { text: 'Filesystem' }),
-      toggle('Workspace only', policy.filesystem.workspaceOnly, (checked) =>
+      h('h4', { text: 'Files and folders' }),
+      toggle('Only work inside this project folder', policy.filesystem.workspaceOnly, (checked) =>
         update((draft) => {
           draft.filesystem.workspaceOnly = checked;
         }),
       ),
-      toggle('Allow writes', policy.filesystem.writable, (checked) =>
+      h('p', {
+        class: 'sub',
+        text: 'Recommended. On means beeCode can only open and change things inside the folder you opened; off lets it reach any file on this computer.',
+      }),
+      toggle('Allow beeCode to change files', policy.filesystem.writable, (checked) =>
         update((draft) => {
           draft.filesystem.writable = checked;
         }),
       ),
+      h('p', {
+        class: 'sub',
+        text: 'Off means look but do not touch: beeCode can read files but cannot save, move, rename or delete them.',
+      }),
       ...(policy.filesystem.workspaceOnly
         ? []
         : [
-            h('p', { class: 'sub', text: 'Allowed roots (one per line)' }),
+            h('p', { class: 'sub', text: 'Other folders beeCode may use, one full path per line — for example C:\Users\me\Documents.' }),
             textArea(policy.filesystem.allowedRoots.join('\n'), (value) =>
               update((draft) => {
                 draft.filesystem.allowedRoots = value
@@ -345,20 +399,31 @@ export function renderPermissions(
       h(
         'div',
         { class: 'card' },
-        h('h4', { text: 'Runtime' }),
+        h('h4', { text: 'Desktop control' }),
+        h('p', {
+          class: 'sub',
+          text: 'How beeCode sees and operates windows on this computer. You normally do not need to change anything here.',
+        }),
         h('p', {
           class: 'sub',
           text: `Driver: ${config.desktop.driver} · workspace: ${config.agent.workingDir}`,
         }),
-        toggle('Allow synthetic input', config.desktop.allowInput, (checked) => {
+        toggle('Let beeCode move the mouse and type', config.desktop.allowInput, (checked) => {
           if (!cb.saveConfig) return;
           void cb.saveConfig({ ...config, desktop: { ...config.desktop, allowInput: checked } });
         }),
-        toggle('Subagents enabled', config.subagents.enabled, (checked) => {
+        h('p', {
+          class: 'sub',
+          text: 'Off means beeCode can look at windows but cannot click or type in them.',
+        }),
+        toggle('Let beeCode hand work to helper agents', config.subagents.enabled, (checked) => {
           if (!cb.saveConfig) return;
           void cb.saveConfig({ ...config, subagents: { ...config.subagents, enabled: checked } });
         }),
-        h('p', { class: 'sub', text: 'Auto-approved tools (comma separated)' }),
+        h('p', {
+          class: 'sub',
+          text: 'Advanced, for tool names: things beeCode may do without asking you first, separated by commas. Leave it empty to be asked every time.',
+        }),
         textArea(config.agent.autoApproveTools.join(', '), (value) => {
           if (!cb.saveConfig) return;
           void cb.saveConfig({
@@ -382,7 +447,7 @@ function renderAppRule(rule: AppRule, update: (mutate: (draft: PolicyDocument) =
     const on = rule.actions.includes(action);
     return h(
       'label',
-      { class: `chip${on ? ' on' : ''}` },
+      { class: `chip${on ? ' on' : ''}`, title: action },
       h('input', {
         type: 'checkbox',
         checked: on,
@@ -399,7 +464,7 @@ function renderAppRule(rule: AppRule, update: (mutate: (draft: PolicyDocument) =
           },
         },
       }),
-      document.createTextNode(action),
+      document.createTextNode(DESKTOP_ACTION_LABELS[action]),
     );
   });
 
@@ -439,55 +504,165 @@ function renderAppRule(rule: AppRule, update: (mutate: (draft: PolicyDocument) =
           },
         },
       }),
-      document.createTextNode('auto-approve (skip prompt)'),
+      document.createTextNode('Do it without asking'),
     ),
   );
 }
 
-function renderAddApp(update: (mutate: (draft: PolicyDocument) => void) => void): HTMLElement {
-  const id = h('input', { type: 'text', placeholder: 'id (e.g. excel)' });
-  const name = h('input', { type: 'text', placeholder: 'name (e.g. Excel)' });
-  const exe = h('input', { type: 'text', placeholder: 'exe(s): excel.exe, EXCEL.EXE' });
+function renderAddApp(
+  update: (mutate: (draft: PolicyDocument) => void) => void,
+  cb: PanelCallbacks,
+): HTMLElement {
+  const id = h('input', { type: 'text', placeholder: 'short name for it (e.g. excel)' });
+  const name = h('input', { type: 'text', placeholder: 'name you will see (e.g. Excel)' });
+  const exe = h('input', { type: 'text', placeholder: 'program file: excel.exe' });
   Object.assign(id.style, inputStyle);
   Object.assign(name.style, inputStyle);
   Object.assign(exe.style, inputStyle);
 
+  const list = h('select', { title: 'Apps with a Start Menu entry on this computer' });
+  Object.assign(list.style, inputStyle);
+  const loading = h('option', { text: 'Reading the apps on this computer…' });
+  loading.value = '';
+  list.append(loading);
+
+  const chosen = h('p', { class: 'sub', text: 'Nothing chosen yet.' });
+  const note = h('p', { class: 'sub', text: '' });
+
+  /**
+   * One place where a chosen program is written down: the picker, the browse dialog and
+   * the advanced fields all end up here, so the "Add this app" button only has one shape
+   * of input to validate.
+   */
+  const remember = (displayName: string, filePath: string): void => {
+    const file = filePath.split(/[\\/]/).pop() ?? filePath;
+    const exeName = file.trim().toLowerCase();
+    if (!exeName) return;
+    exe.value = exeName;
+    if (!name.value.trim() && displayName.trim()) name.value = displayName.trim();
+    if (!id.value.trim()) id.value = exeName.replace(/\.exe$/, '').replace(/[^a-z0-9]+/g, '-');
+    chosen.textContent = `${displayName.trim() || exeName} — ${exeName}`;
+    chosen.title = filePath;
+    note.textContent = '';
+  };
+
+  void (async () => {
+    let apps: InstalledApp[] = [];
+    try {
+      apps = (await cb.listInstalledApps?.()) ?? [];
+    } catch (error) {
+      // A failed scan must not look like "this computer has no apps" — say so, and leave
+      // Browse as the way out.
+      apps = [];
+      note.textContent = `Could not read the list of apps (${(error as Error).message}) — use Browse below.`;
+    }
+    list.replaceChildren();
+    const head = h('option', {
+      text: apps.length ? 'Choose an app…' : 'No app list here — use Browse below',
+    });
+    head.value = '';
+    list.append(head);
+    for (const app of apps) {
+      const option = h('option', { text: app.name });
+      option.value = app.path ?? app.exe;
+      option.title = app.path ?? app.exe;
+      list.append(option);
+    }
+  })();
+
+  list.addEventListener('change', () => {
+    const option = list.selectedOptions[0];
+    if (!option || !option.value) return;
+    remember(option.text, option.value);
+  });
+
+  const browse = h('button', {
+    class: 'btn small ghost',
+    type: 'button',
+    text: 'Browse for the program file…',
+    title: 'Advanced: pick the .exe yourself, e.g. from Program Files',
+    on: {
+      click: async () => {
+        const picked = await cb.pickExecutable?.();
+        if (!picked) return;
+        const file = picked.split(/[\\/]/).pop() ?? picked;
+        remember(file.replace(/\.exe$/i, ''), picked);
+      },
+    },
+  });
+
+  const add = h('button', {
+    class: 'btn small',
+    type: 'button',
+    text: 'Add this app',
+    on: {
+      click: () => {
+        const appId = id.value
+          .trim()
+          .toLowerCase()
+          .replace(/[^a-z0-9-]+/g, '-')
+          .replace(/^-+|-+$/g, '');
+        const exes = exe.value
+          .split(',')
+          .map((entry) => entry.trim().toLowerCase())
+          .filter(Boolean);
+        if (!appId || !exes.length) {
+          note.textContent = 'Choose an app first — from the list, or with Browse.';
+          return;
+        }
+        let added = false;
+        update((draft) => {
+          const existing = draft.allowedApps.find((rule) =>
+            rule.exe.some((entry) => exes.includes(entry.toLowerCase())),
+          );
+          if (existing) {
+            note.textContent = `${existing.name} is already in the list above.`;
+            return;
+          }
+          draft.allowedApps.push({
+            id: appId,
+            name: name.value.trim() || appId,
+            exe: exes,
+            // A new app starts read-only: it can be opened, looked at and screenshotted.
+            actions: ['launch', 'focus', 'read', 'screenshot'],
+          });
+          added = true;
+        });
+        if (!added) return;
+        id.value = '';
+        name.value = '';
+        exe.value = '';
+        list.value = '';
+        chosen.textContent = 'Added — tick what it may do in the list above.';
+      },
+    },
+  });
+
   return h(
     'div',
     { class: 'app-rule' },
-    h('div', { class: 'head' }, h('div', { class: 'name', text: 'Add application' })),
-    id,
-    name,
-    exe,
+    h('div', { class: 'head' }, h('div', { class: 'name', text: 'Add an app' })),
+    h('p', {
+      class: 'sub',
+      text: 'Pick the app from the list of programs installed on this computer. A new app starts read-only: beeCode may open it, bring it to the front, look at it and take a screenshot — tick more in the list once it is added.',
+    }),
+    list,
+    chosen,
+    h('div', { class: 'actions-grid', style: 'margin-top:8px' }, browse),
     h(
-      'div',
-      { class: 'actions-grid', style: 'margin-top:8px' },
-      h('button', {
-        class: 'btn small',
-        text: 'Add with focus + read',
-        on: {
-          click: () => {
-            const appId = id.value.trim().toLowerCase().replace(/[^a-z0-9-]/g, '');
-            const exes = exe.value
-              .split(',')
-              .map((s) => s.trim())
-              .filter(Boolean);
-            if (!appId || !exes.length) return;
-            update((draft) => {
-              draft.allowedApps.push({
-                id: appId,
-                name: name.value.trim() || appId,
-                exe: exes,
-                actions: ['launch', 'focus', 'read', 'screenshot'],
-              });
-            });
-            id.value = '';
-            name.value = '';
-            exe.value = '';
-          },
-        },
+      'details',
+      { style: 'margin-top:8px' },
+      h('summary', { text: 'Advanced: type the program file yourself' }),
+      h('p', {
+        class: 'sub',
+        text: 'The file name is what beeCode matches on, e.g. excel.exe. Separate several names with a comma.',
       }),
+      id,
+      name,
+      exe,
     ),
+    h('div', { class: 'actions-grid', style: 'margin-top:8px' }, add),
+    note,
   );
 }
 
@@ -1623,10 +1798,10 @@ function renderConfigCards(draft: BeeCodeConfig, note: Note): HTMLElement[] {
       'Default mode',
       settingsChoice<AgentMode>(
         [
-          { value: 'ask', label: 'ask — read only' },
-          { value: 'plan', label: 'plan — plan, then ask' },
-          { value: 'act', label: 'act — act, with approvals' },
-          { value: 'autonomous', label: 'autonomous — act, no approvals' },
+          { value: 'ask', label: MODE_LABELS.ask.label },
+          { value: 'plan', label: MODE_LABELS.plan.label },
+          { value: 'act', label: MODE_LABELS.act.label },
+          { value: 'autonomous', label: MODE_LABELS.autonomous.label },
         ],
         draft.agent.defaultMode,
         (next) => {
@@ -2178,7 +2353,7 @@ export function renderScheduler(host: HTMLElement, schedules: Schedule[], cb: Pa
   const modeInput = h(
     'select',
     { class: 'settings-input' },
-    ...SCHEDULE_MODES.map((mode) => h('option', { value: mode, text: mode })),
+    ...SCHEDULE_MODES.map((mode) => h('option', { value: mode, text: MODE_LABELS[mode].label })),
   ) as HTMLSelectElement;
   modeInput.value = 'act';
   const cwdInput = h('input', {
