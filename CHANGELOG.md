@@ -4,6 +4,15 @@ All notable changes to beeCode will be documented in this file.
 
 ## [Unreleased]
 
+- **Switching session now re-points the slate surfaces too (slates, panel).** `openSession`
+  re-read `slate.list` but only repainted the main-area gallery, so with the **Slates panel**
+  open the rows of the session you had just left stayed where they were: the panel was the one
+  surface nothing re-rendered, and a new session looked as if it had inherited the old one's
+  slates. The switch now drops the previous session's rows, slate error and live tiles before
+  the new list arrives, repaints the gallery *and* the panel, and repaints the panel again when
+  the read lands. A `slate.update` from another session no longer retires this session's live
+  tile either: the session filter now runs before the clear.
+
 - **A slate can be exported as a mini-app, and the contract is written down (slates, export).**
   Exporting a slate is not copying an app. Three layers, and only one travels: the document
   (`index.html`), a sidecar `slate.json` (`slate: { id, version, kind }`, the declared

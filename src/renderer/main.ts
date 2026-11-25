@@ -693,7 +693,6 @@ async function openSession(sessionId: string): Promise<void> {
   state.unread.delete(sessionId);
   state.statuses[sessionId] = snapshot.status;
   state.current = snapshot;
-  void loadSlates(sessionId);
   state.lastCwd = snapshot.cwd;
   state.entries = snapshot.entries;
   state.approval = snapshot.pendingApproval;
@@ -720,6 +719,18 @@ async function openSession(sessionId: string): Promise<void> {
   renderQuestion();
   renderGoalPanel();
   renderBusy();
+  // Slate state belongs to the session that produced it: the rows, the error and the live
+  // tiles of the session we just left must not survive the switch, or the gallery and the
+  // Slates panel keep listing slates that the open session cannot reach.
+  state.slates = [];
+  state.slateError = undefined;
+  state.liveSlates = {};
+  applyLiveSlates(els.docPane, []);
+  renderMainArea();
+  if (state.panel === 'slates') renderPanels();
+  void loadSlates(sessionId).then(() => {
+    if (state.panel === 'slates') renderPanels();
+  });
 }
 
 /** Absolute path → the label shown on a chip: the file name, unique enough in a row. */
@@ -1062,13 +1073,13 @@ function handleEvent(event: import('../shared/protocol').ServiceEvent): void {
     }
 
     case 'slate.update': {
-
-    const entryId = event.payload.entryId;
-if (entryId) {
-  state.liveSlates = clearLiveSlates(state.liveSlates, [entryId]);
-  applyLiveSlates(els.docPane, liveSlateList(state.liveSlates));
-}
+      // A slate of another session must not retire or repaint this session's live tile.
       if (event.payload.sessionId !== state.current?.id) return;
+      const entryId = event.payload.entryId;
+      if (entryId) {
+        state.liveSlates = clearLiveSlates(state.liveSlates, [entryId]);
+        applyLiveSlates(els.docPane, liveSlateList(state.liveSlates));
+      }
       // The gallery refreshes from the service, not from the payload: one order of truth.
       void loadSlates(event.payload.sessionId);
       break;
