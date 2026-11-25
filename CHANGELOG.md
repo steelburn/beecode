@@ -4,6 +4,17 @@ All notable changes to beeCode will be documented in this file.
 
 ## [Unreleased]
 
+- **Pinned the one vulnerable build dependency (minimatch, GHSA-g3hv-75wg-m249).**
+  `electron-builder` 26.18.0 — the latest — still asks `app-builder-lib` for `minimatch ^10.2.5`,
+  and every `10.x` sits inside the advisory's range (`>= 7.0.0, < 11.0.1`), so an `overrides`
+  entry in `package.json` now replaces any `minimatch` in that range with `^11.0.1`. It covers the
+  nested `@electron/universal` copy (`9.0.9`) too. The `3.x`/`5.x` copies that `glob`, `filelist`
+  and `@electron/asar` need are left alone on purpose: those majors export a *callable* function,
+  while `11` returns an object, so lifting them would break `require('minimatch')(path, pattern)`.
+  Build-time only: nothing it touches ships in the app — a `--dir` packaging with the new tree
+  produced an `app.asar` differing from the released one by exactly the 65-byte `overrides` block
+  inside the packed `package.json`, and by nothing else.
+
 ## [0.1.2] - 2026-11-24
 
 - **A slate version can record what it was built from, and be refreshed (slates, recipes).**
