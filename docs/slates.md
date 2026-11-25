@@ -71,6 +71,20 @@ individual slate documents reuse `mountFileView`, only the gallery is new code.
 > Slate — a self-contained document generated in this session and rendered in-app
 > (`markdown`, `html`). Not a rich-text editor.
 
+## The document tab is inert — say so, do not go blank
+
+A slate opens as an ordinary document tab, and its rendered view is the app's own
+`htmlPreviewMarkup` (`src/renderer/preview.ts`): `<script>` blocks, `on…=` handlers and
+scripting URLs are stripped, so nothing in a slate can run from the tab. An html slate that
+builds its own DOM in JavaScript — a mini-app, the common case — therefore leaves an empty
+mount point behind, and the pane used to be blank with no explanation.
+
+The preview now explains itself instead: `sanitizeHtmlReport` counts the script blocks and
+handlers it dropped, and `htmlPreviewNotice` turns that into a `.preview-notice` banner above
+the document that says the page is script-driven, points at **Allow scripts (live)** on the
+slate's tile in the Slates tab (the only place scripts run, Tier B) and suggests opening the
+file in a browser. A page with no scripting carries no banner.
+
 ## Non-goals
 
 | Not in scope | Why |

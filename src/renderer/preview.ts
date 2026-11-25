@@ -47,10 +47,12 @@ const DROPPED_BLOCKS = new Set([
   'applet',
   'template',
   'portal',
+  // `<title>` is raw text: dropping only the tag would leak the document title into the page.
+  'title',
 ]);
 
 /** Elements whose tag is removed but whose text content is kept. */
-const DROPPED_TAGS = new Set(['base', 'link', 'meta', 'title', 'head', 'html', 'body', 'xml', 'noscript']);
+const DROPPED_TAGS = new Set(['base', 'link', 'meta', 'head', 'html', 'body', 'xml', 'noscript']);
 
 /** Attributes removed from every surviving tag. */
 const DROPPED_ATTRIBUTES = new Set(['srcdoc', 'formaction', 'action', 'ping', 'manifest']);
@@ -106,7 +108,7 @@ function normalizeUrl(value: string): string {
   return value.replace(/[\u0000-\u0020\u007f]/g, '').toLowerCase();
 }
 
-function stripAttributes(tag: Tag): string {
+function stripAttributes(tag: Tag, counts: SanitizeCounts): string {
   const attrs = tag.raw.slice(1 + tag.raw.indexOf(tag.name) + tag.name.length, tag.closing ? -2 : -1);
   const kept: string[] = [];
   const pattern = /([^\s"'=<>/]+)(\s*=\s*("([^"]*)"|'([^']*)'|([^\s"'=<>]+)))?/g;
@@ -114,7 +116,10 @@ function stripAttributes(tag: Tag): string {
   while ((match = pattern.exec(attrs))) {
     const name = match[1].toLowerCase();
     const value = match[4] ?? match[5] ?? match[6];
-    if (name.startsWith('on')) continue;
+    if (name.startsWith('on')) {
+      counts.handlers += 1;
+      continue;
+    }
     if (DROPPED_ATTRIBUTES.has(name)) continue;
     if (value !== undefined) {
       // `expression(...)` and `url(javascript:...)` are CSS-level escape hatches.
@@ -130,13 +135,35 @@ function stripAttributes(tag: Tag): string {
   return kept.length ? `${open} ${kept.join(' ')}>` : `${open}>`;
 }
 
+/** How much code the sanitizer had to remove, so the preview can say why a page looks empty. */
+export interface HtmlSanitizeReport {
+  /** The inert markup to mount. */
+  html: string;
+  /** `<script>` blocks dropped together with their content. */
+  scripts: number;
+  /** Inline `on…=` attributes dropped. */
+  handlers: number;
+}
+
+interface SanitizeCounts {
+  scripts: number;
+  handlers: number;
+}
+
 /**
  * Sanitize an HTML document for the rendered preview: scripting blocks, event handlers
  * and scripting URLs are removed; everything else (styles, tables, images, links) stays so
  * a workspace page still looks like itself. Relative images and links do not resolve —
  * the renderer has no file origin — so only absolute or data: images appear.
  */
+
 export function sanitizeHtml(html: string): string {
+  return sanitizeHtmlReport(html).html;
+}
+
+/** `sanitizeHtml`, plus the count of what it removed to make the document inert. */
+export function sanitizeHtmlReport(html: string): HtmlSanitizeReport {
+  const counts: SanitizeCounts = { scripts: 0, handlers: 0 };
   let out = '';
   let i = 0;
   while (i < html.length) {
@@ -156,6 +183,12 @@ export function sanitizeHtml(html: string): string {
       i = end < 0 ? html.length : end + 3;
       continue;
     }
+    if (html.startsWith('<!', lt)) {
+      /* A doctype or another declaration: no element, and its text must not show up. */
+      const end = html.indexOf('>', lt + 2);
+      i = end < 0 ? html.length : end + 1;
+      continue;
+    }
     const tag = readTag(html, lt);
     if (!tag) {
       /* Not a tag: keep the `<` as text so nothing is swallowed by mistake. */
@@ -165,6 +198,7 @@ export function sanitizeHtml(html: string): string {
     }
     const name = tag.name.toLowerCase();
     if (DROPPED_BLOCKS.has(name)) {
+      if (name === 'script' && !tag.closing) counts.scripts += 1;
       i = tag.closing ? tag.end : skipBlock(html, tag.end, name);
       continue;
     }
@@ -172,10 +206,10 @@ export function sanitizeHtml(html: string): string {
       i = tag.end;
       continue;
     }
-    out += stripAttributes(tag);
+    out += stripAttributes(tag, counts);
     i = tag.end;
   }
-  return out;
+  return { html: out, scripts: counts.scripts, handlers: counts.handlers };
 }
 
 /**
@@ -187,6 +221,7 @@ export function sanitizeHtml(html: string): string {
 const HTML_PREVIEW_CSS = [
   ':host{display:block;font:inherit;font-size:12px;line-height:1.55;color:var(--doc-text,var(--text));background:var(--doc-bg,transparent);color-scheme:var(--doc-scheme,dark);overflow-wrap:anywhere;}',
   ':host>.html-preview>:first-child{margin-top:0;}',
+  '.preview-notice{margin:0 0 12px;padding:6px 8px;border:1px solid var(--border,#3a3f4b);border-radius:6px;color:var(--text-dim,#94a3b8);font-size:11px;line-height:1.5;}',
   'h1,h2,h3,h4,h5,h6{margin:14px 0 6px;line-height:1.3;font-weight:650;}',
   'h1{font-size:16px;}',
   'h2{font-size:14px;}',
@@ -208,6 +243,25 @@ const HTML_PREVIEW_CSS = [
 ].join('');
 
 /**
+ * One sentence on why an inert preview may not look like the real page, or `undefined` when
+ * nothing that would have rendered was removed. A script-driven document — an html slate
+ * mini-app is the common case — leaves an empty mount point behind, so without this the pane
+ * is simply blank and reads as a broken file rather than as a preview limit.
+ */
+export function htmlPreviewNotice(report: HtmlSanitizeReport): string | undefined {
+  if (report.scripts > 0) {
+    const blocks = report.scripts === 1 ? '1 script block' : `${report.scripts} script blocks`;
+    return `This page builds its content with JavaScript, and the preview does not run scripts (${blocks} removed), so it can look empty or incomplete. Tick "Allow scripts (live)" on its tile in the Slates tab for an html slate, or open the file in a browser.`;
+  }
+  if (report.handlers > 0) {
+    const handlers =
+      report.handlers === 1 ? '1 inline event handler' : `${report.handlers} inline event handlers`;
+    return `${handlers} removed: the preview does not run scripts, so controls that depend on them do nothing here.`;
+  }
+  return undefined;
+}
+
+/**
  * The rendered view of an HTML file: the sanitized markup (see `sanitizeHtml`) behind a
  * wrapper that carries the base styles. The caller mounts the result in a shadow root,
  * which is what stops a file stylesheet — `body { ... }`, `* { ... }`, `:root { ... }` —
@@ -216,5 +270,8 @@ const HTML_PREVIEW_CSS = [
  * drops those elements; the preview therefore follows the app theme, not the page's.
  */
 export function htmlPreviewMarkup(html: string): string {
-  return `<style>${HTML_PREVIEW_CSS}</style><div class="html-preview">${sanitizeHtml(html)}</div>`;
+  const report = sanitizeHtmlReport(html);
+  const notice = htmlPreviewNotice(report);
+  const banner = notice ? `<p class="preview-notice">${notice}</p>` : '';
+  return `<style>${HTML_PREVIEW_CSS}</style><div class="html-preview">${banner}${report.html}</div>`;
 }

@@ -4,6 +4,15 @@ All notable changes to beeCode will be documented in this file.
 
 ## [Unreleased]
 
+- **An interactive html slate no longer previews as a blank pane** — a mini-app that builds
+  its DOM in JavaScript mounts an empty container, and the document tab's rendered view is the
+  app's own inert `htmlPreviewMarkup` (scripts, event handlers and scripting URLs stripped), so
+  opening it showed nothing at all and looked like a broken file. `preview.ts` now reports what
+  the sanitizer removed (`sanitizeHtmlReport`, `htmlPreviewNotice`) and the preview carries a
+  `.preview-notice` banner that says the page is script-driven, points at
+  **Allow scripts (live)** on the slate's tile in the Slates tab (Tier B) and suggests opening
+  the file in a browser. Two fidelity fixes came with it: a document's `<title>` text and a
+  `<!doctype …>` declaration no longer leak into the preview as visible text.
 - **The three long-standing smoke failures are fixed, and none of them was an app bug** —
   which is why they survived next to a green typecheck. `dom.preview` reported
   `markdown: null` / `html: null`, `dom.mainArea.closed` reported `false` and the knowledge
