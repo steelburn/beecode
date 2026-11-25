@@ -13,8 +13,15 @@ import {
 } from './docTabs';
 import { canSwitchView, type FileView } from './preview';
 import { slateDocFromPath, slateExportName, type SlateDocRef } from './slateDoc';
+import {
+  parseSlateOrigins,
+  slateDocHoldsLive,
+  slateDocLiveTarget,
+  slateLiveBoundsOf,
+  type SlateDocLiveTarget,
+} from './slateDocLive';
 import { renderSlateGallery, type SlateGalleryView } from './slateGallery';
-import type { SlateLiveBounds } from '../shared/slateSandbox';
+import type { SlateLiveBounds, SlateLiveState } from '../shared/slateSandbox';
 import type { SlateDiff } from '../shared/slateDiff';
 
 /**
@@ -42,10 +49,16 @@ export interface MainAreaHandlers {
   removeSlate(id: string): void;
   /** Compare two versions of a slate; the gallery renders the result. */
 diffSlate(id: string, from: number, to: number): Promise<SlateDiff>;
-  /** Grant or withdraw execution for a slate, and set the origins it may call. */
-  setSlateLive(id: string, enabled: boolean, origins: string[]): Promise<void>;
-  /** Run one version in the sandboxed view that covers the gallery pane. */
-  runSlateLive(id: string, version: number, bounds: SlateLiveBounds): void;
+  /**
+   * Grant or withdraw execution for a slate, and set the origins it may call. A document tab
+   * names the session it belongs to; the Slates tab means the session on screen.
+   */
+  setSlateLive(id: string, enabled: boolean, origins: string[], sessionId?: string): Promise<void>;
+  /**
+   * Run one version in the sandboxed view — over the gallery pane, or over a slate tab's
+   * document body — and keep it on the rectangle handed back by `boundsSlateLive`.
+   */
+  runSlateLive(id: string, version: number, bounds: SlateLiveBounds, sessionId?: string): void;
   boundsSlateLive(bounds: SlateLiveBounds): void;
   stopSlateLive(): void;
   /** Write one slate version into the workspace tree as a real file. */
@@ -59,6 +72,8 @@ diffSlate(id: string, from: number, to: number): Promise<SlateDiff>;
 /** Everything below the strip needs besides the tab state itself. */
 export interface MainAreaView extends SlateGalleryView {
   browserVisible: boolean;
+  /** The session on screen: a slate tab may only run a slate of the session it was opened in. */
+  sessionId?: string;
 }
 
 export interface MainAreaHost {
@@ -73,7 +88,21 @@ export interface MainArea {
   render(state: DocTabsState, view: MainAreaView): void;
 }
 
+/**
+ * Where the live page must go after this render — the document body it covers, or nothing.
+ *
+ * A native page does not reflow with the DOM, so every relayout has to hand the host the
+ * rectangle again. Module scope because the pane exists once: the observers are registered
+ * with `mountMainArea`, the rectangle comes from whichever tab is painted now.
+ */
+let liveStageSync: (() => void) | undefined;
+
 export function mountMainArea(host: MainAreaHost, handlers: MainAreaHandlers): MainArea {
+  // Window resizes and dock drags both land here: a live page that was left where it started
+  // ends up floating over the chat as soon as the pane moves under it.
+  const paneResize = new ResizeObserver(() => liveStageSync?.());
+  paneResize.observe(host.pane);
+  window.addEventListener('resize', () => liveStageSync?.());
   return {
     render(state, view) {
       const doc = activeDoc(state);
@@ -84,9 +113,15 @@ export function mountMainArea(host: MainAreaHost, handlers: MainAreaHandlers): M
       host.workspace.classList.toggle('view-browser', browserActive);
       host.workspace.classList.toggle('view-chat', !doc && !slateActive && !browserActive);
       host.pane.hidden = !doc && !slateActive;
-      if (doc) renderDoc(host.pane, doc, state.theme, handlers);
-      else if (slateActive) renderSlateGallery(host.pane, view, handlers);
-      else clear(host.pane);
+      if (doc) renderDoc(host.pane, doc, state, view, handlers);
+      else if (slateActive) {
+        // The gallery keeps its own pane observer; nothing here owns a stage rectangle.
+        liveStageSync = undefined;
+        renderSlateGallery(host.pane, view, handlers);
+      } else {
+        liveStageSync = undefined;
+        clear(host.pane);
+      }
     },
   };
 }
@@ -207,33 +242,131 @@ function docTabButton(tab: DocTab, active: boolean, handlers: MainAreaHandlers):
 function renderDoc(
   pane: HTMLElement,
   tab: DocTab,
-  theme: DocTheme,
+  state: DocTabsState,
+  view: MainAreaView,
   handlers: MainAreaHandlers,
 ): void {
   const slate = slateDocFromPath(tab.path);
+  // A slate's page is built by its own script, which the inert preview strips — so a slate
+  // version shown as Preview is also the one document that gets the live host, right above
+  // the body that page will cover. Every other tab stays exactly as inert as before.
+  const target = slateDocLiveTarget(tab.path, tab.view, {
+    sessionId: view.sessionId,
+    slates: view.slates,
+  });
   clear(pane);
-  pane.append(
+  const body = h('div', { class: `doc-body ${docThemeClass(state.theme)}` }, ...docPaneBody(tab));
+  const head = h(
+    'div',
+    { class: 'doc-head' },
     h(
       'div',
-      { class: 'doc-head' },
-      h(
-        'div',
-        { class: 'doc-title' },
-        h('span', { class: 'doc-name', text: tab.name }),
-        h('span', { class: 'doc-path', text: tab.path, title: tab.path }),
-      ),
-      h('span', { class: 'doc-size', text: formatBytes(tab.size) }),
-      slateDocActions(tab, slate, handlers),
-      canSwitchView(tab.kind) && !tab.binary ? viewToggle(tab, handlers, slate) : null,
-      h('button', {
-        type: 'button',
-        class: 'btn ghost small',
-        title: 'Close this tab',
-        text: '✕',
-        on: { click: () => handlers.close(tab.path) },
-      }),
+      { class: 'doc-title' },
+      h('span', { class: 'doc-name', text: tab.name }),
+      h('span', { class: 'doc-path', text: tab.path, title: tab.path }),
     ),
-    h('div', { class: `doc-body ${docThemeClass(theme)}` }, ...docPaneBody(tab)),
+    h('span', { class: 'doc-size', text: formatBytes(tab.size) }),
+    slateDocActions(tab, slate, handlers),
+    canSwitchView(tab.kind) && !tab.binary ? viewToggle(tab, handlers, slate) : null,
+    h('button', {
+      type: 'button',
+      class: 'btn ghost small',
+      title: 'Close this tab',
+      text: '✕',
+      on: { click: () => handlers.close(tab.path) },
+    }),
+  );
+  pane.append(head, ...(target ? [docLiveBar(target, view.liveView, handlers, body)] : []), body);
+  // Keep the native page on the body from now on: this render, and every relayout after it.
+  liveStageSync = target
+    ? () => handlers.boundsSlateLive(slateLiveBoundsOf(body.getBoundingClientRect()))
+    : undefined;
+  if (slateDocHoldsLive(view.liveView, target)) liveStageSync?.();
+}
+
+/**
+ * The Run switch above a slate's body.
+ *
+ * The same grant the tile in the Slates tab asks for, asked where the page will appear. Both
+ * halves belong together — "may this document run" and "what may it reach" — and the user's
+ * answer decides both. The inert preview stays underneath while it runs, so a host that
+ * refuses (the reason lands in `liveView.error`) cannot leave the tab blank again, which is
+ * the failure this bar exists to fix.
+ */
+function docLiveBar(
+  target: SlateDocLiveTarget,
+  liveView: SlateLiveState | undefined,
+  handlers: MainAreaHandlers,
+  stage: HTMLElement,
+): HTMLElement {
+  const running = slateDocHoldsLive(liveView, target);
+
+  const consent = document.createElement('input');
+  consent.type = 'checkbox';
+  consent.className = 'doc-live-consent';
+  consent.checked = target.allowed;
+
+  const origins = document.createElement('textarea');
+  origins.className = 'slate-live-origins doc-live-origins';
+  origins.rows = 2;
+  origins.spellcheck = false;
+  origins.placeholder = 'origins it may fetch from, one per line — empty for a page that talks to itself';
+  origins.value = target.origins.join('\n');
+  origins.disabled = !consent.checked;
+
+  const run = document.createElement('button');
+  run.type = 'button';
+  run.className = 'doc-live-run';
+  run.textContent = running ? 'Stop live' : 'Run live';
+  run.disabled = !consent.checked;
+  run.addEventListener('click', () => {
+    if (running) {
+      handlers.stopSlateLive();
+      return;
+    }
+    handlers.runSlateLive(
+      target.id,
+      target.version,
+      slateLiveBoundsOf(stage.getBoundingClientRect()),
+      target.sessionId,
+    );
+  });
+
+  consent.addEventListener('change', () => {
+    origins.disabled = !consent.checked;
+    run.disabled = !consent.checked;
+    // Withdrawing consent while the page is up has to take the page down with it.
+    if (!consent.checked && running) handlers.stopSlateLive();
+    void handlers
+      .setSlateLive(target.id, consent.checked, parseSlateOrigins(origins.value), target.sessionId)
+      .catch(() => undefined);
+  });
+  origins.addEventListener('change', () => {
+    if (!consent.checked) return;
+    void handlers
+      .setSlateLive(target.id, true, parseSlateOrigins(origins.value), target.sessionId)
+      .catch(() => undefined);
+  });
+
+  return h(
+    'div',
+    { class: `doc-live-bar${running ? ' running' : ''}` },
+    h(
+      'label',
+      { class: 'doc-live-consent-label' },
+      consent,
+      h('span', { text: 'Allow scripts (live)' }),
+    ),
+    h('p', {
+      class: 'doc-live-note',
+      text: running
+        ? "Live: this page runs the slate's own scripts inside a sandbox — it reaches only the origins above."
+        : liveView?.error && !running
+          ? `The live page did not attach: ${liveView.error}. The inert preview below is what it can show without scripts.`
+          : "This page builds its content with JavaScript, which the inert preview strips. Run it live to see it.",
+    }),
+    origins,
+    h('div', { class: 'doc-live-actions' }, run),
   );
 }
 

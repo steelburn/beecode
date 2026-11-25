@@ -251,7 +251,7 @@ const HTML_PREVIEW_CSS = [
 export function htmlPreviewNotice(report: HtmlSanitizeReport): string | undefined {
   if (report.scripts > 0) {
     const blocks = report.scripts === 1 ? '1 script block' : `${report.scripts} script blocks`;
-    return `This page builds its content with JavaScript, and the preview does not run scripts (${blocks} removed), so it can look empty or incomplete. Tick "Allow scripts (live)" on its tile in the Slates tab for an html slate, or open the file in a browser.`;
+    return `This page builds its content with JavaScript, and the preview does not run scripts (${blocks} removed), so it can look empty or incomplete. In a slate tab, tick "Allow scripts (live)" and press Run live above the document; otherwise open the file in a browser.`;
   }
   if (report.handlers > 0) {
     const handlers =

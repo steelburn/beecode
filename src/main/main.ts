@@ -889,6 +889,9 @@ async function runSmokeCheck(serviceReady: boolean): Promise<void> {
           // Row 18: Copy and Download belong to a slate version, never to an ordinary
           // workspace document — those are already a file on disk.
           out.docActions = document.querySelectorAll('#doc-pane .doc-head .doc-action').length;
+          // The live page is offered for a slate's Preview only: an ordinary HTML document
+          // must not grow the consent bar, nor a Run switch that could never be granted.
+          out.docLiveBar = document.querySelectorAll('#doc-pane .doc-live-bar').length;
           out.rendered = Boolean(host && host.shadowRoot && host.shadowRoot.querySelector('.html-preview'));
           out.transcriptHidden =
             (document.querySelector('.transcript')?.getBoundingClientRect().height ?? 0) === 0;

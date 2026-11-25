@@ -34,7 +34,8 @@ import type { SlateDiff } from '../shared/slateDiff';
 import { slateDocFromPath, slateExportName } from './slateDoc';
 import { copyText } from './clipboard';
 import type { DocTab } from './docTabs';
-import { SLATE_TAB } from './docTabs';
+import { activeDoc, SLATE_TAB } from './docTabs';
+import { slateDocHoldsLive, slateDocLiveTarget } from './slateDocLive';
 import type { SlateLiveState } from '../shared/slateSandbox';
 import { initColumns } from './columns';
 import { clear, formatJsonForDisplay, h, renderMarkdown } from './dom';
@@ -358,17 +359,21 @@ async function boot(): Promise<void> {
       diffSlate,
       removeSlate: (id) => void removeSlate(id),
       promoteSlate: (id, version, path) => void promoteSlate(id, version, path),
-      setSlateLive: async (id, enabled, origins) => {
-        const sessionId = state.current?.id;
+      setSlateLive: async (id, enabled, origins, named) => {
+        // A document tab names the session it belongs to; a tile in the Slates tab means the
+        // session on screen.
+        const sessionId = named ?? state.current?.id;
         if (!sessionId) return;
         // The agent can never widen this: only the user's own answer arrives here.
         await api.invoke('slate.live', { id, enabled, origins, sessionId });
         await loadSlates(sessionId);
       },
-      runSlateLive: (id, version, bounds) => {
-        const sessionId = state.current?.id;
+      runSlateLive: (id, version, bounds, named) => {
+        const sessionId = named ?? state.current?.id;
         if (!sessionId) return;
-        const cwd = state.current?.cwd;
+        // The cwd is how the host finds the version on disk, so it only applies to the session
+        // whose folder the renderer resolved this slate from.
+        const cwd = sessionId === state.current?.id ? state.current?.cwd : undefined;
         api.slateLive.show({ sessionId, id, version, ...(cwd ? { cwd } : {}), bounds });
       },
       boundsSlateLive: (bounds) => {
@@ -2268,15 +2273,39 @@ function writeDocTheme(theme: DocTheme): void {
   }
 }
 
+/**
+ * Whether the live page still belongs where it is.
+ *
+ * It is a native page floating over the window, so it outlives every repaint of the DOM
+ * beneath it: it may only stay while the surface that started it is the one on screen — the
+ * Slates tab, or the document tab whose Preview ran it, and only while that tab still shows
+ * Preview rather than Code.
+ */
+function liveOnScreen(): boolean {
+  if (state.docs.active === SLATE_TAB) return true;
+  const doc = activeDoc(state.docs);
+  if (!doc) return false;
+  return slateDocHoldsLive(
+    state.slateLive,
+    slateDocLiveTarget(doc.path, doc.view, {
+      sessionId: state.current?.id,
+      slates: state.slates,
+    }),
+  );
+}
+
 function renderMainArea(): void {
-  // A live slate is a page painted over the gallery pane, so it may only exist while that
-  // pane is the view on screen.
-  if (state.slateLive.visible && state.docs.active !== SLATE_TAB) api.slateLive.hide();
+  // Leaving the surface that started the page takes the page with it, or it would sit on top
+  // of the chat with no way to reach it.
+  if (state.slateLive.visible && !liveOnScreen()) api.slateLive.hide();
   mainArea?.render(state.docs, {
     browserVisible: browserShown,
     slates: state.slates,
     error: state.slateError,
     live: liveSlateList(state.liveSlates),
+    // The gallery's Run/Stop switch and the document tab's live bar both paint from this.
+    liveView: state.slateLive,
+    sessionId: state.current?.id,
   });
 }
 

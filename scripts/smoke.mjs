@@ -256,6 +256,7 @@ const mainAreaOk =
   mainArea.rendered === true &&
   mainArea.isolated === true &&
   mainArea.docActions === 0 &&
+  mainArea.docLiveBar === 0 &&
   mainArea.transcriptHidden === true &&
   mainArea.composerVisible === true &&
   mainArea.light === true &&

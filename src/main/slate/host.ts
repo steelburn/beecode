@@ -255,14 +255,11 @@ export class SlateLiveHost {
     // Belt and braces: the store already refuses a non-html live slate, and the consent
     // switch already withdrew these origins. Checked here because this is where it costs.
     if (!doc.live) return this.fail(command.id, 'this slate has no execution permission');
-    // A slate with no origins can still be live if it declares a form: the only thing it
-    // may reach is its own origin, and only to post back.
-    if (doc.origins.length === 0 && !doc.submit) {
-      return this.fail(
-        command.id,
-        'this slate allows no origins and takes no submissions, so there is nothing it may do',
-      );
-    }
+    // No such check on the origins themselves: a slate that reaches nothing is the most
+    // common live slate — an interactive page that builds its DOM and keeps its state in the
+    // document. What it may reach is decided by the CSP baked into the response above, so an
+    // empty allowlist means the code runs and every connection is refused. Refusing to attach
+    // it would have made the self-contained slate the only one that could not run.
 
     const url = slateLiveUrl(command.sessionId, command.id, doc.version);
     this.hosted = {

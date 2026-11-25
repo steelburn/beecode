@@ -4,6 +4,7 @@ import { renderSlateDiff, renderSlateDiffError } from './slateDiffView';
 import { liveSlateLabel } from './slateLive';
 import { clear, h } from './dom';
 import { defaultSlatePath } from './slateTarget';
+import { parseSlateOrigins } from './slateDocLive';
 import type { SlateLiveBounds, SlateLiveState } from '../shared/slateSandbox';
 
 /**
@@ -355,7 +356,7 @@ function liveControls(
 
   const save = (): void => {
     void handlers
-      .setSlateLive(slate.id, consent.checked, parseOrigins(origins.value))
+      .setSlateLive(slate.id, consent.checked, parseSlateOrigins(origins.value))
       .catch(() => undefined);
   };
   consent.addEventListener('change', () => {
@@ -386,12 +387,4 @@ function liveControls(
     origins,
     h('div', { class: 'slate-live-actions' }, run, error),
   );
-}
-
-/** One origin per line or comma-separated — whoever types it should not have to care. */
-function parseOrigins(value: string): string[] {
-  return value
-    .split(/[\s,]+/)
-    .map((entry) => entry.trim())
-    .filter((entry) => entry.length > 0);
 }

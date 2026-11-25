@@ -1418,6 +1418,48 @@ body.dragging-browser-dock { cursor: row-resize; user-select: none; }
 }
 .doc-empty { margin: 0; color: var(--text-dim); font-size: 13px; }
 .doc-truncated { margin: 14px 0 0; color: var(--text-faint); font-size: 11px; }
+
+/* A slate's Preview can run the page for real: the bar above the body is the grant, and the
+   body underneath is the rectangle the sandboxed page covers. */
+.doc-live-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel, transparent);
+  font-size: 12px;
+}
+
+.doc-live-bar.running {
+  border-bottom-color: var(--accent, #3b82f6);
+}
+
+.doc-live-consent-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.doc-live-note {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.doc-live-origins {
+  min-height: 30px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+}
+
+.doc-live-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
 .doc-rendered { max-width: 900px; }
 
 /* Rendered documents only — the chrome keeps the app palette. These tokens are also read

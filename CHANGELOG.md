@@ -4,6 +4,20 @@ All notable changes to beeCode will be documented in this file.
 
 ## [Unreleased]
 
+- **A slate's document tab now runs the page instead of merely describing it.** The live slate
+  host (`slate://live/…`, a sandboxed `WebContentsView`) was only reachable from the Slates
+  tab, so a slate that builds its DOM in JavaScript was still unviewable from the tab it opened
+  in. That tab's Preview now carries the same consent and Run/Stop switch the tile has
+  (`docLiveBar` in `mainArea.ts`), sits the page exactly on the document body, and keeps the
+  inert preview underneath — a host refusal prints its reason in the bar instead of leaving the
+  pane blank. `slateDocLiveTarget` limits the bar to an html version of the session on screen
+  shown as Preview, and `slateDocHoldsLive` takes the page down when that tab switches to Code,
+  closes, or another version is opened. The rectangle is republished on every render and on
+  `ResizeObserver`/`resize`, because a native view does not reflow with the DOM.
+- **A self-contained slate can be live.** The host refused any slate with no origins and no
+  form ("nothing it may do"), which made the interactive page that needs its scripts most the
+  one kind that could never run. What a live page may reach is the CSP baked into its response,
+  so an empty allowlist now means the code runs and every connection is refused.
 - **An interactive html slate no longer previews as a blank pane** — a mini-app that builds
   its DOM in JavaScript mounts an empty container, and the document tab's rendered view is the
   app's own inert `htmlPreviewMarkup` (scripts, event handlers and scripting URLs stripped), so

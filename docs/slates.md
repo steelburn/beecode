@@ -3,7 +3,8 @@
 > **Status: phases 1–3, Tier B (live slates and form submissions) and references-only recipes implemented** — the store,
 > the four slate tools,
 > the transcript card, the SLATE_TAB gallery, the Slates panel, promote, the document tab's
-> Copy / Download / Preview ⇄ Code, and the pipeline: a long fenced `html` / `svg` block is
+> Copy / Download / Preview ⇄ Code — and the same live host running *inside* the Preview of a
+> slate tab, not only over the gallery pane — and the pipeline: a long fenced `html` / `svg` block is
 > auto-promoted out of the transcript (`src/shared/slateFence.ts`, `src/service/slatePromote.ts`),
 > a block that is still streaming reaches the gallery as `slate.delta` and is patched in place,
 > and two versions can be compared (`src/shared/slateDiff.ts`, `slate.diff`,
@@ -79,11 +80,39 @@ scripting URLs are stripped, so nothing in a slate can run from the tab. An html
 builds its own DOM in JavaScript — a mini-app, the common case — therefore leaves an empty
 mount point behind, and the pane used to be blank with no explanation.
 
-The preview now explains itself instead: `sanitizeHtmlReport` counts the script blocks and
+The preview explains itself instead: `sanitizeHtmlReport` counts the script blocks and
 handlers it dropped, and `htmlPreviewNotice` turns that into a `.preview-notice` banner above
-the document that says the page is script-driven, points at **Allow scripts (live)** on the
-slate's tile in the Slates tab (the only place scripts run, Tier B) and suggests opening the
-file in a browser. A page with no scripting carries no banner.
+the document that says the page is script-driven and points at the live view. A page with no
+scripting carries no banner.
+
+## Preview runs the live page — a slate tab is not a dead end
+
+A slate version shown as **Preview** is the one document that also gets Tier B, in place.
+`docLiveBar` (`src/renderer/mainArea.ts`) sits between the tab's head and its body, and the
+body underneath is the rectangle the sandboxed page covers once it runs.
+
+* The bar is the *same* grant the tile in the Slates tab asks for — **Allow scripts (live)**,
+  the origins it may fetch from, and Run/Stop — because a live page is the same grant wherever
+  it is started from. `SlateGalleryHandlers` grew an optional `sessionId` so a document tab
+  names the session it belongs to instead of the chat that happens to be on screen.
+* The inert preview stays underneath the whole time. If the host refuses, `liveView.error` is
+  printed in the bar and the tab keeps showing what it can without scripts, so a refusal can
+  never leave a blank pane again.
+* `slateDocLiveTarget` (`src/renderer/slateDocLive.ts`) decides *when* the bar exists at all:
+  an html version, the Preview view, a slate of the session on screen, and a summary the
+  renderer actually holds — the consent and the origins live in it. Code view, markdown and a
+  tab from another session keep the inert preview with no bar.
+* `slateDocHoldsLive` matches session, slate **and version**: the host runs one page at a time,
+  so switching that tab to Code, closing it or opening another version takes the page down
+  (`liveOnScreen()` in `src/renderer/main.ts`) instead of leaving it floating over the chat.
+* The rectangle is not automatic — a native view does not reflow. `renderDoc` publishes it
+  through `liveStageSync` on every render, and one `ResizeObserver` on the pane plus `resize`
+  keep the page on the body while the dock or a panel moves it.
+* **A slate that reaches nothing is still live.** The host used to refuse a slate with no
+  origins and no form ("nothing it may do"), which made the self-contained interactive page —
+  the kind that most needs its scripts — the only kind that could not run. What it may reach is
+  the CSP baked into the response, so an empty allowlist means the code runs and every
+  connection is refused.
 
 ## Non-goals
 
