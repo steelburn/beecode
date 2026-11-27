@@ -4,6 +4,34 @@ All notable changes to beeCode will be documented in this file.
 
 ## [Unreleased]
 
+- **A dock tab closes on middle-click, and you can turn that off.** The tab strip treats
+  button 1 the way a browser does: `mousedown` is swallowed — no Windows autoscroll cursor,
+  no accidental pan while a middle-drag passes over the strip — and `auxclick` closes the
+  tab under the pointer without disturbing the tab you are watching. It is a setting,
+  **Middle-click closes a tab**, in the internal-browser card of Settings, on by default and
+  normalized on load (`middleClickClosesTabs: false` is the only way off); the flag rides on
+  `BrowserState`, so the strip decides locally instead of asking the main process first.
+- **You can open the internal browser yourself, the way you open the Terminal.** A `www`
+  button in the topbar — its `aria-pressed` follows the dock's real state, so it reads as a
+  toggle — and `Shift+B` send the same `open` input the agent's `browser_open` uses. Nothing
+  open yet: the dock appears on `homeUrl`; a tab already browsing: the dock is brought
+  forward with that tab instead of collecting a second one you did not ask for. The page
+  still lives in the main process, so opening it from the renderer needs no navigation API.
+- **The agent can drive the browser while the dock is minimized or another tab is in front.**
+  The blocker was a compositor surface: an unattached `WebContentsView` has none, so CDP
+  mouse input never answered and `capturePage` failed with `Current display surface not
+  available` — the reason these actions used to be refused with "needs the page on screen".
+  `BrowserHost.withSurface()` now parks the view on an invisible holder window for the length
+  of one surface-bound action (click, type, key, scroll, hover, screenshot) and returns it
+  afterwards, so `syncView()` skips parked tabs and the dock's geometry is never touched. The
+  holder is deliberately *shown* — measured on Windows, a hidden `BrowserWindow` has no
+  display surface either — but transparent, frameless, unfocusable, off the taskbar, 8000 px
+  off-screen and summoned with `showInactive()`, so it cannot steal focus or appear in front
+  of anyone, even on a window manager that ignores opacity. `requireSurface()` and its errors
+  are gone, the tool result now says the dock is hidden but every action still works, and the
+  smoke gate proves it: with the dock collapsed a click hits its target, a scroll moves the
+  page and `browser_screenshot` returns real PNG bytes.
+
 ## [0.1.4] - 2026-11-25
 
 - **beeCode says when a newer installer has been published.** On start, every six hours,

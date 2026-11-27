@@ -181,6 +181,7 @@ test('controller: an interaction is judged against the page the tab is on', asyn
             action: 'tabs',
             state: {
               visible: true,
+              middleClickClosesTabs: true,
               tabs: [{ id: 'tab-1', url: 'https://blocked.test/', title: 'Blocked', loading: false, active: true }],
               activeTabId: 'tab-1',
               cursor: { enabled: true },

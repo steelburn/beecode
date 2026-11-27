@@ -119,6 +119,11 @@ export interface BrowserTabInfo {
 
 export interface BrowserState {
   visible: boolean;
+  /**
+   * Middle-clicking a dock tab closes it (`config.browser.middleClickClosesTabs`). Carried on
+   * the state so the strip needs no second call through the bridge to learn the setting.
+   */
+  middleClickClosesTabs: boolean;
   tabs: BrowserTabInfo[];
   activeTabId?: string;
   /** Where the AI cursor overlay is drawn on the current page. */
@@ -249,6 +254,8 @@ export interface BrowserBounds {
 
 /** Renderer commands for the panel chrome (the AI cursor itself lives inside the page). */
 export type BrowserPanelCommand =
+  /** Open a tab because the user asked for one (dock button / shortcut), not the agent. */
+  | { kind: 'open'; url?: string }
   | { kind: 'focus' }
   | { kind: 'close' }
   | { kind: 'close-all' }

@@ -384,6 +384,11 @@ export interface BrowserConfig {
   persistSession: boolean;
   /** Draw the AI cursor overlay while the agent drives a page. */
   showCursor: boolean;
+  /**
+   * Close a dock tab with a middle click, the way a desktop browser does. Off leaves the ✕
+   * button as the only way to close a tab.
+   */
+  middleClickClosesTabs: boolean;
   /** Let pages run scripts. Off turns the browser into a text-only viewer. */
   allowScripts: boolean;
 }

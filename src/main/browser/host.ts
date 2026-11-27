@@ -29,6 +29,7 @@ import type {
   BrowserSnapshot,
   BrowserState,
 } from '../../shared/browser';
+import { OFFSCREEN_ORIGIN, OFFSCREEN_SIZE, SURFACE_ACTIONS, surfaceTarget } from './surface';
 import type { BrowserConfig } from '../../shared/protocol';
 import { agentBootstrapSource, AGENT_WORLD_ID } from './agentScript';
 import { browserSession, isAllowedNavigation } from './session';
@@ -98,12 +99,19 @@ const KEY_CODES: Record<string, { key: string; code: string; vk: number; text?: 
 /** Actions whose result carries a fresh snapshot, so the agent sees the effect immediately. */
 const SNAPSHOT_ACTIONS = new Set(['open', 'navigate', 'click', 'type', 'key', 'back', 'forward', 'reload']);
 
+/** Time a parked page gets to lay out and produce a frame before input is dispatched at it. */
+const OFFSCREEN_SETTLE_MS = 90;
+
 export class BrowserHost {
   private readonly tabs = new Map<string, Tab>();
   private readonly attached = new Set<string>();
   private activeId?: string;
   private bounds: BrowserBounds = { x: 0, y: 0, width: 0, height: 0 };
   private visible = false;
+  /** Invisible window that lends a painting surface to a page the app window is not showing. */
+  private holder?: BrowserWindow;
+  /** Tabs parked on that holder right now; `syncView` must leave them alone. */
+  private readonly parked = new Set<string>();
   private cursorOverride?: boolean;
   private sequence = 0;
   private lastAction?: BrowserState['lastAction'];
@@ -124,6 +132,7 @@ export class BrowserHost {
     }));
     return {
       visible: this.visible,
+      middleClickClosesTabs: this.opts.config().middleClickClosesTabs,
       tabs,
       activeTabId: this.activeId,
       cursor: { enabled: this.cursorOn(), label: this.lastAction?.label },
@@ -159,6 +168,9 @@ export class BrowserHost {
 
   command(command: BrowserPanelCommand): void {
     switch (command.kind) {
+      case 'open':
+        this.openFromUser(command.url);
+        return;
       case 'set-bounds':
         this.setBounds(command.bounds);
         return;
@@ -201,6 +213,27 @@ export class BrowserHost {
     this.emit();
   }
 
+  /**
+   * Open a tab because the user asked for one (dock button, shortcut). Fire and forget: the
+   * renderer learns the result from the state event, not from a reply.
+   */
+  private openFromUser(url?: string): void {
+    let target: string;
+    try {
+      target = this.normalizeUrl(url?.trim() || this.opts.config().homeUrl);
+    } catch (error) {
+      this.opts.log?.('warn', `[browser] ${messageOf(error)}`);
+      return;
+    }
+    const tab = this.createTab(target);
+    this.visible = true;
+    this.activate(tab.id);
+    void this.load(tab, target)
+      .catch((error) => this.opts.log?.('warn', `[browser] ${messageOf(error)}`))
+      .finally(() => this.emit());
+    this.emit();
+  }
+
   /* -------------------------------------------------------------------- exec */
 
   async exec(params: BrowserExecParams): Promise<BrowserExecResult> {
@@ -210,7 +243,9 @@ export class BrowserHost {
       if (!this.opts.config().enabled) {
         return { ok: false, action, error: 'the internal browser is disabled (config.browser.enabled = false)' };
       }
-      const result = await this.dispatch(params);
+      // A surface-bound action parks the tab on the offscreen holder first (see
+      // `withSurface`); everything else runs against the page where it already is.
+      const result = await this.onSurface(action, params, () => this.dispatch(params));
       this.emit();
       return result;
     } catch (error) {
@@ -227,7 +262,8 @@ export class BrowserHost {
     // stays collapsed (the renderer follows `state.visible` and reports no bounds, so
     // `syncView` keeps the view detached) while the page keeps running — see the
     // `backgroundThrottling: false` in `createTab`. That is what lets the agent work while the
-    // user is elsewhere in the app; `capture` is how it then sees the page.
+    // user is elsewhere in the app; `capture` is how it then sees the page. Actions that need
+    // a painting surface still run: the tab is parked offscreen for the duration of the call.
     if (action === 'open') this.visible = true;
 
     switch (action) {
@@ -287,7 +323,6 @@ export class BrowserHost {
       }
       case 'screenshot': {
         const tab = this.requireActive(params.tabId);
-        this.requireSurface(tab, action);
         const image = await tab.view.webContents.capturePage();
         const dataBase64 = image.toPNG().toString('base64');
         return {
@@ -316,7 +351,6 @@ export class BrowserHost {
 
   private async click(params: BrowserExecParams): Promise<BrowserExecResult> {
     const tab = this.requireActive(params.tabId);
-    this.requireSurface(tab, 'click');
     const located = await this.locate(tab, params);
     await this.moveCursor(tab, located, params.label ?? `click ${located.name ?? located.role ?? 'element'}`, 'click');
     await delay(this.cursorOn() ? CURSOR_LEAD_MS : 0);
@@ -405,7 +439,6 @@ export class BrowserHost {
 
   private async scroll(params: BrowserExecParams): Promise<BrowserExecResult> {
     const tab = this.requireActive(params.tabId);
-    this.requireSurface(tab, 'scroll');
     const deltaY = Number.isFinite(params.deltaY) ? Number(params.deltaY) : 600;
     const client = await this.cdp(tab);
     if (client) {
@@ -426,7 +459,6 @@ export class BrowserHost {
 
   private async hover(params: BrowserExecParams): Promise<BrowserExecResult> {
     const tab = this.requireActive(params.tabId);
-    this.requireSurface(tab, 'hover');
     const located = await this.locate(tab, params);
     await this.moveCursor(tab, located, params.label ?? `hover ${located.name ?? 'element'}`, 'move');
     const client = await this.cdp(tab);
@@ -738,6 +770,9 @@ export class BrowserHost {
     const win = this.opts.getWindow();
     if (!win || win.isDestroyed()) return;
     for (const tab of this.tabs.values()) {
+      // A parked tab is on loan to an agent action; re-attaching it here would pull the
+      // surface out from under the click that is about to land.
+      if (this.parked.has(tab.id)) continue;
       const isActive = tab.id === this.activeId;
       const show = this.visible && isActive && this.bounds.width > 1 && this.bounds.height > 1;
       const alreadyAttached = this.attached.has(tab.id);
@@ -781,20 +816,6 @@ export class BrowserHost {
     while (tab.loading && Date.now() - started < timeoutMs) await delay(100);
   }
 
-  /**
-   * Pointer input, hover, wheel scrolling and screenshots all need a compositor surface, and a
-   * surface only exists while the view is attached to the window. Measured on a detached
-   * WebContentsView, a synthetic click silently misses, `Input.dispatchMouseEvent` (move/wheel)
-   * never answers at all — which also wedges the debugger for every later command — and
-   * `capturePage` returns an empty 0x0 image. So a hidden dock cannot serve those actions: say
-   * so instead of stalling the agent loop.
-   */
-  private requireSurface(tab: Tab, action: BrowserAction): void {
-    if (this.attached.has(tab.id) && this.bounds.width > 1 && this.bounds.height > 1) return;
-    throw new Error(
-      `"${action}" needs the page on screen and the browser dock is hidden — call browser_open to reveal it, or read the DOM snapshot instead`,
-    );
-  }
 
   /* ------------------------------------------------------------------ the page */
 
@@ -807,6 +828,106 @@ export class BrowserHost {
     if (contents.isDestroyed()) throw new Error('the tab was closed');
     const code = `${agentBootstrapSource()}\n;(function(){var B=globalThis.__beeCodeBrowser;${body}})();`;
     return (await contents.executeJavaScriptInIsolatedWorld(AGENT_WORLD_ID, [{ code }], false)) as T;
+  }
+
+  /** Run a surface-bound action with a real compositor surface under the page. */
+  private async onSurface<T>(action: BrowserAction, params: BrowserExecParams, fn: () => Promise<T>): Promise<T> {
+    if (!SURFACE_ACTIONS.has(action)) return await fn();
+    // Resolve the tab here so the parking happens before the action touches the page.
+    const tab = this.requireActive(params.tabId);
+    return await this.withSurface(tab, fn);
+  }
+
+  /**
+   * Park the tab's view on the invisible holder window for the duration of `fn`.
+   *
+   * A page only answers `Input.dispatchMouseEvent`, key events and `capturePage` while its
+   * view is attached to a window that is actually painting. The app window is not always that
+   * window: the dock can be collapsed or minimized, the whole app can be minimized, or the page
+   * can simply not be the active tab — and the agent has to keep working in all three cases. So
+   * the view moves to an invisible window that paints, which is all the debugger needs;
+   * nothing is shown to the user and the tab comes back afterwards.
+   */
+  private async withSurface<T>(tab: Tab, fn: () => Promise<T>): Promise<T> {
+    const win = this.opts.getWindow();
+    const target = surfaceTarget({
+      attachedToWindow: this.attached.has(tab.id),
+      bounds: this.bounds,
+      windowPainting: !!win && !win.isDestroyed() && !win.isMinimized() && win.isVisible(),
+    });
+    if (target === 'live') return await fn();
+    this.parked.add(tab.id);
+    try {
+      if (this.attached.has(tab.id) && win && !win.isDestroyed()) {
+        try {
+          win.contentView.removeChildView(tab.view);
+        } catch {
+          /* already detached */
+        }
+        this.attached.delete(tab.id);
+      }
+      const holder = this.surfaceHolder();
+      holder.contentView.addChildView(tab.view);
+      tab.view.setBounds(this.offscreenBounds());
+      await delay(OFFSCREEN_SETTLE_MS);
+      return await fn();
+    } finally {
+      const holder = this.holder;
+      if (holder && !holder.isDestroyed()) {
+        try {
+          holder.contentView.removeChildView(tab.view);
+        } catch {
+          /* the holder is gone */
+        }
+      }
+      this.parked.delete(tab.id);
+      this.syncView();
+      this.emit();
+    }
+  }
+
+  /**
+   * Create the window that lends a surface to a parked page.
+   *
+   * It has to be *shown*: a hidden window has no display surface, so the debugger's mouse input
+   * never answers and `capturePage` fails outright. Invisible then — transparent, frameless,
+   * unfocusable, off the taskbar and parked thousands of pixels away from every desktop — so
+   * the page paints and the agent can drive it while the user sees nothing and keeps their focus.
+   */
+  private surfaceHolder(): BrowserWindow {
+    const existing = this.holder;
+    if (existing && !existing.isDestroyed()) return existing;
+    const holder = new BrowserWindow({
+      x: OFFSCREEN_ORIGIN,
+      y: OFFSCREEN_ORIGIN,
+      width: OFFSCREEN_SIZE.width,
+      height: OFFSCREEN_SIZE.height,
+      show: false,
+      frame: false,
+      focusable: false,
+      skipTaskbar: true,
+      resizable: false,
+      minimizable: false,
+      maximizable: false,
+      fullscreenable: false,
+      webPreferences: { backgroundThrottling: false },
+    });
+    holder.setSkipTaskbar(true);
+    holder.setOpacity(0);
+    holder.setPosition(OFFSCREEN_ORIGIN, OFFSCREEN_ORIGIN);
+    // Shown without taking focus: not shown means no frames, shown-inactive does not steal it.
+    holder.showInactive();
+    holder.on('closed', () => {
+      if (this.holder === holder) this.holder = undefined;
+    });
+    this.holder = holder;
+    return holder;
+  }
+
+  /** The size a parked page gets: the dock rectangle if it had one, else a laptop viewport. */
+  private offscreenBounds(): BrowserBounds {
+    if (this.bounds.width > 1 && this.bounds.height > 1) return { ...this.bounds };
+    return { x: 0, y: 0, width: OFFSCREEN_SIZE.width, height: OFFSCREEN_SIZE.height };
   }
 
   private async snapshot(tab: Tab): Promise<BrowserSnapshot> {
@@ -892,6 +1013,7 @@ export class BrowserHost {
 
   dispose(): void {
     this.disposed = true;
+    this.holder?.destroy();
     for (const id of [...this.tabs.keys()]) this.closeTab(id);
     this.emit();
   }

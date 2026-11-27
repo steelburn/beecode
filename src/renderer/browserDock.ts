@@ -1,5 +1,5 @@
 import type { BrowserPanelApi, BrowserState } from '../shared/browser';
-import { activeTabPosition, tabLabel, tabsSignature } from './browserTabs';
+import { activeTabPosition, middleClickClosesTab, tabLabel, tabsSignature } from './browserTabs';
 import { clear, h } from './dom';
 
 /**
@@ -184,6 +184,17 @@ export function mountBrowserDock(host: HTMLElement, api: BrowserPanelApi): Brows
       el.addEventListener('click', () => {
         if (!active) api.command({ kind: 'activate-tab', tabId: tab.id });
         else api.command({ kind: 'focus' });
+      });
+      // Middle-click closes the tab, like a desktop browser. `auxclick` rather than `click`:
+      // the close is decided on release, and the press itself is swallowed so Windows does not
+      // start autoscrolling the strip under the pointer.
+      el.addEventListener('mousedown', (event) => {
+        if (event.button === 1) event.preventDefault();
+      });
+      el.addEventListener('auxclick', (event) => {
+        if (!middleClickClosesTab(next, event.button)) return;
+        event.preventDefault();
+        api.command({ kind: 'close-tab', tabId: tab.id });
       });
       // Right-click opens the tab menu (Close tab / Close other tabs / Close all tabs). It is
       // built in main as a native menu: the page is a WebContentsView painted on top of this

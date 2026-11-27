@@ -238,7 +238,10 @@ sequenceDiagram
 
 The agent can browse the web in a window it drives itself, with a cursor you can watch
 work. It is deliberately a *separate* surface from the desktop driver: nothing here
-reaches your OS, your files or another app.
+reaches your OS, your files or another app. You can open the dock yourself — the `www`
+button in the topbar, or `Shift+B` — and then it behaves like a small browser: each tab in
+the strip closes from its cross or from a **middle-click** on it (turn that off with
+**Middle-click closes a tab** in Settings), and a collapsed dock still lets the agent act.
 
 - The page is a sandboxed `WebContentsView` (`sandbox: true`, no Node,
   `contextIsolation`) in a dedicated, in-memory session. Every permission request, popup
@@ -253,8 +256,10 @@ reaches your OS, your files or another app.
 - Minimize, maximize and close live in the dock’s title bar. Minimizing collapses it to
   the tab strip and reports no rectangle, so the page view detaches instead of floating
   over the chat; maximizing fills the column above the composer; closing tears the tabs
-  down rather than only hiding them. If the agent acts while the panel is minimized, it
-  restores itself — a hidden page would hide the cursor you are meant to watch.
+  down rather than only hiding them. Acting on a minimized — or background-tab — page no
+  longer yanks the dock forward: the view is parked on an invisible holder window for the
+  length of one action and put back afterwards, so a click, a scroll or a screenshot lands on
+  the real page while the chat stays exactly as you left it.
 - Every call is audited under the `browser` action, and `browser_open` and friends are
   gated like any other capability.
 
@@ -280,7 +285,8 @@ is label-aware: `*.github.com` covers the apex and its subdomains, but not
 `evil-github.com`.
 
 Tab count, home page and session persistence live in `config.json` under `browser`
-(`maxTabs`, `homeUrl`, `persistSession`, `showCursor`, `allowScripts`).
+(`maxTabs`, `homeUrl`, `persistSession`, `showCursor`, `allowScripts`,
+`middleClickClosesTabs`).
 
 ## The Files panel
 

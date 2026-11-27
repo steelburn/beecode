@@ -1,6 +1,15 @@
 import type { BrowserState, BrowserTabInfo } from '../shared/browser';
 
 /**
+ * Middle-click closes a tab, like a desktop browser — but only where the user kept that on
+ * (`config.browser.middleClickClosesTabs`). The strip asks this instead of hard-coding the
+ * mouse button, so the setting and the DOM listener cannot disagree.
+ */
+export function middleClickClosesTab(state: BrowserState, button: number): boolean {
+  return button === 1 && state.middleClickClosesTabs === true && state.tabs.length > 0;
+}
+
+/**
  * Pure helpers for the internal browser's tab strip.
  *
  * The strip is re-rendered from `BrowserState`, which the host emits on every navigation,
