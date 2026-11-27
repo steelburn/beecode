@@ -88,6 +88,7 @@ export function defaultConfig(): BeeCodeConfig {
       homeUrl: 'https://duckduckgo.com',
       persistSession: false,
       showCursor: true,
+      middleClickClosesTabs: true,
       allowScripts: true,
     },
     subagents: {
@@ -409,6 +410,7 @@ function normalizeBrowser(input: BrowserConfig | undefined, fallback: BrowserCon
     ...merged,
     maxTabs: Number.isFinite(requested) ? Math.min(Math.max(requested, 1), 12) : fallback.maxTabs,
     homeUrl: (merged.homeUrl ?? '').trim() || fallback.homeUrl,
+    middleClickClosesTabs: merged.middleClickClosesTabs !== false,
   };
 }
 

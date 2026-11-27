@@ -193,8 +193,8 @@ const composerUiOk =
   composerUi.ids.includes('send');
 
 // Driving the browser must not force the dock on screen: after an explicit open and a
-// collapse, the dock stays hidden and navigation still works. The actions that need a surface
-// fail fast with an explanation (a detached view has none) instead of hanging the agent loop.
+// collapse, the dock stays hidden and every action still works: the surface-bound ones (mouse,
+// wheel, capture) are run against the hidden holder window instead of the collapsed dock.
 // Downloads are the one path by which a page writes to the real machine, so the smoke
 // drives a real one: a loopback server answers with an attachment, the sandboxed session
 // turns that into `will-download`, and the file must land inside `<workspace>/Downloads`.
@@ -215,7 +215,8 @@ const silentOk =
   silent.reopened === true &&
   silent.collapsed === true &&
   silent.navigated === true &&
-  silent.guarded === true;
+  silent.offscreen === true &&
+  (silent.screenshotBytes ?? 0) > 0;
 
 // Files panel view modes (Markdown/HTML rendered vs source) and the workspace terminal
 // must work through the real UI, not just exist as code.

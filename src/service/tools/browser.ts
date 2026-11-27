@@ -34,11 +34,12 @@ function render(result: Awaited<ReturnType<BrowserController['exec']>>): ToolRes
   if (!result.ok) return errorResult(result.error ?? 'the browser action failed', { action: result.action });
   const lines: string[] = [`${result.action}: ${result.message ?? 'ok'}`];
   if (result.tabId) lines.push(`tab: ${result.tabId}`);
-  // Nobody is watching a hidden dock, so say so: it changes how the model works (it has to take
-  // a screenshot to see the page) and explains why the user is not reacting to it.
+  // Nobody is watching a hidden dock, so say so: it explains why the user is not reacting and
+  // why a screenshot is the only way to see the page. Every action still works — the main
+  // process parks the page offscreen while it drives it.
   if (result.state && !result.state.visible) {
     lines.push(
-      'dock: hidden — driving in the background (navigate, read and type work; click, hover, scroll and screenshots need the page on screen)',
+      'dock: hidden — driving offscreen (every action works, but the user does not see the page; take a screenshot to look at it)',
     );
   }
   if (result.snapshot) {

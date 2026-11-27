@@ -337,6 +337,7 @@ const els = {
   drawer: document.getElementById('drawer') as HTMLElement,
   drawerBody: document.getElementById('drawer-body') as HTMLElement,
   toggleTerminal: document.getElementById('toggle-terminal') as HTMLButtonElement,
+  toggleBrowser: document.getElementById('toggle-browser') as HTMLButtonElement,
   toggleRail: document.getElementById('toggle-rail') as HTMLButtonElement,
   revealRail: document.getElementById('reveal-rail') as HTMLButtonElement,
   revealPanel: document.getElementById('reveal-panel') as HTMLButtonElement,
@@ -427,6 +428,7 @@ async function boot(): Promise<void> {
 
   api.browser.onState((next) => {
     browserShown = next.visible;
+    els.toggleBrowser.setAttribute('aria-pressed', String(browserShown));
     // A browser the host closed cannot stay the active tab: go back to the chat.
     if (!next.visible && state.docs.active === BROWSER_TAB) state.docs = activateTab(state.docs, CHAT_TAB);
     dock?.render(next);
@@ -663,6 +665,7 @@ function bindUi(): void {
   }
 
   els.toggleTerminal.addEventListener('click', () => setTerminalOpen(!state.terminalOpen));
+  els.toggleBrowser.addEventListener('click', () => openBrowser());
 
   document.addEventListener('keydown', (event) => {
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'n') {
@@ -684,6 +687,10 @@ function bindUi(): void {
     } else if (event.key === '`') {
       event.preventDefault();
       setTerminalOpen(!state.terminalOpen);
+    } else if (event.shiftKey && event.key.toLowerCase() === 'b') {
+      // The browser's own shortcut, next to the terminal's Ctrl+`.
+      event.preventDefault();
+      openBrowser();
     }
   });
 }
@@ -2099,6 +2106,19 @@ function paintSettingsNav(): void {
     item.classList.toggle('active', active);
     item.setAttribute('aria-selected', String(active));
   }
+}
+
+/**
+ * The user's own way into the internal browser — the terminal button's counterpart. With no
+ * page open it asks the host for one (home page, same sandbox, same tab cap); with pages
+ * already open it just brings the browser view to the front.
+ */
+function openBrowser(): void {
+  if (browserShown) {
+    if (state.docs.active !== BROWSER_TAB) activateMainTab(BROWSER_TAB);
+    return;
+  }
+  api.browser.command({ kind: 'open' });
 }
 
 /**

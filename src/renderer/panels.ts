@@ -1899,6 +1899,10 @@ function renderConfigCards(draft: BeeCodeConfig, note: Note): HTMLElement[] {
       draft.browser.enabled = checked;
       touch();
     }),
+    toggle('Middle-click closes a tab', draft.browser.middleClickClosesTabs, (checked) => {
+      draft.browser.middleClickClosesTabs = checked;
+      touch();
+    }),
     toggle('Keep cookies and cache (per workspace)', draft.browser.persistSession, (checked) => {
       draft.browser.persistSession = checked;
       touch();

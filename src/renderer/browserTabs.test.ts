@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { activeTabPosition, tabLabel, tabsSignature } from './browserTabs';
+import { activeTabPosition, middleClickClosesTab, tabLabel, tabsSignature } from './browserTabs';
 import type { BrowserState, BrowserTabInfo } from '../shared/browser';
 
 const tab = (id: string, extra: Partial<BrowserTabInfo> = {}): BrowserTabInfo =>
@@ -42,4 +42,17 @@ test('activeTabPosition reports the 1-based active tab, 0 when nothing is active
   assert.equal(activeTabPosition(state([tab('a', { active: true })], 'missing')), 1);
   assert.equal(activeTabPosition(state([tab('a'), tab('b')], 'missing')), 0);
   assert.equal(activeTabPosition(state([], '')), 0);
+});
+
+test('middle-click closes a tab only when the setting is on', () => {
+  const open = { ...state([tab('a'), tab('b')], 'a'), middleClickClosesTabs: true } as BrowserState;
+  assert.equal(middleClickClosesTab(open, 1), true);
+  assert.equal(middleClickClosesTab({ ...open, middleClickClosesTabs: false }, 1), false);
+  assert.equal(middleClickClosesTab(open, 0), false);
+  assert.equal(middleClickClosesTab(open, 2), false);
+});
+
+test('middle-click on an empty strip does nothing', () => {
+  const empty = { ...state([], ''), middleClickClosesTabs: true } as BrowserState;
+  assert.equal(middleClickClosesTab(empty, 1), false);
 });

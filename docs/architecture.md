@@ -217,7 +217,10 @@ composer      always visible
 * The **Browser** tab is not a second view: it asks the existing dock for
   `setMode('maximized')` and restores the previous mode when the tab is left. Because the
   `WebContentsView` is placed inside the dock's reported rectangle, the page cannot cover
-  the composer — and hiding the dock hides the page.
+  the composer — and hiding the dock hides the page. Hiding it does not stop the agent:
+  `BrowserHost.withSurface()` (`src/main/browser/surface.ts`) moves the view onto an
+  invisible holder window for one surface-bound action and returns it, because a view that
+  is attached to nothing has no compositor surface at all and CDP input would hang.
 
 ## MCP servers and skills
 
